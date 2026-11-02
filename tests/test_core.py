@@ -2108,3 +2108,69 @@ def test_invoke_style_tool_calls_are_parsed_and_stripped():
     calls = agent.parse_tool_calls(text)
     assert calls == [{"name": "write_file", "params": {"path": "a.txt", "content": "hi"}}]
     assert agent.strip_tool_calls(text) == "Working.\n\nDone."
+
+
+class _FakeDownload:
+    def __init__(self, content=b""):
+        self.content = content
+
+    def raise_for_status(self):
+        pass
+
+
+def _bridge_events(gen):
+    events, value = [], None
+    while True:
+        try:
+            chunk = next(gen)
+        except StopIteration as stop:
+            value = stop.value
+            break
+        if chunk.startswith("data: "):
+            events.append(json.loads(chunk[6:]))
+    return events, value
+
+
+def test_native_file_bridge_downloads_and_dedupes(web, monkeypatch, tmp_path):
+    appmod, _c, cfg, _use, _sent = web
+    cfg["permission_mode"] = "bypassPermissions"
+    cfg["workspace_dir"] = str(tmp_path / "picked")
+    monkeypatch.setattr(appmod.requests, "get", lambda url, timeout=None: _FakeDownload(b"print('hi')\n"))
+    state = {}
+    files = [{"url": "https://example.test/snake.py", "title": "snake.py", "kind": "file"}]
+    ev, written = _bridge_events(appmod._native_file_bridge(files, state))
+    assert written == ["snake.py"]
+    assert (tmp_path / "picked" / "snake.py").read_bytes() == b"print('hi')\n"
+    assert [e for e in ev if e["type"] == "files_written"][0]["written"] == ["snake.py"]
+    assert state["synced_files"]["snake.py"]
+    # Same content next turn: nothing is written again.
+    _ev2, written2 = _bridge_events(appmod._native_file_bridge(files, state))
+    assert written2 == []
+
+
+def test_native_file_bridge_respects_plan_and_sanitizes_names(web, monkeypatch, tmp_path):
+    appmod, _c, cfg, _use, _sent = web
+    cfg["workspace_dir"] = str(tmp_path / "picked")
+    monkeypatch.setattr(appmod.requests, "get", lambda url, timeout=None: _FakeDownload(b"x"))
+    files = [{"url": "https://example.test/evil", "title": "../../evil.txt", "kind": "file"}]
+    cfg["permission_mode"] = "plan"
+    plan_state = {}
+    _ev, written = _bridge_events(appmod._native_file_bridge(files, plan_state))
+    assert written == [] and not (tmp_path / "picked").exists()
+    cfg["permission_mode"] = "bypassPermissions"
+    ok_state = {}
+    _ev2, written2 = _bridge_events(appmod._native_file_bridge(files, ok_state))
+    assert written2 == ["evil.txt"]
+    assert (tmp_path / "picked" / "evil.txt").read_bytes() == b"x"
+    assert not (tmp_path.parent / "evil.txt").exists()
+
+
+def test_native_file_bridge_without_folder_only_notifies(web, monkeypatch):
+    appmod, _c, cfg, _use, _sent = web
+    cfg.pop("workspace_dir", None)
+    monkeypatch.setattr(appmod.requests, "get",
+                        lambda url, timeout=None: (_ for _ in ()).throw(AssertionError("must not download")))
+    ev, written = _bridge_events(appmod._native_file_bridge(
+        [{"url": "https://example.test/a.txt", "title": "a.txt", "kind": "file"}], {}))
+    assert written == []
+    assert any("Choose a folder" in (e.get("text") or "") for e in ev)

@@ -71,7 +71,7 @@ def main(path: str) -> int:
                    and b"createPairwiseFeedback" in engine))
 
     app = modules["arena.web.app"]
-    checks.append(("app: APP_VERSION 4.12.0", b"4.12.0" in app))
+    checks.append(("app: APP_VERSION 4.13.0", b"4.13.0" in app))
     checks.append(("app: native create direct with genuine-cx ladder",
                    b"genuine-cx+connectors" in app and b"_native_drive" not in app))
     checks.append(("app: turn-complete record detection + drain resume",
@@ -103,7 +103,7 @@ def main(path: str) -> int:
                    b"is_turn_complete_record" in native and b"trigger-control" in native))
 
     index = entries.get("arena/web/static/index.html", b"")
-    checks.append(("index.html: assets v=4.12.0", b"?v=4.12.0" in index))
+    checks.append(("index.html: assets v=4.13.0", b"?v=4.13.0" in index))
     checks.append(("index.html: Arena dropdown chips + resize handles, no segmented bars",
                    b'id="modeButton"' in index and b'id="modalityButton"' in index
                    and b'id="sidebarResize"' in index and b'id="workspaceResize"' in index
@@ -121,7 +121,7 @@ def main(path: str) -> int:
                    and b"cookie-policy" in index))
 
     app_js = entries.get("arena/web/static/app.js", b"")
-    checks.append(("app.js: demo app_version 4.12.0", b"app_version: '4.12.0'" in app_js))
+    checks.append(("app.js: demo app_version 4.13.0", b"app_version: '4.13.0'" in app_js))
     checks.append(("app.js: cloud chat open passes title",
                    b"openArenaChat(id, type, title)" in app_js))
     checks.append(("app.js: Arena dropdowns + vote + chat lock",
@@ -153,6 +153,8 @@ def main(path: str) -> int:
                    and b"_chat_stop_event" in app))
     checks.append(("engine: local-only session clear for account switching",
                    b"clear_session_cookies" in engine))
+    checks.append(("app: Arena Agent file bridge (Workspace Sync downloads)",
+                   b"_native_file_bridge" in app and b"synced_files" in app))
     checks.append(("app.js: Workspace Sync switch + settings in accounts menu, no old Tools pill",
                    b"workspaceSyncToggle" in app_js and b"setWorkspaceSync" in app_js and b"visibleLaneText" in app_js
                    and b"account-settings" in app_js and b"tools-toggle" not in app_js))

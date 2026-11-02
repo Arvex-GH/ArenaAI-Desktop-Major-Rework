@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.12.0-8b5cf6?style=flat-square" alt="Version 4.12.0" />
+  <img src="https://img.shields.io/badge/version-4.13.0-8b5cf6?style=flat-square" alt="Version 4.13.0" />
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue?style=flat-square" alt="Windows 10/11" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776ab?style=flat-square" alt="Python 3.11+" />
   <img src="https://img.shields.io/badge/models-400%2B%20via%20arena.ai-10b981?style=flat-square" alt="400+ models via arena.ai" />
@@ -64,8 +64,10 @@ The app orchestrates chats, tools, files and permissions around it.
 ### Workspace Sync & permissions
 - The **Workspace Sync** switch sits next to the permission selector in every mode.
   On: models get the automatic folder-tools loop (`ls`, `read_file`, `search`, `write_file`,
-  `edit_file`, `mkdir`, `delete`, `run_cmd`) in the folder you selected.
-  Off: models only chat, and Code-mode files are not mirrored to your computer.
+  `edit_file`, `mkdir`, `delete`, `run_cmd`) in the folder you selected, and files the native
+  Arena Agent creates in its cloud workspace are downloaded into that folder automatically
+  (hash-deduped across turns, one permission decision per chat).
+  Off: models only chat, Code-mode files are not mirrored, and Arena Agent files stay in Arena's workspace.
 - Permission modes modelled on Claude Code (Plan / Ask / Accept edits / Bypass) gate every local action;
   requests are tied to the chat that asked, so a waiting permission never blocks your other chats.
 - Code (webdev) answers have their created/edited files mirrored into your folder
@@ -233,3 +235,11 @@ parallel chats, and a redesigned interface). Thanks to everyone whose code and r
 
 Released under the [MIT License](LICENSE). Not affiliated with Arena AI Inc.; “Arena” is used
 descriptively to name the service this client connects to.
+
+## Contact
+
+Questions, ideas or feedback? Reach the maintainer on Discord:
+
+[![Discord](https://img.shields.io/static/v1?label=Discord&message=%40.max_power._&color=5865F2&style=flat-square&logo=discord&logoColor=white)](https://discord.com/users/877543689428287489)
+
+DMs are open — `@.max_power._`. For bugs and feature requests, [GitHub Issues](../../issues) still work best.

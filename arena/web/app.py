@@ -244,7 +244,7 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "4.12.0"
+APP_VERSION = "4.13.0"
 
 
 @app.after_request
@@ -2269,7 +2269,7 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
     would start a brand-new chat instead of continuing this one.
     """
     if result is None:
-        result = {"text": "", "reasoning": "", "tools": [], "native": None, "error": None}
+        result = {"text": "", "reasoning": "", "tools": [], "files": [], "native": None, "error": None}
     nat = (existing or {}).get("native") or {}
     session_id = nat.get("session_id")
     trigger_address = nat.get("trigger_address")
@@ -2286,6 +2286,9 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
                 "trigger_address": trigger_address,
                 "last_event_id": last_event_id,
                 "needs_drain": needs_drain,
+                # Workspace Sync file-bridge state survives across turns.
+                "file_sync_ok": nat.get("file_sync_ok"),
+                "synced_files": nat.get("synced_files") or {},
             }
 
     def fail(message_text, code="native_agent", retry=True):
@@ -2453,6 +2456,14 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
                         if entry is not None:
                             entry["ok"] = event["ok"]
                             entry["status"] = event["status"]
+                    elif event["type"] == "media" and event.get("url"):
+                        known = {item["url"] for item in result["files"]}
+                        if event["url"] not in known:
+                            result["files"].append({
+                                "url": event["url"],
+                                "title": event.get("title") or "Agent file",
+                                "kind": event.get("kind") or "file",
+                            })
                     yield _sse(event)
                 if _stopped():
                     _native_append(client, trigger_address, pat, native_agent.STOP_BODY)
@@ -2487,6 +2498,66 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
                    "the next message will pick it up.")
     publish_native()
     return result
+
+
+def _native_file_bridge(files, native_state):
+    """Workspace Sync for the native Arena Agent: download the files it
+    created in Arena's cloud workspace into the folder picked on this
+    computer. One-way (never deletes), hash-deduped across turns, one
+    permission decision per chat. Yields SSE events; returns names written."""
+    written = []
+    if not files:
+        return written
+    root = _chosen_ws()
+    if root is None:
+        names = ", ".join(str(f.get("title") or "file") for f in files[:3])
+        yield _sse({"type": "notice", "model": "a",
+                    "text": f"Arena Agent created file(s): {names}. Choose a folder on this "
+                            "computer to have them downloaded automatically (Workspace Sync)."})
+        return written
+    if native_state.get("file_sync_ok") is None:
+        info = {"tool": "write_file", "inside": True, "path": str(root),
+                "summary": f"Download {len(files)} file(s) from Arena Agent into {root.name}"}
+        native_state["file_sync_ok"] = (yield from _permit(_perm_mode(), "write_file", info)) == "allow"
+    if not native_state.get("file_sync_ok"):
+        return written
+    synced = dict(native_state.get("synced_files") or {})
+    for item in files:
+        name = Path(str(item.get("title") or "")).name
+        if not name or name in (".", ".."):
+            name = "agent-file"
+        try:
+            r = requests.get(item["url"], timeout=120)
+            r.raise_for_status()
+            content = r.content
+        except (requests.RequestException, OSError) as e:
+            yield _sse({"type": "notice", "model": "a",
+                        "text": f"Could not download {name} from Arena Agent: {e}"})
+            continue
+        if len(content) > 50 * 1024 * 1024:
+            yield _sse({"type": "notice", "model": "a",
+                        "text": f"{name} is over 50 MB and was not downloaded."})
+            continue
+        digest = hashlib.sha256(content).hexdigest()
+        target = root / name
+        if synced.get(name) == digest and target.exists():
+            continue
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        except OSError as e:
+            yield _sse({"type": "notice", "model": "a",
+                        "text": f"Could not save {name}: {e}"})
+            continue
+        synced[name] = digest
+        written.append(name)
+    native_state["synced_files"] = synced
+    if written:
+        yield _sse({"type": "files_written", "model": "a", "root": str(root),
+                    "written": written, "deleted": []})
+        yield _sse({"type": "notice", "model": "a",
+                    "text": f"Saved {len(written)} file(s) from Arena Agent to {root}"})
+    return written
 
 
 def _agent_run(client: ArenaClient, message: str, conv: dict):
@@ -2927,7 +2998,7 @@ def _api_chat_impl():
             # session coordinates are published into `out` as they become
             # known, so the next message always continues this very chat
             # instead of starting a new Arena session.
-            out = {"text": "", "reasoning": "", "tools": [],
+            out = {"text": "", "reasoning": "", "tools": [], "files": [],
                    "native": existing.get("native"), "error": None}
             saved = False
             session_persisted = bool((existing.get("native") or {}).get("session_id"))
@@ -2956,6 +3027,10 @@ def _api_chat_impl():
                     yield event
                 if returned is not None:
                     out = returned
+                if out.get("files") and data.get("tools") is not False:
+                    bridge_state = out.get("native") or existing.get("native") or {}
+                    out["native"] = bridge_state
+                    yield from _native_file_bridge(out["files"], bridge_state)
             finally:
                 if not saved:
                     saved = True

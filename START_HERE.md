@@ -1,4 +1,4 @@
-# Arena Desktop v4.12.0 - Start Here
+# Arena Desktop v4.13.0 - Start Here
 
 Arena Desktop is an unofficial Windows client for arena.ai. It is not affiliated with or endorsed by Arena AI Inc.
 
@@ -44,7 +44,7 @@ The local session file `%USERPROFILE%\.arena-personal\cookies.txt` may be unencr
 - Manual models only where Arena allows them: one in Direct and two in Side by Side.
 - Battle voting (A, B, tie, both bad), with model names revealed after a successful vote.
 - Arena Agent inside the app through direct API calls; a separate Local Agent remains available and its default for new chats is selected in Settings -> Permissions.
-- **Workspace Sync** switch (right of the permission selector, shown in every mode): when on, models can run commands and use tools in the folder selected on this computer, with results returned to them automatically — in Direct, Side by Side, Battle (Text/Web Search) and the Local Agent; when off, they only chat and Code files are not mirrored to this computer.
+- **Workspace Sync** switch (right of the permission selector, shown in every mode): when on, models can run commands and use tools in the folder selected on this computer, with results returned to them automatically — in Direct, Side by Side, Battle (Text/Web Search) and the Local Agent; files the native Arena Agent creates in its cloud workspace are downloaded into the selected folder too. When off, models only chat, Code files are not mirrored and Arena Agent files stay in Arena's workspace.
 - Local and cloud Arena history, continuation of existing Arena sessions, Workspace files, media, and permissions. Deleting a chat here also archives it on arena.ai.
 - Multiple Arena accounts: click the profile to switch between saved accounts or add another one (sign-in window or cookies). Each account keeps its own chat list; an account whose session Arena no longer accepts is marked "Session expired: sign in". Saved sessions live in `%USERPROFILE%\.arena-personal\accounts.json` (unencrypted, like cookies.txt — treat it as a password). Switching is blocked while a generation is running.
 - Parallel chats: a chat appears in the sidebar as soon as you send the prompt, and other chats stay fully usable while one is generating. A spinning circle marks a working chat; a green check marks a chat that finished while you were elsewhere. Stop acts on the open chat only.

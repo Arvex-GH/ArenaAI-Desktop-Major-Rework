@@ -982,7 +982,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '4.12.0',
+        app_version: '4.13.0',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -3435,8 +3435,8 @@ You can start with a more structured option: one script, short captions, and a c
     chip.classList.toggle('is-disabled', state.generating);
     if (state.mode === 'agent') {
       chip.title = on
-        ? "Workspace Sync is on: the Local Agent works in the folder selected on this computer. Arena Agent keeps its own Arena workspace either way."
-        : "Workspace Sync is off: the Local Agent answers without touching this computer. Arena Agent keeps its own Arena workspace either way.";
+        ? "Workspace Sync is on: the Local Agent works in the folder selected on this computer, and files the Arena Agent creates are downloaded into that folder."
+        : "Workspace Sync is off: the Local Agent answers without touching this computer, and Arena Agent files stay in Arena's workspace.";
     } else if (state.workspaceChosen) {
       chip.title = on
         ? "Workspace Sync is on: the models can run commands and use tools in the folder selected on this computer, and the results return to them automatically. Actions follow the permission mode."
