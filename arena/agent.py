@@ -53,7 +53,7 @@ FULL FILE CONTENT
 <tool name="mkdir"><path>assets/img</path></tool>
 <tool name="delete"><path>old_notes.txt</path></tool>
 <tool name="run_cmd"><cmd>python -m pytest -q</cmd></tool>
-{extra_tools}
+{extra_tools}{delegate}
 Rules: paths are relative to the folder. Read a file before editing it. write_file takes the whole file. When the task is done, reply with a short summary and no tool tags. If the message does not need files, just answer it.
 Keep the context lean: batch independent tool calls in one reply instead of one call per round. read_file accepts <start_line> and <end_line> — read only the part you need, and do not re-read files you just wrote. Very long tool outputs are saved under .arena-artifacts/ and you only see a preview; read_file that path if you need the full text.
 
@@ -76,10 +76,37 @@ MODE_NOTES = {
 }
 
 
-def guide(root, mode_label: str, mode_note: str, dual: bool = False, extra_tools: str = "") -> str:
+READ_ONLY_TOOLS = {"ls", "read_file", "search"}
+
+
+def delegate_guide(models) -> str:
+    """Guide section describing sub-agent delegation (shown to parents only)."""
+    lines = [
+        "",
+        "Sub-agents: for a self-contained sub-task \u2014 exploring part of the project, "
+        "researching how something works, checking several places \u2014 you may delegate it "
+        "instead of doing it here. The sub-agent works in its own chat with the same folder "
+        "tools and only its final summary returns to you, so your context stays clean. Write "
+        "the task so it stands alone: the sub-agent does not see this conversation. "
+        "<mode>research</mode> (the default) is read-only; <mode>work</mode> may also edit "
+        "files and run commands. Delegates run one at a time, at most 3 per turn. You may pick "
+        "the sub-agent's model when it matters (a fast model for search, the strongest for hard "
+        "reasoning); omit <model> to auto-assign.",
+        '<tool name="delegate_task"><task>Find everywhere the config file is parsed; report '
+        'file:line for each place with a one-line note.</task><mode>research</mode></tool>',
+    ]
+    if models:
+        lines.append("Models you may name in <model> (use the id in brackets): "
+                     + ", ".join(f"{name} [{mid}]" for mid, name in models))
+    return "\n".join(lines) + "\n"
+
+
+def guide(root, mode_label: str, mode_note: str, dual: bool = False, extra_tools: str = "",
+          delegate: str = "") -> str:
     """The tool guide that goes in front of the first message of a conversation."""
     return GUIDE.format(root=root, mode_label=mode_label, mode_note=mode_note,
-                        lane_note=LANE_NOTE if dual else "", extra_tools=extra_tools or "")
+                        lane_note=LANE_NOTE if dual else "", extra_tools=extra_tools or "",
+                        delegate=delegate or "")
 
 
 def parse_tool_calls(text: str) -> List[Dict[str, Any]]:

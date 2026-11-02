@@ -4,12 +4,28 @@ Configuration, paths, and persistent settings for Arena CLI.
 
 import json
 import os
+import sys
 import atexit
 from pathlib import Path
 from typing import Dict, Any, Optional
 
+
+def _config_dir() -> Path:
+    """Portable mode: a portable.txt next to the EXE (or the repo root when
+    running from source) keeps all data in ./data beside it; otherwise the
+    per-user folder is used, as always."""
+    roots = []
+    if getattr(sys, "frozen", False):
+        roots.append(Path(sys.executable).resolve().parent)
+    roots.append(Path(__file__).resolve().parent.parent)
+    for root in roots:
+        if (root / "portable.txt").exists():
+            return root / "data"
+    return Path.home() / ".arena-personal"
+
+
 # Keep this personal fork's credentials and chats separate from the upstream app.
-CONFIG_DIR = Path.home() / ".arena-personal"
+CONFIG_DIR = _config_dir()
 CONFIG_FILE = CONFIG_DIR / "config.json"
 COOKIE_FILE = CONFIG_DIR / "cookies.txt"
 HIST_FILE = CONFIG_DIR / "history.txt"

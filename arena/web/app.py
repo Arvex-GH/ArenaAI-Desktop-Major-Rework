@@ -244,7 +244,7 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "4.15.0"
+APP_VERSION = "4.16.0"
 
 
 @app.after_request
@@ -275,7 +275,8 @@ def _save_chat(chat_id: str, title: str, messages: list,
                source: str = None, tools_guide: bool = None,
                agent_backend: str = None, native: dict = None,
                mcp_guide_hash: str = None, memory_hash: str = None,
-               pending_digest: str = None):
+               pending_digest: str = None, parent_id: str = None,
+               delegate_guide: bool = None):
     if not _validate_chat_id(chat_id):
         return
     chat_dir = CHATS_DIR / chat_id
@@ -304,6 +305,8 @@ def _save_chat(chat_id: str, title: str, messages: list,
         "mcp_guide_hash": mcp_guide_hash if mcp_guide_hash is not None else existing.get("mcp_guide_hash"),
         "memory_hash": memory_hash if memory_hash is not None else existing.get("memory_hash"),
         "pending_digest": pending_digest if pending_digest is not None else existing.get("pending_digest"),
+        "parent_id": (parent_id or None) if parent_id is not None else existing.get("parent_id"),
+        "delegate_guide": bool(delegate_guide) if delegate_guide is not None else bool(existing.get("delegate_guide")),
         "agent_backend": agent_backend or existing.get("agent_backend"),
         "native": native if native is not None else existing.get("native"),
         "messages": messages,
@@ -360,13 +363,49 @@ def _list_chats() -> list:
                 "mode": data.get("mode"),
                 "modality": data.get("modality"),
                 "eval_id": data.get("eval_id"),
+                "parent_id": data.get("parent_id"),
                 "source": data.get("source") or "local",
                 "message_count": len(data.get("messages", [])),
             })
         except Exception:
             pass
     chats.sort(key=lambda c: c.get("updated_at", ""), reverse=True)
-    return chats
+    # Sub-agent child chats nest under their parent instead of flooding the
+    # list; a child whose parent is gone (or on another account) stands alone.
+    by_id = {c["id"]: c for c in chats}
+    for c in chats:
+        c["children"] = []
+    top = []
+    for c in chats:
+        pid = c.get("parent_id")
+        if pid and pid != c["id"] and pid in by_id:
+            by_id[pid]["children"].append(
+                {"id": c["id"], "title": c["title"], "updated_at": c["updated_at"],
+                 "mode": c.get("mode")})
+        else:
+            top.append(c)
+    return top
+
+
+def _orphan_children(parent_id: str) -> None:
+    """Sub-agent chats outlive a deleted parent as ordinary chats."""
+    if not CHATS_DIR.exists():
+        return
+    for d in CHATS_DIR.iterdir():
+        f = d / "chat.json"
+        if not f.exists():
+            continue
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if data.get("parent_id") == parent_id:
+            _save_chat(data.get("id", d.name), title=data.get("title") or "Conversation",
+                       messages=data.get("messages") or [], mode=data.get("mode") or "direct",
+                       modality=data.get("modality") or "text", model_a=data.get("model_a"),
+                       model_b=data.get("model_b"), eval_id=data.get("eval_id"),
+                       tools_guide=bool(data.get("tools_guide")),
+                       agent_backend=data.get("agent_backend"), parent_id="")
 
 
 def _find_chat_by_eval(eval_id: str) -> Optional[dict]:
@@ -1263,6 +1302,140 @@ def api_memory_save():
                     "folder": str(folder) if folder else None})
 
 
+_update_cache = {"t": 0.0, "data": None}
+
+
+def _version_tuple(v) -> tuple:
+    parts = []
+    for bit in str(v or "").lstrip("v").split("."):
+        try:
+            parts.append(int(bit))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts) or (0,)
+
+
+@app.route("/api/update-check")
+def api_update_check():
+    """Compare APP_VERSION with the latest GitHub release (cached 6h)."""
+    enabled = load_config().get("update_check") is not False
+    force = request.args.get("force") == "1"
+    now = time.time()
+    if not force and _update_cache["data"] and now - _update_cache["t"] < 6 * 3600:
+        return jsonify(dict(_update_cache["data"], enabled=enabled, cached=True))
+    data = {"current": APP_VERSION, "latest": None, "update": False, "url": None, "error": None}
+    try:
+        r = requests.get("https://api.github.com/repos/Maxusimlive/Arena-Desktop/releases/latest",
+                         headers={"Accept": "application/vnd.github+json",
+                                  "User-Agent": f"Arena-Desktop/{APP_VERSION}"}, timeout=6)
+        if r.status_code == 200:
+            payload = r.json()
+            latest = str(payload.get("tag_name") or "").lstrip("v")
+            data["latest"] = latest or None
+            data["url"] = payload.get("html_url")
+            data["update"] = bool(latest) and _version_tuple(latest) > _version_tuple(APP_VERSION)
+        else:
+            data["error"] = f"GitHub returned {r.status_code}"
+    except Exception as e:
+        data["error"] = f"{type(e).__name__}: {e}"
+    _update_cache.update(t=now, data=data)
+    return jsonify(dict(data, enabled=enabled))
+
+
+def _settings_bundle() -> dict:
+    """Everything Settings export carries: config, memory files, MCP config.
+    Account cookies are never part of it."""
+    bundle = {"app": "Arena Desktop", "version": 1, "config": load_config(),
+              "memory_global": _read_memory_file(GLOBAL_MEMORY_FILE, 100_000)}
+    folder = _chosen_ws()
+    bundle["memory_workspace"] = (
+        _read_memory_file(Path(folder) / MEMORY_FILE_NAME, 100_000) if folder else None)
+    try:
+        mcp_file = connectors._config_path()
+        bundle["mcp"] = json.loads(mcp_file.read_text(encoding="utf-8")) if mcp_file.exists() else None
+    except Exception:
+        bundle["mcp"] = None
+    return bundle
+
+
+@app.route("/api/settings/export")
+def api_settings_export():
+    return jsonify(_settings_bundle())
+
+
+@app.route("/api/settings/import", methods=["POST"])
+def api_settings_import():
+    data = request.get_json(silent=True) or {}
+    if data.get("app") != "Arena Desktop" or not isinstance(data.get("config"), dict):
+        return jsonify({"error": "That file is not an Arena Desktop settings export.",
+                        "code": "bad_file"}), 400
+    backup_dir = COOKIE_FILE.parent / "backups"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        (backup_dir / f"settings-{stamp}.json").write_text(
+            json.dumps(_settings_bundle(), ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError as e:
+        return jsonify({"error": f"Could not back up the current settings first: {e}",
+                        "code": "backup_failed"}), 500
+    cfg = load_config()
+    cfg.update(data["config"])
+    save_config(cfg)
+    try:
+        if isinstance(data.get("memory_global"), str):
+            GLOBAL_MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            GLOBAL_MEMORY_FILE.write_text(data["memory_global"], encoding="utf-8")
+        folder = _chosen_ws()
+        if folder and isinstance(data.get("memory_workspace"), str):
+            (Path(folder) / MEMORY_FILE_NAME).write_text(data["memory_workspace"], encoding="utf-8")
+        if isinstance(data.get("mcp"), (dict, list)):
+            mcp_file = connectors._config_path()
+            mcp_file.parent.mkdir(parents=True, exist_ok=True)
+            mcp_file.write_text(json.dumps(data["mcp"], ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError as e:
+        return jsonify({"error": f"Import partially failed: {e}", "code": "save_failed"}), 500
+    return jsonify({"ok": True, "backup": stamp})
+
+
+_URL_RE = re.compile(r"(https?://[A-Za-z0-9.\-]+)(/[^\s'\"]*)?")
+
+
+def _redact_urls(line: str) -> str:
+    """Reduce URLs in a log line to scheme+host+path (never the query)."""
+    return _URL_RE.sub(lambda m: m.group(1) + (m.group(2) or "").split("?")[0], line)
+
+
+@app.route("/api/diagnostics")
+def api_diagnostics():
+    """A copyable support report: versions and state, no prompts or cookies."""
+    import platform as _platform
+    try:
+        signed_in = COOKIE_FILE.exists() and COOKIE_FILE.stat().st_size > 0
+    except OSError:
+        signed_in = False
+    lines = [
+        f"Arena Desktop {APP_VERSION}",
+        f"Platform: {_platform.platform()}",
+        f"Python: {_platform.python_version()}",
+        f"Packaged EXE: {bool(getattr(sys, 'frozen', False))}",
+        f"Engine window: {_engine_on()}",
+        f"Signed in (cookie present): {bool(signed_in)}",
+        f"Permission mode: {_perm_mode()}",
+        f"Workspace folder chosen: {_chosen_ws() is not None}",
+        f"Memory enabled: {_memory_enabled()}",
+        f"Local chats: {len(_list_chats())}",
+    ]
+    try:
+        tail = (COOKIE_FILE.parent / "desktop.log").read_text(
+            encoding="utf-8", errors="replace").splitlines()[-60:]
+    except OSError:
+        tail = []
+    if tail:
+        lines += ["", "--- desktop.log, last lines (URLs reduced to host+path) ---"]
+        lines += [_redact_urls(line) for line in tail]
+    return jsonify({"text": "\n".join(lines)})
+
+
 def _archive_agentic_on_arena(session_id: str) -> Optional[str]:
     """POST /api/chat/{id}/archive (Arena Agent sessions). Error or None."""
     path = contracts.PATHS["chat_archive"].format(
@@ -1354,6 +1527,7 @@ def api_chat_delete(chat_id):
                                         "Not signed in, so the chat could not be archived on Arena.")
     if not _delete_chat(chat_id):
         return jsonify({"error": "Chat not found"}), 404
+    _orphan_children(chat_id)
     return jsonify({"ok": True, "arena": arena_state, "arena_error": arena_error})
 
 
@@ -2788,6 +2962,156 @@ def _native_file_bridge(files, native_state):
     return written
 
 
+MAX_SUBAGENTS = 3
+
+
+def _delegate_models() -> list:
+    """[(id, name)] of text models a parent model may pick for a sub-agent."""
+    try:
+        ids = _allowed_model_ids("direct", "text")
+    except Exception:
+        ids = set()
+    return [(mid, _model_name(mid) or mid) for mid in sorted(ids)[:14]]
+
+
+def _resolve_delegate_model(raw) -> tuple:
+    """Resolve a parent's <model> choice to (model_id, display_name, auto)."""
+    text = str(raw or "").strip()
+    if text:
+        low = text.lower()
+        models = _delegate_models()
+        for mid, name in models:
+            if low == str(mid).lower() or low == name.lower():
+                return mid, name, False
+        for mid, name in models:
+            if low in name.lower() or low in str(mid).lower():
+                return mid, name, False
+    auto = _auto_agent_model()
+    if auto:
+        mid = auto.get("model_id", auto.get("id"))
+        return mid, (_model_name(mid) or auto.get("name") or "Auto"), True
+    return None, "Auto", True
+
+
+def _run_subagent(client, parent_conv: dict, call: dict, lane: str, child_id: str):
+    """Run one delegated sub-agent in its own child chat.
+
+    Yields SSE events for the parent stream (permissions pass through so the
+    user can answer them in the parent chat; the child's own text stays in
+    the child chat) and returns (ok, status, output, extra) where output is
+    the child's final summary \u2014 the only thing the parent model sees.
+    Children run sequentially on the parent's thread, so the parent's Stop
+    event and permission chat tagging apply to them as well.
+    """
+    params = call.get("params") or {}
+    task = str(params.get("task") or params.get("prompt") or "").strip()
+    extra = {"child_id": child_id}
+    if not task:
+        return False, "error", "delegate_task needs a <task> describing the sub-task.", extra
+    smode = str(params.get("mode") or "research").strip().lower()
+    if smode not in ("research", "work") or _perm_mode() == "plan":
+        smode = "research"
+    model_id, model_name, auto = _resolve_delegate_model(params.get("model"))
+    extra.update({"model": model_name, "mode": smode, "task": task[:300]})
+    ran = int(parent_conv.get("subagents_run") or 0)
+    if ran >= MAX_SUBAGENTS:
+        return False, "error", (f"Sub-agent limit reached ({MAX_SUBAGENTS} per turn). "
+                                "Finish the work yourself or ask the user to continue."), extra
+    parent_conv["subagents_run"] = ran + 1
+    intro = ("[Arena Desktop] You are a sub-agent handling a delegated task for the main agent "
+             "in a parent chat. Work only on the task below. When you are done, finish with a "
+             "compact structured summary: what you did or found, the files involved (paths and "
+             "line references where useful), and any open questions. Only that summary is "
+             "returned to the main agent.\n")
+    if smode == "research":
+        intro += "You are read-only: explore and report, do not modify anything.\n"
+    child_message = intro + "\nTask:\n" + task
+    title = "Sub-agent: " + " ".join(task.split())[:44]
+    child_history = [{"role": "user", "text": child_message}]
+    child_conv = {"eval_id": None, "new": True, "mode": contracts.api_mode("direct"),
+                  "modality": contracts.api_modality("text"), "model_a": model_id,
+                  "model_b": None, "chat_id": child_id, "auto_model": bool(auto),
+                  "reasoning": {"a": "", "b": ""}, "lane_errors": {"a": [], "b": []},
+                  "attachments": None, "guide_sent": False, "mcp_guide_hash": None,
+                  "memory_hash": None, "title": title, "tools": [],
+                  "allow_delegate": False, "delegate_sent": True,
+                  "allowed_tools": (set(agent.READ_ONLY_TOOLS) if smode == "research" else None)}
+    prefix = ""
+    if _memory_enabled():
+        block, _hash = _memory_block(_chosen_ws())
+        prefix = block or ""
+    _generation_started(child_id)
+    prev_error = getattr(_tl, "error", None)
+    out = {"a": "", "b": ""}
+    summary = ""
+    child_error = None
+    try:
+        _save_chat(child_id, title=title, messages=list(child_history), mode="direct",
+                   modality="text", model_a=model_id, model_b=None, eval_id=None,
+                   parent_id=parent_conv.get("chat_id"))
+        yield _sse({"type": "subagent", "status": "started", "child_id": child_id,
+                    "task": task[:300], "model_name": model_name, "mode": smode, "lane": lane})
+        gen = _agent_run(client, prefix + child_message, child_conv)
+        while True:
+            try:
+                ev = next(gen)
+            except StopIteration as stop:
+                out = stop.value or out
+                break
+            if not isinstance(ev, str) or not ev.startswith("data: "):
+                continue
+            try:
+                parsed = json.loads(ev[6:])
+            except ValueError:
+                continue
+            etype = parsed.get("type")
+            if etype in ("permission", "permission_done", "ping"):
+                yield ev
+            elif etype == "notice":
+                yield _sse(dict(parsed, subagent=child_id))
+            elif etype == "tool_call":
+                yield _sse({"type": "subagent", "status": "tool", "child_id": child_id, "lane": lane,
+                            "summary": parsed.get("summary") or parsed.get("tool") or ""})
+            elif etype == "error":
+                child_error = parsed.get("message") or child_error
+            # text / reasoning / tool_result / round stay inside the child chat
+    except Exception as e:
+        child_error = f"{type(e).__name__}: {e}"
+        LOG.exception("sub-agent run failed")
+    finally:
+        _tl.error = prev_error
+        summary = agent.strip_tool_calls(out.get("a") or "").strip()
+        reply = {"role": "assistant", "text": summary, "text_b": "",
+                 "names": {"a": model_name, "b": None}}
+        reasoning = (child_conv.get("reasoning") or {}).get("a")
+        if reasoning:
+            reply["reasoning"] = reasoning
+        if child_conv.get("tools"):
+            reply["tools"] = child_conv["tools"]
+        if child_error and not summary:
+            reply["error"] = child_error
+        child_history.append(reply)
+        try:
+            _save_chat(child_id, title=title, messages=child_history, mode="direct",
+                       modality="text", model_a=model_id, model_b=None,
+                       eval_id=(child_conv.get("eval_id") if not child_conv.get("new") else None),
+                       tools_guide=True, parent_id=parent_conv.get("chat_id"),
+                       mcp_guide_hash=child_conv.get("mcp_guide_hash"))
+        except Exception:
+            LOG.exception("sub-agent chat save failed")
+        _generation_finished(child_id)
+    if summary:
+        ok, status, output = True, "ok", summary
+    else:
+        ok, status = False, "error"
+        output = (f"The sub-agent finished without a summary"
+                  f"{f' ({child_error})' if child_error else ''}. "
+                  f"Its chat is saved as \u201c{title}\u201d.")
+    yield _sse({"type": "subagent", "status": "done", "child_id": child_id,
+                "ok": ok, "model_name": model_name, "mode": smode, "lane": lane})
+    return ok, status, output, extra
+
+
 def _agent_run(client: ArenaClient, message: str, conv: dict):
     """Local tools in a text chat: each model asks for tools and the app runs them under the permission mode.
     In Battle and Side by Side each model writes to its own copy of the folder (option-a, option-b)."""
@@ -2809,20 +3133,31 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
         yield _sse({"type": "agent", "stage": f"MCP tools available: {len(mcp_tools)}",
                     "connectors": sorted({item['server'] for item in mcp_tools.values()})})
     mcp_hash = hashlib.sha1(mcp_guide.encode("utf-8")).hexdigest()[:12] if mcp_guide else None
+    delegate_section = agent.delegate_guide(_delegate_models()) if conv.get("allow_delegate") else ""
     if conv["new"] or not conv.get("guide_sent"):
         # Also covers enabling tools mid-conversation (e.g. the Direct tools
         # toggle): the model only learns the tool protocol from this guide.
         content = agent.guide(root, permissions.MODES[mode], agent.MODE_NOTES[mode], dual,
-                              extra_tools=mcp_guide) + message
+                              extra_tools=mcp_guide, delegate=delegate_section) + message
         conv["mcp_guide_hash"] = mcp_hash
+        if delegate_section:
+            conv["delegate_sent"] = True
     elif mcp_guide and mcp_hash != conv.get("mcp_guide_hash"):
         # The connector tool list is only resent when it changed, not on
         # every turn of the conversation.
         content = ("[Arena Desktop] Connector tools available for this turn:\n" + mcp_guide
                    + "\nUser message:\n" + message)
         conv["mcp_guide_hash"] = mcp_hash
+        if delegate_section and not conv.get("delegate_sent"):
+            content = delegate_section + content
+            conv["delegate_sent"] = True
     else:
         content = message
+        if delegate_section and not conv.get("delegate_sent"):
+            # Chats started before sub-agents existed learn about them once.
+            content = ("[Arena Desktop] Sub-agent delegation is now available in this chat:\n"
+                       + delegate_section + "\nUser message:\n" + message)
+            conv["delegate_sent"] = True
     sig_counts: dict = {}
     for rnd in range(1, agent.MAX_ROUNDS + 1):
         out = yield from _turn(client, content, conv)
@@ -2857,6 +3192,46 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                 if _stopped():
                     outcomes.append((call, "skipped: the user pressed Stop", ""))
                     continue
+                if call["name"] == "delegate_task":
+                    child_id = generate_uuidv7()
+                    task_text = str((call.get("params") or {}).get("task") or "").strip()
+                    info = {"tool": "delegate_task", "model": l, "name": "Sub-agent",
+                            "summary": "Sub-agent: " + (" ".join(task_text.split())[:120] or "task"),
+                            "child_id": child_id, "inside": True, "path": task_text[:400]}
+                    yield _sse(dict(info, type="tool_call"))
+                    if not conv.get("allow_delegate"):
+                        ok, status = False, "error"
+                        output = "delegate_task is not available inside a sub-agent; do the work directly."
+                        extra = {"child_id": child_id}
+                    else:
+                        ok, status, output, extra = yield from _run_subagent(client, conv, call, l, child_id)
+                    outcomes.append((call, status, output))
+                    conv.setdefault("tools", []).append(
+                        {"tool": "delegate_task", "summary": info["summary"], "lane": l,
+                         "diff": None, "ok": ok, "status": status,
+                         "child_id": extra.get("child_id"), "model": extra.get("model"),
+                         "mode": extra.get("mode")})
+                    yield _sse({"type": "tool_result", "model": l, "tool": "delegate_task",
+                                "child_id": extra.get("child_id"), "ok": ok, "status": status,
+                                "output": (output or "")[:4000]})
+                    continue
+                allowed = conv.get("allowed_tools")
+                if allowed is not None and call["name"] not in allowed:
+                    entry_ro = mcp_tools.get(call["name"])
+                    mcp_read_only = bool(entry_ro and (entry_ro.get("annotations") or {}).get("readOnlyHint") is True)
+                    if not mcp_read_only:
+                        info = {"tool": call["name"], "model": l, "inside": True,
+                                "summary": f"{call['name']} (read-only sub-agent)"}
+                        yield _sse(dict(info, type="tool_call"))
+                        ok, output = False, ""
+                        status = "blocked: this sub-agent is read-only (research mode)"
+                        outcomes.append((call, status, output))
+                        conv.setdefault("tools", []).append(
+                            {"tool": call["name"], "summary": info.get("summary"), "lane": l,
+                             "diff": None, "ok": ok, "status": status})
+                        yield _sse({"type": "tool_result", "model": l, "tool": call["name"],
+                                    "ok": ok, "status": status, "output": ""})
+                        continue
                 mcp_entry = mcp_tools.get(call["name"])
                 mcp_args = None
                 mcp_error = None
@@ -3355,6 +3730,7 @@ def _api_chat_impl():
             "guide_sent": bool(existing.get("tools_guide")),
             "mcp_guide_hash": existing.get("mcp_guide_hash"),
             "memory_hash": existing.get("memory_hash"),
+            "delegate_sent": bool(existing.get("delegate_guide")),
             "title": existing.get("title") or message[:50], "tools": []}
     history = list(existing.get("messages") or [])
     user_entry = {"role": "user", "text": message}
@@ -3401,6 +3777,9 @@ def _api_chat_impl():
         ui_mode != "agent"
         and _chosen_ws() is not None and modality in ("chat", "search")
         and (tools_req is None or tools_req is True))
+    # Sub-agent delegation belongs to top-level tool chats; child chats
+    # (parent_id set) cannot delegate further.
+    conv["allow_delegate"] = bool(tools_on) and not existing.get("parent_id")
 
     def generate():
         _tl.error = None
@@ -3448,6 +3827,7 @@ def _api_chat_impl():
                    agent_backend=("local" if ui_mode == "agent" else None),
                    mcp_guide_hash=conv.get("mcp_guide_hash"),
                    memory_hash=conv.get("memory_hash"),
+                   delegate_guide=bool(conv.get("delegate_sent")),
                    pending_digest=("" if conv.get("digest_used") else None))
         if (not reply["text"].strip() and not reply["text_b"].strip()
                 and modality in ("chat", "search")

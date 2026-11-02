@@ -62,11 +62,15 @@ a = Analysis(
         'werkzeug',
         'webview',
         'webview.platforms.edgechromium',
+        'pystray',
+        'pystray._win32',
+        'PIL',
+        'PIL.Image',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'matplotlib', 'numpy', 'pandas', 'PIL', 'scipy'],
+    excludes=['tkinter', 'matplotlib', 'numpy', 'pandas', 'scipy'],
     noarchive=False,
 )
 

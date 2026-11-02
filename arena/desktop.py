@@ -10,7 +10,10 @@ import socket
 import sys
 import threading
 import time
+import urllib.parse
 from pathlib import Path
+
+LOG = logging.getLogger("arena.desktop")
 
 
 def find_free_port() -> int:
@@ -33,6 +36,127 @@ def wait_port(port: int, timeout: float = 10.0) -> bool:
         except OSError:
             time.sleep(0.1)
     return False
+
+
+def _flag_value(name):
+    """Value after a --flag in argv, or None (flags: --profile, --mode, --background)."""
+    if name in sys.argv:
+        i = sys.argv.index(name)
+        if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("--"):
+            return sys.argv[i + 1]
+    return None
+
+
+def _switch_profile(port, wanted):
+    """--profile <id|email>: activate that account on the local server before the UI loads."""
+    try:
+        import requests
+        data = requests.get(f"http://127.0.0.1:{port}/api/accounts", timeout=5).json()
+        items = data.get("accounts") if isinstance(data, dict) else data
+        for acc in items or []:
+            if str(acc.get("id")) == wanted or str(acc.get("email") or "").lower() == wanted.lower():
+                if acc.get("current"):
+                    return
+                requests.post(f"http://127.0.0.1:{port}/api/accounts/switch",
+                              json={"id": acc.get("id"), "account_id": acc.get("id")}, timeout=15)
+                return
+        LOG.info("profile %r not found", wanted)
+    except Exception:
+        LOG.exception("profile switch failed")
+
+
+class Tray:
+    """System-tray icon + global Ctrl+Alt+A show/hide hotkey (Windows, best effort).
+
+    Optional chrome around the window: every failure is logged and the app
+    keeps running without it. With the tray on, closing the window hides it
+    instead of quitting; Quit lives in the tray menu."""
+
+    def __init__(self, window, icon_path):
+        self.window = window
+        self.icon_path = icon_path
+        self.icon = None
+        self.visible = True
+        self.quitting = False
+
+    def show_window(self):
+        self.visible = True
+        try:
+            self.window.show()
+            self.window.restore()
+        except Exception:
+            pass
+
+    def hide_window(self):
+        self.visible = False
+        try:
+            self.window.hide()
+        except Exception:
+            pass
+
+    def toggle(self):
+        self.hide_window() if self.visible else self.show_window()
+
+    def on_closing(self):
+        if self.quitting:
+            return True
+        self.hide_window()
+        return False  # cancel the close; the app lives in the tray
+
+    def quit(self):
+        self.quitting = True
+        try:
+            if self.icon:
+                self.icon.stop()
+        except Exception:
+            pass
+        os._exit(0)
+
+    def start(self) -> bool:
+        try:
+            import pystray
+            from PIL import Image
+            image = Image.open(self.icon_path)
+        except Exception:
+            LOG.exception("tray unavailable (pystray/Pillow/icon)")
+            return False
+        menu = pystray.Menu(
+            pystray.MenuItem("Open Arena Desktop", lambda *_: self.show_window(), default=True),
+            pystray.MenuItem("Hide", lambda *_: self.hide_window()),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Quit", lambda *_: self.quit()),
+        )
+        self.icon = pystray.Icon("Arena Desktop", image, "Arena Desktop", menu)
+        threading.Thread(target=self._run_icon, daemon=True).start()
+        if sys.platform == "win32":
+            threading.Thread(target=self._hotkey_loop, daemon=True).start()
+        return True
+
+    def _run_icon(self):
+        try:
+            run_detached = getattr(self.icon, "run_detached", None)
+            if run_detached:
+                run_detached()
+            else:
+                self.icon.run()
+        except Exception:
+            LOG.exception("tray icon stopped")
+
+    def _hotkey_loop(self):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            MOD_ALT, MOD_CONTROL, VK_A, WM_HOTKEY = 0x0001, 0x0002, 0x41, 0x0312
+            user32 = ctypes.WinDLL("user32")
+            if not user32.RegisterHotKey(None, 1, MOD_CONTROL | MOD_ALT, VK_A):
+                LOG.info("global hotkey Ctrl+Alt+A could not be registered")
+                return
+            msg = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message == WM_HOTKEY:
+                    self.toggle()
+        except Exception:
+            LOG.exception("global hotkey unavailable")
 
 
 def _dialog(name: str):
@@ -209,14 +333,25 @@ def main():
     port = int(os.environ.get("ARENA_PORT") or 0) or find_free_port()
     threading.Thread(target=start_flask, args=(port,), daemon=True).start()
     wait_port(port)
+    profile = _flag_value("--profile")
+    if profile:
+        _switch_profile(port, profile)
 
     base = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
     ico = base / "assets" / "arena-cli.ico"
 
     webview.settings["ALLOW_DOWNLOADS"] = True  # zip and media downloads from the UI
+    from arena.config import load_config as _load_cfg
+    cfg = _load_cfg()
+    background = "--background" in sys.argv
+    start_url = f"http://127.0.0.1:{port}/"
+    mode_flag = _flag_value("--mode")
+    if mode_flag:
+        start_url += "?mode=" + urllib.parse.quote(mode_flag)
     bridge = JsBridge()
-    main_win = webview.create_window("Arena Desktop", f"http://127.0.0.1:{port}", width=1280, height=840,
-                                     min_size=(860, 600), background_color="#242422", text_select=True, js_api=bridge)
+    main_win = webview.create_window("Arena Desktop", start_url, width=1280, height=840,
+                                     min_size=(860, 600), background_color="#242422", text_select=True,
+                                     js_api=bridge, hidden=background)
     bridge._window = main_win
     engine_win = webview.create_window("arena.ai - Arena Desktop", contracts.ORIGIN, width=1000, height=760, x=120, y=120,
                                        hidden=True, background_color="#242422", js_api=ENGINE.bridge())
@@ -225,6 +360,14 @@ def main():
     # human checks need a separate window rather than a reparented child view.
     ENGINE.dock = None
     main_win.events.closed += lambda *a: os._exit(0)
+    # Optional tray life: close hides to the tray; Ctrl+Alt+A toggles the window.
+    if cfg.get("tray_enabled") or background:
+        tray = Tray(main_win, base / "assets" / "logo.png")
+        tray.visible = not background
+        if tray.start():
+            main_win.events.closing += tray.on_closing
+        elif background:
+            main_win.show()  # no tray to bring it back from: never start invisible
 
     storage = CONFIG_DIR / "webview"
     storage.mkdir(parents=True, exist_ok=True)

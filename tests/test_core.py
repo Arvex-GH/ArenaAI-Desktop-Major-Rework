@@ -2387,3 +2387,117 @@ def test_compact_guards_and_memory_endpoints(web, monkeypatch, tmp_path):
     events(c.post("/api/chat", json={"message": "hello", "mode": "direct",
                                      "modality": "text", "model_id": "m1", "tools": False}))
     assert "be brief" not in sent[-1][1]["userMessage"]["content"]
+
+
+def _delegate_parent(web, tmp_path, monkeypatch):
+    """A local-agent parent chat ready to receive a delegated turn."""
+    appmod, c, cfg, use, sent = web
+    ws = tmp_path / "ws"; ws.mkdir(exist_ok=True)
+    cfg["workspace_dir"] = str(ws)
+    cfg["permission_mode"] = "bypassPermissions"
+    monkeypatch.setattr(appmod, "GLOBAL_MEMORY_FILE", tmp_path / "none.md")
+    appmod._ui_mode, appmod._ui_modality = "agent", "text"
+    cid = "aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa"
+    appmod._save_chat(cid, title="Parent",
+                      messages=[{"role": "user", "text": "hi"}, {"role": "assistant", "text": "hi"}],
+                      mode="agent", modality="text", model_a="m1",
+                      eval_id="bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb",
+                      tools_guide=True, agent_backend="local", delegate_guide=True)
+    return appmod, c, cfg, use, sent, cid, ws
+
+
+def test_subagent_delegation_flow(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent, cid, ws = _delegate_parent(web, tmp_path, monkeypatch)
+    delegate = ('<tool name="delegate_task"><task>Inspect the project layout</task>'
+                '<mode>research</mode><model>m2</model></tool>')
+    use(FakeResp(["a0:" + json.dumps(delegate)]),
+        FakeResp(['a0:"Summary: two files, entry at main.py:1"']),
+        FakeResp(['a0:"Parent final answer"']))
+    ev = events(c.post("/api/chat", json={"message": "delegate please", "chat_id": cid}))
+    assert len(sent) == 3
+    child_body = sent[1][1]
+    assert child_body.get("modelAId") == "m2"  # the parent picked the model
+    assert "sub-agent" in child_body["userMessage"]["content"]
+    assert "Inspect the project layout" in child_body["userMessage"]["content"]
+    # Only the child's summary travels back into the parent conversation.
+    assert "Summary: two files" in sent[2][1]["userMessage"]["content"]
+    # The child is a real chat nested under the parent.
+    parent = appmod._load_chat(cid)
+    step = next(t for m in parent["messages"] for t in (m.get("tools") or [])
+                if t.get("tool") == "delegate_task")
+    child = appmod._load_chat(step["child_id"])
+    assert child["parent_id"] == cid and child["mode"] == "direct"
+    listed = {c0["id"]: c0 for c0 in c.get("/api/chats").get_json()}
+    assert step["child_id"] not in listed
+    assert listed[cid]["children"][0]["id"] == step["child_id"]
+    assert any(e.get("type") == "subagent" and e.get("status") == "done" for e in ev)
+
+
+def test_subagent_research_is_read_only_and_cannot_delegate(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent, cid, ws = _delegate_parent(web, tmp_path, monkeypatch)
+    delegate = '<tool name="delegate_task"><task>Try to write and delegate</task></tool>'
+    child_try = ('<tool name="write_file"><path>pwned.txt</path><content>x</content></tool>'
+                 '<tool name="delegate_task"><task>nested</task></tool>')
+    use(FakeResp(["a0:" + json.dumps(delegate)]),
+        FakeResp(["a0:" + json.dumps(child_try)]),
+        FakeResp(['a0:"Child summary"']),
+        FakeResp(['a0:"Parent done"']))
+    events(c.post("/api/chat", json={"message": "go", "chat_id": cid}))
+    assert not (ws / "pwned.txt").exists()
+    child_followup = sent[2][1]["userMessage"]["content"]
+    assert "read-only" in child_followup
+    assert "not available inside a sub-agent" in child_followup
+
+
+def test_update_check_compares_versions(web, monkeypatch):
+    appmod, c, cfg, use, sent = web
+    class _R:
+        status_code = 200
+        def __init__(self, tag):
+            self._tag = tag
+        def json(self):
+            return {"tag_name": self._tag, "html_url": "https://example.invalid/rel"}
+    appmod._update_cache.update(t=0.0, data=None)
+    monkeypatch.setattr(appmod.requests, "get", lambda *a, **k: _R("v9.9.9"))
+    got = c.get("/api/update-check?force=1").get_json()
+    assert got["update"] is True and got["latest"] == "9.9.9"
+    monkeypatch.setattr(appmod.requests, "get", lambda *a, **k: _R("v0.0.1"))
+    got = c.get("/api/update-check?force=1").get_json()
+    assert got["update"] is False
+
+
+def test_settings_export_import_roundtrip(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent = web
+    monkeypatch.setattr(appmod, "GLOBAL_MEMORY_FILE", tmp_path / "mem" / "memory.md")
+    c.post("/api/memory", json={"global": "- fact A", "enabled": True})
+    bundle = c.get("/api/settings/export").get_json()
+    assert bundle["app"] == "Arena Desktop" and bundle["memory_global"] == "- fact A"
+    assert "cookie" not in json.dumps(bundle).lower()
+    c.post("/api/memory", json={"global": "- fact B"})
+    r = c.post("/api/settings/import", json=bundle)
+    assert r.status_code == 200
+    assert c.get("/api/memory").get_json()["global"] == "- fact A"
+    backups = list((tmp_path / "backups").glob("settings-*.json"))
+    assert len(backups) == 1
+    assert c.post("/api/settings/import", json={"app": "Other"}).status_code == 400
+
+
+def test_diagnostics_redacts_url_queries(web, tmp_path):
+    appmod, c, cfg, use, sent = web
+    (tmp_path / "desktop.log").write_text(
+        "2026 INFO fetch https://arena.ai/api/chat?token=SECRET1 ok\n", encoding="utf-8")
+    text = c.get("/api/diagnostics").get_json()["text"]
+    assert "SECRET1" not in text and "arena.ai/api/chat" in text
+    assert appmod.APP_VERSION in text
+
+
+def test_portable_config_dir(tmp_path, monkeypatch):
+    import sys as _sys
+    from arena import config as cfgmod
+    exe_dir = tmp_path / "app"; exe_dir.mkdir()
+    (exe_dir / "portable.txt").write_text("", encoding="utf-8")
+    monkeypatch.setattr(_sys, "frozen", True, raising=False)
+    monkeypatch.setattr(_sys, "executable", str(exe_dir / "Arena-Desktop.exe"))
+    assert cfgmod._config_dir() == exe_dir / "data"
+    monkeypatch.setattr(_sys, "frozen", False, raising=False)
+    assert cfgmod._config_dir().name == ".arena-personal"

@@ -1238,6 +1238,9 @@ svg { display: block; }
 @keyframes compact-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .chat-divider { display: flex; align-items: center; gap: 8px; margin: 18px auto; max-width: 640px; padding: 8px 12px; color: #aeb8b1; background: #232826; border: 1px dashed #3d4540; border-radius: 8px; font-size: 12px; line-height: 1.5; }
 .chat-divider .icon { width: 14px; height: 14px; flex: 0 0 auto; color: #8fa398; }
+.chat-children { margin: 2px 0 4px 16px; padding-left: 8px; border-left: 1px solid #343c37; }
+.chat-children .chat-row { opacity: .92; }
+button.subagent-open { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; text-align: left; }
 .memory-field { width: 100%; min-height: 110px; resize: vertical; }
 .setting-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0 4px; color: #dfe5e0; font-size: 13px; cursor: pointer; }
 .composer-chip.permission-chip { color: #9fbaa3; }

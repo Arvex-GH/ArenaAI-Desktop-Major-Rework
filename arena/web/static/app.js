@@ -508,6 +508,10 @@
     compactChat(id) { return this.request(`/api/chats/${encodeURIComponent(id)}/compact`, { method: 'POST', body: {} }); },
     getMemory() { return this.request('/api/memory'); },
     saveMemory(body) { return this.request('/api/memory', { method: 'POST', body }); },
+    updateCheck(force = false) { return this.request(`/api/update-check${force ? '?force=1' : ''}`); },
+    exportSettings() { return this.request('/api/settings/export'); },
+    importSettings(bundle) { return this.request('/api/settings/import', { method: 'POST', body: bundle }); },
+    diagnostics() { return this.request('/api/diagnostics'); },
     getHistory() { return this.request('/api/history'); },
     getPermissions() { return this.request('/api/permissions'); },
     decidePermission(id, decision) {
@@ -986,7 +990,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '4.15.0',
+        app_version: '4.16.0',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -1178,6 +1182,10 @@
       if ('enabled' in body) demoStore.memoryEnabled = Boolean(body.enabled);
       return { ok: true, enabled: demoStore.memoryEnabled !== false, demo: true };
     },
+    async updateCheck() { await sleep(60); return { enabled: true, current: 'demo', latest: null, update: false, url: null, demo: true }; },
+    async exportSettings() { await sleep(60); return { app: 'Arena Desktop', version: 1, config: {}, memory_global: demoStore.memoryGlobal || '', memory_workspace: demoStore.memoryWorkspace || '', mcp: null, demo: true }; },
+    async importSettings(bundle = {}) { await sleep(60); if (typeof bundle.memory_global === 'string') demoStore.memoryGlobal = bundle.memory_global; return { ok: true, backup: 'demo', demo: true }; },
+    async diagnostics() { await sleep(60); return { text: 'Arena Desktop (demo)\nDiagnostics are illustrative in demo mode.', demo: true }; },
     async archiveArenaChat(id) {
       demoStore.cloudChats = demoStore.cloudChats.filter((item) => item.eval_id !== id && item.id !== id);
       await sleep(120);
@@ -1630,6 +1638,8 @@ You can start with a more structured option: one script, short captions, and a c
     rateLimitUntil: 0,
     historyChars: 0,
     memoryData: null,
+    updateInfo: null,
+    appSettings: null,
     _rateLimitTimer: null,
     appVersion: '',
     workspaceChosen: false,
@@ -1869,6 +1879,8 @@ You can start with a more structured option: one script, short captions, and a c
       pinned: Boolean(raw.pinned ?? raw.starred),
       source: raw.source === 'arena' ? 'arena' : 'local',
       eval_id: typeof raw.eval_id === 'string' ? raw.eval_id : null,
+      parent_id: raw.parent_id ? String(raw.parent_id) : null,
+      children: Array.isArray(raw.children) ? raw.children.map((kid) => normalizeChat(kid)).filter(Boolean) : [],
       raw
     };
   }
@@ -2293,6 +2305,80 @@ You can start with a more structured option: one script, short captions, and a c
     state.phase = 'ready';
   }
 
+  function applyStartModeParam() {
+    try {
+      const wanted = new URLSearchParams(window.location.search).get('mode');
+      if (!wanted || state.activeChatId) return;
+      if (!['battle', 'agent', 'side-by-side', 'direct'].includes(wanted)) return;
+      if (wanted !== state.mode) {
+        state.mode = wanted;
+        state.selectionTouched = true;
+        Promise.resolve(API.setMode?.(wanted)).catch(() => {});
+        updateComposerState();
+      }
+    } catch { /* malformed URL: ignore */ }
+  }
+
+  function checkForUpdatesOnce() {
+    if (state.demo || state.updateInfo) return;
+    API.updateCheck().then((info) => {
+      state.updateInfo = info;
+      if (info?.enabled !== false && info?.update && info?.latest) {
+        toast(`Arena Desktop ${info.latest} is available. Open Settings \u2192 About to get it.`, 'info', 'Update available');
+      }
+    }).catch(() => {});
+  }
+
+  async function exportSettingsFile() {
+    const bundle = await API.exportSettings();
+    const ui = {};
+    try {
+      for (let i = 0; i < window.localStorage.length; i += 1) {
+        const k = window.localStorage.key(i);
+        if (k && (k.startsWith('arenaDesktop.') || k.startsWith('ap-'))) ui[k] = window.localStorage.getItem(k);
+      }
+    } catch { /* storage unavailable */ }
+    const blob = new Blob([JSON.stringify({ ...bundle, ui }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = el('a', { href: url, download: 'arena-desktop-settings.json' });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast('Settings exported (no account cookies inside).', 'success', 'Settings');
+  }
+
+  async function importSettingsFile(file) {
+    let bundle;
+    try {
+      bundle = JSON.parse(await file.text());
+    } catch {
+      toast('That file is not valid JSON.', 'error', 'Import settings');
+      return;
+    }
+    if (bundle?.ui && typeof bundle.ui === 'object') {
+      try {
+        Object.entries(bundle.ui).forEach(([k, v]) => {
+          if ((k.startsWith('arenaDesktop.') || k.startsWith('ap-')) && typeof v === 'string') window.localStorage.setItem(k, v);
+        });
+      } catch { /* ignore */ }
+    }
+    await API.importSettings(bundle);
+    state.memoryData = null;
+    toast('Settings imported. Restart the app if the folder or tray setting changed.', 'success', 'Settings');
+  }
+
+  async function copyDiagnosticsText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('Diagnostics copied \u2014 versions and state only, no prompts or cookies.', 'success', 'Diagnostics');
+    } catch {
+      const area = el('textarea', { class: 'input mono memory-field', rows: '14', readonly: true });
+      area.value = text;
+      mountModal({ title: 'Diagnostics', content: area, actions: [{ label: 'Done', variant: 'primary' }] });
+    }
+  }
+
   async function loadStatus({ initial = false, quiet = false } = {}) {
     if (!quiet) {
       if (!state.backendReached) state.phase = 'loading';
@@ -2358,6 +2444,10 @@ You can start with a more structured option: one script, short captions, and a c
         state.modelBId = null;
       }
       updateAllUI();
+      if (initial) {
+        applyStartModeParam();
+        checkForUpdatesOnce();
+      }
       if (!initial && (oldMode !== state.mode || oldModality !== state.modality)) loadModels(state.modality, { quiet: true });
       return status;
     } catch (error) {
@@ -2725,7 +2815,15 @@ You can start with a more structured option: one script, short captions, and a c
         ? "There is nothing in the local history for this request."
         : "No local chats yet. Create the first dialogue — it will appear here." }));
     } else {
-      filtered.forEach((chat) => listNode.appendChild(localChatRow(chat)));
+      filtered.forEach((chat) => {
+        listNode.appendChild(localChatRow(chat));
+        const kids = Array.isArray(chat.children) ? chat.children : [];
+        if (kids.length && !state.chatFilter) {
+          const wrap = el('div', { class: 'chat-children' });
+          kids.forEach((kid) => wrap.appendChild(localChatRow(kid)));
+          listNode.appendChild(wrap);
+        }
+      });
     }
 
     listNode.appendChild(chatGroupTitle('cloud', "Only on arena.ai"));
@@ -2989,10 +3087,12 @@ You can start with a more structured option: one script, short captions, and a c
     const cards = lane.activities.map((activity) => {
       const status = activityStatus(activity.status);
       const detail = activity.command || activity.path || activity.detail;
-      const iconName = activity.kind === 'sandbox' ? 'package' : activity.kind === 'webdev' ? 'layout' : activity.kind === 'agent' ? 'spark' : 'terminal';
+      const childId = activity.raw?.child_id;
+      const subModel = activity.raw?.model_name || (activity.raw?.model && !['a', 'b'].includes(activity.raw.model) ? activity.raw.model : '');
+      const iconName = childId ? 'layers' : activity.kind === 'sandbox' ? 'package' : activity.kind === 'webdev' ? 'layout' : activity.kind === 'agent' ? 'spark' : 'terminal';
       const head = el('div', { class: 'activity-head' },
         el('span', { class: 'activity-icon' }, iconEl(iconName)),
-        el('span', { class: 'activity-title', text: activity.name || "Action" }),
+        el('span', { class: 'activity-title', text: childId ? `Sub-agent${subModel ? ' \u00b7 ' + subModel : ''}` : (activity.name || "Action") }),
         el('span', { class: `activity-status ${status.cls}`, text: status.label })
       );
       const card = el('div', { class: `activity-card${status.cls === 'is-err' ? ' is-danger' : ''}` }, head);
@@ -3011,6 +3111,12 @@ You can start with a more structured option: one script, short captions, and a c
       if (activity.url) {
         card.appendChild(el('a', { class: 'preview-link', href: activity.url, target: '_blank', rel: 'noopener noreferrer', title: activity.url },
           iconEl('external'), el('span', { text: activity.url })));
+      }
+      if (childId) {
+        const openBtn = el('button', { class: 'preview-link subagent-open', type: 'button' },
+          iconEl('message'), el('span', { text: 'Open sub-agent chat' }));
+        openBtn.addEventListener('click', () => { void openChat(String(childId)); });
+        card.appendChild(openBtn);
       }
       return card;
     });
@@ -4676,6 +4782,18 @@ You can start with a more structured option: one script, short captions, and a c
         if (output) existing.detail = output;
       } else {
         addActivity(turn, lane, { ...event, name: event.name || "Tool result", detail: output, status: event.status || 'ok' }, 'tool');
+      }
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'subagent') {
+      const act = [...lane.activities].reverse().find((item) => item.raw?.child_id && String(item.raw.child_id) === String(event.child_id));
+      if (act) {
+        act.raw = { ...act.raw, model_name: event.model_name || act.raw.model_name, mode: event.mode || act.raw.mode };
+        if (event.status === 'started' && event.task) act.detail = event.task;
+        if (event.status === 'tool' && event.summary) {
+          act.detail = `${act.detail ? act.detail + '\n' : ''}\u2022 ${event.summary}`.slice(-2400);
+        }
       }
       scheduleChatRender();
       return;
@@ -6787,6 +6905,60 @@ You can start with a more structured option: one script, short captions, and a c
         settingsActionButton('Terms of Use', 'external', async () => { window.open('https://help.arena.ai/articles/5629909088-terms-of-use', '_blank', 'noopener'); }),
         settingsActionButton('Privacy Policy', 'external', async () => { window.open('https://help.arena.ai/articles/3765052346-privacy-policy', '_blank', 'noopener'); })
       ));
+
+      wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'App' }));
+      const info = state.updateInfo;
+      const cfg = state.appSettings || {};
+      if (info?.update) {
+        wrap.appendChild(el('p', { class: 'setting-desc', text: `Version ${info.latest} is available (you have ${info.current}).` }));
+      }
+      const updActions = el('div', { class: 'setting-actions' });
+      if (info?.update && info?.url) {
+        updActions.appendChild(settingsActionButton(`Get ${info.latest}`, 'download', async () => { window.open(info.url, '_blank', 'noopener'); }, { variant: 'primary' }));
+      }
+      updActions.appendChild(settingsActionButton('Check for updates', 'refresh', async () => {
+        const fresh = await API.updateCheck(true);
+        state.updateInfo = fresh;
+        toast(fresh?.update ? `Version ${fresh.latest} is available.` : fresh?.error ? `Could not check: ${fresh.error}` : 'You are up to date.', fresh?.error ? 'warning' : 'info', 'Updates');
+        refreshPanel();
+      }));
+      wrap.appendChild(updActions);
+      const updToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: cfg.update_check !== false, 'aria-label': 'Check for updates automatically' });
+      updToggle.addEventListener('change', async () => {
+        await API.saveSettings({ update_check: updToggle.checked });
+        state.appSettings = { ...(state.appSettings || {}), update_check: updToggle.checked };
+        if (state.updateInfo) state.updateInfo = { ...state.updateInfo, enabled: updToggle.checked };
+      });
+      wrap.appendChild(el('label', { class: 'setting-toggle-row' },
+        el('span', { text: 'Check for updates automatically' }),
+        el('span', { class: 'switch' }, updToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
+      const trayToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: Boolean(cfg.tray_enabled), 'aria-label': 'Keep in system tray when closed' });
+      trayToggle.addEventListener('change', async () => {
+        await API.saveSettings({ tray_enabled: trayToggle.checked });
+        state.appSettings = { ...(state.appSettings || {}), tray_enabled: trayToggle.checked };
+        toast('Tray setting saved \u2014 it takes effect on the next launch. While the tray is on, closing the window hides it and Ctrl+Alt+A shows or hides it.', 'info', 'System tray');
+      });
+      wrap.appendChild(el('label', { class: 'setting-toggle-row' },
+        el('span', { text: 'Keep in system tray when closed' }),
+        el('span', { class: 'switch' }, trayToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
+
+      wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Settings backup' }));
+      const ioActions = el('div', { class: 'setting-actions' });
+      ioActions.appendChild(settingsActionButton('Export settings', 'download', async () => { await exportSettingsFile(); }));
+      const importInput = el('input', { type: 'file', accept: 'application/json,.json', hidden: true, 'aria-hidden': 'true', tabindex: '-1' });
+      importInput.addEventListener('change', async () => {
+        const file = importInput.files?.[0];
+        importInput.value = '';
+        if (file) await importSettingsFile(file);
+      });
+      ioActions.appendChild(settingsActionButton('Import settings\u2026', 'folder', async () => { importInput.click(); }));
+      ioActions.appendChild(settingsActionButton('Copy diagnostics', 'copy', async () => {
+        const data = await API.diagnostics();
+        await copyDiagnosticsText(data?.text || '');
+      }));
+      wrap.appendChild(ioActions);
+      wrap.appendChild(importInput);
+      wrap.appendChild(el('p', { class: 'setting-desc', text: 'Export carries settings, memory files and the MCP connector list \u2014 never account cookies. Import backs up the current settings first.' }));
       return wrap;
     }
 
@@ -6809,6 +6981,8 @@ You can start with a more structured option: one script, short captions, and a c
         loadWorkspaceFromServer({ quiet: true }).then(() => { if (state.settingsTab === 'workspace') refreshPanel(); });
       } else if (tab === 'memory') {
         API.getMemory().then((data) => { state.memoryData = data; if (state.settingsTab === 'memory') refreshPanel(); }).catch(() => {});
+      } else if (tab === 'about') {
+        API.getSettings().then((data) => { state.appSettings = data; if (state.settingsTab === 'about') refreshPanel(); }).catch(() => {});
       }
     }
 

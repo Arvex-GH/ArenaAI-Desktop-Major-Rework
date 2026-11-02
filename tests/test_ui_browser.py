@@ -652,7 +652,7 @@ def test_v47_battle_lane_error_avatar_and_model_logo(site):
                     'engine': {'open': False, 'ready': True},
                     'permission_mode': 'default', 'workspace': 'C:\\test',
                     'pending_permissions': 0, 'generating': False,
-                    'app_version': '4.15.0'})
+                    'app_version': '4.16.0'})
             if path == 'mode' and route.request.method == 'POST':
                 body = route.request.post_data_json or {}
                 return fulfill(route, {'ok': True, 'mode': body.get('mode', 'battle'), 'modality': 'text'})
@@ -1018,6 +1018,32 @@ def test_v415_compact_button_and_memory_settings(site):
         page.locator('.settings-panels .button', has_text='Save memory').click()
         page.wait_for_timeout(600)
         assert page.locator('.memory-field').first.input_value() == '- demo fact: keep answers short'
+        page.keyboard.press('Escape')
+        assert not errors
+        browser.close()
+
+
+def test_v416_about_updates_backup_and_tray_settings(site):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
+        page = browser.new_page(viewport={'width': 1400, 'height': 950})
+        errors = []
+        page.on('pageerror', lambda err: errors.append(str(err)))
+        page.goto(site + '/?demo=1', wait_until='networkidle')
+
+        page.locator('[data-action="settings"]').first.click()
+        page.locator('#settings-tab-about').click()
+        panel = page.locator('.settings-panels')
+        panel.locator('.button', has_text='Check for updates').wait_for()
+        assert panel.locator('.button', has_text='Export settings').count() == 1
+        assert panel.locator('.button', has_text='Copy diagnostics').count() == 1
+        # tray + auto-check switches render
+        assert panel.locator('.setting-toggle-row', has_text='system tray').count() == 1
+        assert panel.locator('.setting-toggle-row', has_text='updates automatically').count() == 1
+        panel.locator('.button', has_text='Check for updates').click()
+        page.wait_for_timeout(700)
+        assert panel.locator('.button', has_text='Check for updates').is_enabled()
         page.keyboard.press('Escape')
         assert not errors
         browser.close()
