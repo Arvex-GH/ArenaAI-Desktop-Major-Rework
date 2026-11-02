@@ -244,7 +244,7 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "4.13.0"
+APP_VERSION = "4.15.0"
 
 
 @app.after_request
@@ -273,7 +273,9 @@ def _save_chat(chat_id: str, title: str, messages: list,
                mode: str = 'battle', modality: str = 'auto',
                model_a: str = None, model_b: str = None, eval_id: str = None,
                source: str = None, tools_guide: bool = None,
-               agent_backend: str = None, native: dict = None):
+               agent_backend: str = None, native: dict = None,
+               mcp_guide_hash: str = None, memory_hash: str = None,
+               pending_digest: str = None):
     if not _validate_chat_id(chat_id):
         return
     chat_dir = CHATS_DIR / chat_id
@@ -299,6 +301,9 @@ def _save_chat(chat_id: str, title: str, messages: list,
         "eval_id": eval_id,
         "source": source or existing.get("source") or "local",
         "tools_guide": bool(tools_guide) if tools_guide is not None else bool(existing.get("tools_guide")),
+        "mcp_guide_hash": mcp_guide_hash if mcp_guide_hash is not None else existing.get("mcp_guide_hash"),
+        "memory_hash": memory_hash if memory_hash is not None else existing.get("memory_hash"),
+        "pending_digest": pending_digest if pending_digest is not None else existing.get("pending_digest"),
         "agent_backend": agent_backend or existing.get("agent_backend"),
         "native": native if native is not None else existing.get("native"),
         "messages": messages,
@@ -450,6 +455,153 @@ def _engine_on() -> bool:
 
 def _perm_mode() -> str:
     return permissions.normalize(load_config().get("permission_mode"))
+
+# ---------- Persistent memory + conversation compaction ----------
+
+MEMORY_FILE_NAME = "MEMORY.md"
+GLOBAL_MEMORY_FILE = COOKIE_FILE.parent / "memory.md"
+CONTEXT_WARN_CHARS = 80_000
+
+
+def _memory_enabled() -> bool:
+    return load_config().get("memory_enabled") is not False
+
+
+def _read_memory_file(path: Path, cap: int) -> str:
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return text[:cap]
+
+
+def _memory_block(folder) -> tuple:
+    """Combined general + project memory, formatted for the model.
+
+    Returns (block, hash); ("", None) when there is nothing to send.  The
+    block travels once per Arena session and again only when it changed
+    (same discipline as the MCP connector guide).
+    """
+    parts = []
+    general = _read_memory_file(GLOBAL_MEMORY_FILE, 3_000)
+    if general:
+        parts.append("General memory (all projects):\n" + general)
+    if folder:
+        project = _read_memory_file(Path(folder) / MEMORY_FILE_NAME, 6_000)
+        if project:
+            parts.append(f"Project memory ({MEMORY_FILE_NAME} in {folder}):\n" + project)
+    if not parts:
+        return "", None
+    body = "\n\n".join(parts)
+    block = ("[Arena Desktop memory \u2014 persistent notes shared across chats. "
+             "Treat them as established facts, decisions and preferences.]\n"
+             + body + "\n[End of memory]\n\n")
+    return block, hashlib.sha1(body.encode("utf-8")).hexdigest()[:12]
+
+
+def _history_chars(messages) -> int:
+    """Approximate Arena-side context size of a chat.
+
+    Only messages after the last compaction marker count (plus the digest
+    that replaced everything before it), so the meter resets after Compact
+    exactly like the real server-side context does.
+    """
+    total = 0
+    start = 0
+    for i, m in enumerate(messages or []):
+        if isinstance(m, dict) and m.get("compact"):
+            start = i + 1
+            total = int(m.get("digest_chars") or 0)
+    for m in (messages or [])[start:]:
+        if isinstance(m, dict):
+            total += len(m.get("text") or "") + len(m.get("text_b") or "")
+    return total
+
+
+def _clip(text: str, cap: int) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= cap else text[:cap].rstrip() + " \u2026"
+
+
+def _build_digest(chat: dict) -> str:
+    """Deterministic summary of a chat, used to seed a fresh Arena session.
+
+    Built locally (never by asking the model \u2014 by the time compaction is
+    needed the model may already be failing in the old session): original
+    task, files touched, and the most recent exchanges.
+    """
+    messages = [m for m in (chat.get("messages") or []) if isinstance(m, dict)]
+    lines = [f"Summary of the earlier conversation \u201c{chat.get('title') or 'Conversation'}\u201d:"]
+    users = [m for m in messages if m.get("role") == "user" and (m.get("text") or "").strip()]
+    if users:
+        lines += ["", "Original task:", _clip(users[0].get("text"), 700)]
+    touched = []
+    for m in messages:
+        for step in (m.get("tools") or []):
+            if not isinstance(step, dict):
+                continue
+            if step.get("tool") in ("write_file", "edit_file") and step.get("summary"):
+                if step["summary"] not in touched:
+                    touched.append(step["summary"])
+    if touched:
+        lines += ["", "File changes made along the way:"] + [f"- {t}" for t in touched[-15:]]
+    picked, budget = [], 3_800
+    for m in reversed(messages):
+        role = m.get("role")
+        if role == "user":
+            text, label = _clip(m.get("text"), 350), "User"
+        elif role == "assistant":
+            text = _clip(agent.strip_tool_calls(m.get("text") or ""), 900)
+            label = "Assistant"
+        else:
+            continue
+        if not text:
+            continue
+        entry = f"{label}: {text}"
+        if len(entry) > budget and picked:
+            break
+        picked.append(entry)
+        budget -= len(entry)
+        if budget <= 0:
+            break
+    if picked:
+        lines += ["", "Most recent exchanges (oldest first):", ""]
+        lines += list(reversed(picked))
+    return "\n".join(lines)[:6_000]
+
+
+def _digest_block(digest: str) -> str:
+    return ("[Arena Desktop \u2014 continued conversation]\n"
+            "This chat continues an earlier conversation whose context was compacted "
+            "to stay within Arena's limits. What came before, in brief:\n\n"
+            + digest +
+            "\n\nThe files in the workspace are the source of truth \u2014 re-read anything "
+            "you need instead of guessing. Now answer the user's message below.\n\n"
+            "User message:\n")
+
+
+def _append_digest_to_memory(chat: dict, digest: str):
+    """Save the compaction digest into the project memory file, so the work
+    is available to future chats in this folder too, not only this one."""
+    folder = _chosen_ws()
+    if not folder or not _memory_enabled():
+        return None
+    path = Path(folder) / MEMORY_FILE_NAME
+    stamp = datetime.now().strftime("%Y-%m-%d")
+    entry = (f"\n## Session digest \u2014 {chat.get('title') or 'Conversation'} \u2014 {stamp}\n\n"
+             + digest + "\n")
+    try:
+        if path.exists():
+            current = path.read_text(encoding="utf-8")
+        else:
+            current = ("# Project memory\n\nPersistent notes shared across Arena Desktop "
+                       "chats in this folder, kept by the user and the models. "
+                       "Session digests are appended automatically on Compact.\n")
+        path.write_text(current.rstrip() + "\n" + entry, encoding="utf-8")
+    except OSError:
+        return None
+    return str(path)
+
 
 
 def _get_me(client: ArenaClient):
@@ -1032,7 +1184,83 @@ def api_chat_load(chat_id):
     client.active_mode = contracts.api_mode(_ui_mode)
     client.active_modality = contracts.api_modality(_ui_modality)
     client.eval_id = data.get("eval_id")
+    data = dict(data, history_chars=_history_chars(data.get("messages") or []))
     return jsonify(data)
+
+
+@app.route("/api/chats/<chat_id>/compact", methods=["POST"])
+def api_chat_compact(chat_id):
+    """Arm a context reset: the next message starts a fresh Arena session
+    seeded with a digest of everything so far.  The local transcript is
+    untouched; only the server-side context restarts."""
+    if not _validate_chat_id(chat_id):
+        return jsonify({"error": "Invalid chat id", "code": "bad_request"}), 400
+    data = _load_chat(chat_id)
+    if not data:
+        return jsonify({"error": "Chat not found", "code": "not_found"}), 404
+    if _chat_generating(chat_id):
+        return jsonify({"error": "Wait for the current answer to finish, then compact.",
+                        "code": "busy"}), 409
+    if (data.get("modality") or "") in ("image", "video"):
+        return jsonify({"error": "Compact is for text conversations.",
+                        "code": "unsupported"}), 400
+    messages = list(data.get("messages") or [])
+    real = [m for m in messages if isinstance(m, dict) and m.get("role") in ("user", "assistant")]
+    if len(real) < 2:
+        return jsonify({"error": "There is nothing to compact yet.",
+                        "code": "empty"}), 400
+    digest = _build_digest(data)
+    memory_path = _append_digest_to_memory(data, digest)
+    marker = {"role": "notice", "compact": True, "digest_chars": len(digest),
+              "text": "Context compacted \u2014 this conversation continues in a fresh "
+                      "Arena session with a summary of everything above."}
+    messages.append(marker)
+    try:
+        _save_chat(chat_id, title=data.get("title") or "Conversation", messages=messages,
+                   mode=data.get("mode") or "battle", modality=data.get("modality") or "text",
+                   model_a=data.get("model_a"), model_b=data.get("model_b"),
+                   eval_id=None, tools_guide=False, mcp_guide_hash="",
+                   agent_backend=data.get("agent_backend"), native={},
+                   memory_hash="", pending_digest=digest)
+    except Exception:
+        LOG.exception("compact save failed")
+        return jsonify({"error": "Could not save the compacted chat.", "code": "save_failed"}), 500
+    return jsonify({"ok": True, "digest_chars": len(digest),
+                    "history_chars": len(digest),
+                    "memory_saved": bool(memory_path), "notice": marker["text"]})
+
+
+@app.route("/api/memory")
+def api_memory_get():
+    folder = _chosen_ws()
+    return jsonify({
+        "enabled": _memory_enabled(),
+        "folder": str(folder) if folder else None,
+        "global": _read_memory_file(GLOBAL_MEMORY_FILE, 100_000),
+        "workspace": (_read_memory_file(Path(folder) / MEMORY_FILE_NAME, 100_000)
+                      if folder else None),
+    })
+
+
+@app.route("/api/memory", methods=["POST"])
+def api_memory_save():
+    data = request.get_json(silent=True) or {}
+    folder = _chosen_ws()
+    try:
+        if isinstance(data.get("global"), str):
+            GLOBAL_MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            GLOBAL_MEMORY_FILE.write_text(data["global"], encoding="utf-8")
+        if isinstance(data.get("workspace"), str) and folder:
+            Path(folder).mkdir(parents=True, exist_ok=True)
+            (Path(folder) / MEMORY_FILE_NAME).write_text(data["workspace"], encoding="utf-8")
+    except OSError as e:
+        return jsonify({"error": f"Could not save memory: {e}", "code": "save_failed"}), 500
+    if "enabled" in data:
+        cfg = load_config()
+        cfg["memory_enabled"] = bool(data.get("enabled"))
+        save_config(cfg)
+    return jsonify({"ok": True, "enabled": _memory_enabled(),
+                    "folder": str(folder) if folder else None})
 
 
 def _archive_agentic_on_arena(session_id: str) -> Optional[str]:
@@ -2580,16 +2808,22 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
     if mcp_tools:
         yield _sse({"type": "agent", "stage": f"MCP tools available: {len(mcp_tools)}",
                     "connectors": sorted({item['server'] for item in mcp_tools.values()})})
+    mcp_hash = hashlib.sha1(mcp_guide.encode("utf-8")).hexdigest()[:12] if mcp_guide else None
     if conv["new"] or not conv.get("guide_sent"):
         # Also covers enabling tools mid-conversation (e.g. the Direct tools
         # toggle): the model only learns the tool protocol from this guide.
         content = agent.guide(root, permissions.MODES[mode], agent.MODE_NOTES[mode], dual,
                               extra_tools=mcp_guide) + message
-    elif mcp_guide:
+        conv["mcp_guide_hash"] = mcp_hash
+    elif mcp_guide and mcp_hash != conv.get("mcp_guide_hash"):
+        # The connector tool list is only resent when it changed, not on
+        # every turn of the conversation.
         content = ("[Arena Desktop] Connector tools available for this turn:\n" + mcp_guide
                    + "\nUser message:\n" + message)
+        conv["mcp_guide_hash"] = mcp_hash
     else:
         content = message
+    sig_counts: dict = {}
     for rnd in range(1, agent.MAX_ROUNDS + 1):
         out = yield from _turn(client, content, conv)
         if out is None:
@@ -2598,6 +2832,22 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
         for l in lanes:
             total[l] += out[l]
         if not any(calls.values()) or _stopped():
+            break
+        repeated = None
+        for l in lanes:
+            for call in calls[l]:
+                try:
+                    sig = json.dumps([call.get("name"), call.get("params") or {}],
+                                     sort_keys=True, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    sig = repr(call)
+                sig_counts[sig] = sig_counts.get(sig, 0) + 1
+                if sig_counts[sig] >= 4:
+                    repeated = call.get("name") or "tool"
+        if repeated:
+            yield _sse({"type": "notice", "level": "warn",
+                        "text": f"Stopped the tool loop: the model kept repeating the same call "
+                                f"({repeated}). Its work so far is saved in the selected folder."})
             break
         mode = _perm_mode()
         results = {}
@@ -2666,7 +2916,11 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
         if rnd == agent.MAX_ROUNDS:
             yield _sse({"type": "notice", "text": f"Stopped after {agent.MAX_ROUNDS} tool rounds. Send 'continue' to keep going."})
             break
-        content = agent.format_lane_results(results) if dual else agent.format_results(results["a"])
+        if dual:
+            lane_dirs = {l: (tools[l].out or root) / agent.ARTIFACTS_DIR for l in lanes}
+            content = agent.format_lane_results(results, artifact_dirs=lane_dirs)
+        else:
+            content = agent.format_results(results["a"], artifact_dir=root / agent.ARTIFACTS_DIR)
         for l in lanes:
             total[l] += "\n\n"
         yield _sse({"type": "round", "n": rnd + 1})
@@ -2987,6 +3241,21 @@ def _api_chat_impl():
                        agent_backend="arena", native=existing.get("native"))
         except Exception:
             LOG.exception("native chat early save failed")
+        # Persistent memory + a pending compaction digest ride along with
+        # the first message of a fresh Arena session (memory resends only
+        # when its text changed).
+        native_prefix = ""
+        native_mem_hash = existing.get("memory_hash")
+        native_digest = existing.get("pending_digest") or ""
+        if _memory_enabled():
+            block, mem_hash = _memory_block(_chosen_ws())
+            fresh_native = not (existing.get("native") or {}).get("session_id")
+            if block and (fresh_native or native_digest or mem_hash != native_mem_hash):
+                native_prefix += block
+                native_mem_hash = mem_hash
+        if native_digest:
+            native_prefix += _digest_block(native_digest)
+        native_message = native_prefix + message
 
         def native_generate():
             _tl.error = None
@@ -3003,7 +3272,7 @@ def _api_chat_impl():
             saved = False
             session_persisted = bool((existing.get("native") or {}).get("session_id"))
             try:
-                run = _native_agent_run(client, message, existing, tz, result=out,
+                run = _native_agent_run(client, native_message, existing, tz, result=out,
                                         files=turn_attachments or None)
                 returned = None
                 while True:
@@ -3048,11 +3317,14 @@ def _api_chat_impl():
                         _save_chat(chat_id, title=title, messages=nat_history, mode="agent",
                                    modality="text", model_a=None, model_b=None,
                                    eval_id=(native_state or {}).get("session_id"),
-                                   agent_backend="arena", native=native_state)
+                                   agent_backend="arena", native=native_state,
+                                   memory_hash=native_mem_hash,
+                                   pending_digest=("" if native_digest else None))
                     except Exception:
                         LOG.exception("native chat save failed")
             yield _sse({"type": "done", "text_a": out.get("text", ""), "text_b": "",
-                        "dual": False, "chat_id": chat_id})
+                        "dual": False, "chat_id": chat_id,
+                        "history_chars": _history_chars(nat_history)})
 
         return Response(
             stream_with_context(_sse_wrap(native_generate(), chat_id=chat_id)),
@@ -3081,6 +3353,8 @@ def _api_chat_impl():
             "lane_errors": {"a": [], "b": []},
             "attachments": wire_attachments or None,
             "guide_sent": bool(existing.get("tools_guide")),
+            "mcp_guide_hash": existing.get("mcp_guide_hash"),
+            "memory_hash": existing.get("memory_hash"),
             "title": existing.get("title") or message[:50], "tools": []}
     history = list(existing.get("messages") or [])
     user_entry = {"role": "user", "text": message}
@@ -3101,6 +3375,20 @@ def _api_chat_impl():
                    agent_backend=(agent_backend if _ui_mode == "agent" else None))
     except Exception:
         LOG.exception("chat early save failed")
+    # Persistent memory + a pending compaction digest prefix the first
+    # message of a fresh Arena session (memory resends only when changed).
+    conv["prefix"] = ""
+    conv["digest_used"] = False
+    if modality not in ("image", "video"):
+        digest = existing.get("pending_digest") or ""
+        if _memory_enabled():
+            block, mem_hash = _memory_block(_chosen_ws())
+            if block and (conv["new"] or digest or mem_hash != conv.get("memory_hash")):
+                conv["prefix"] += block
+                conv["memory_hash"] = mem_hash
+        if digest:
+            conv["prefix"] += _digest_block(digest)
+            conv["digest_used"] = True
     ui_mode, ui_modality = _ui_mode, _ui_modality
     names = {"a": "Agent", "b": None} if _ui_mode == "agent" else {"a": _model_name(model_a), "b": _model_name(model_b)}
     dual = mode in ("battle", "side-by-side")
@@ -3118,12 +3406,13 @@ def _api_chat_impl():
         _tl.error = None
         yield _sse({"type": "meta", "dual": dual, "mode": ui_mode, "modality": ui_modality,
                     "chat_id": conv["chat_id"], "permission_mode": _perm_mode(), "names": names})
-        send = message
+        send = (conv.get("prefix") or "") + message
         if modality == "webdev" and not dual and not conv["new"]:
             changed, note = _local_edits(_code_root(conv["chat_id"], conv["title"], "a", conv["mode"]))
             if changed:
-                send = note + message
+                send = note + send
                 yield _sse({"type": "notice", "text": "Sent your local edits to the AI: " + ", ".join(changed)})
+        history_chars = _history_chars(history)
         if tools_on:
             out = yield from _agent_run(client, send, conv)
         else:
@@ -3156,9 +3445,26 @@ def _api_chat_impl():
                    modality=ui_modality, model_a=model_a, model_b=model_b,
                    eval_id=(conv.get("eval_id") if not conv["new"] else None),
                    tools_guide=bool(tools_on) or bool(existing.get("tools_guide")),
-                   agent_backend=("local" if ui_mode == "agent" else None))
+                   agent_backend=("local" if ui_mode == "agent" else None),
+                   mcp_guide_hash=conv.get("mcp_guide_hash"),
+                   memory_hash=conv.get("memory_hash"),
+                   pending_digest=("" if conv.get("digest_used") else None))
+        if (not reply["text"].strip() and not reply["text_b"].strip()
+                and modality in ("chat", "search")
+                and not conv.get("media_saved") and not conv["tools"] and not _tl.error):
+            yield _sse({"type": "notice", "level": "warn",
+                        "text": "The model returned an empty reply. In a long conversation this usually "
+                                "means Arena's context limit for this chat was reached — press Compact "
+                                "(next to Workspace Sync) to continue here with a fresh context."})
+        total_chars = _history_chars(history)
+        if history_chars < CONTEXT_WARN_CHARS <= total_chars:
+            yield _sse({"type": "notice", "level": "warn",
+                        "text": f"This conversation is getting long (~{total_chars // 1000}k characters) "
+                                "and may be close to Arena's context limit. Press Compact (next to "
+                                "Workspace Sync) to continue in a fresh session with a summary — "
+                                "otherwise replies may start coming back empty."})
         done_event = {"type": "done", "text_a": out["a"], "text_b": out["b"], "dual": dual,
-                      "chat_id": conv["chat_id"]}
+                      "chat_id": conv["chat_id"], "history_chars": total_chars}
         if reply.get("arena_message_ids"):
             done_event["arena_message_ids"] = reply["arena_message_ids"]
         yield _sse(done_event)

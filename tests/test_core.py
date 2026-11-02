@@ -2174,3 +2174,216 @@ def test_native_file_bridge_without_folder_only_notifies(web, monkeypatch):
         [{"url": "https://example.test/a.txt", "title": "a.txt", "kind": "file"}], {}))
     assert written == []
     assert any("Choose a folder" in (e.get("text") or "") for e in ev)
+
+
+def test_tool_loop_stops_repeating_identical_calls(web):
+    appmod, c, cfg, use, _sent = web
+    cfg["permission_mode"] = "bypassPermissions"
+    appmod._ui_mode = "agent"
+    same = FakeResp([_tool_line('<tool name="ls"><path>.</path></tool>')])
+    use(same, FakeResp([_tool_line('<tool name="ls"><path>.</path></tool>')]),
+        FakeResp([_tool_line('<tool name="ls"><path>.</path></tool>')]),
+        FakeResp([_tool_line('<tool name="ls"><path>.</path></tool>')]))
+    ev = events(c.post("/api/chat", json={"message": "keep listing"}))
+    results = [e for e in ev if e["type"] == "tool_result"]
+    assert len(results) == 3
+    assert any("kept repeating" in (e.get("text") or "") for e in ev if e["type"] == "notice")
+    assert ev[-1]["type"] == "done"
+
+
+def test_empty_reply_explains_context_limit(web):
+    appmod, c, _cfg, use, _sent = web
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    use(FakeResp(['ad:{"finishReason":"stop"}']))
+    ev = events(c.post("/api/chat", json={"message": "continue", "mode": "direct",
+                                          "modality": "text", "model_id": "m1", "tools": False}))
+    assert ev[-1]["type"] == "done" and ev[-1]["text_a"] == ""
+    assert any("empty reply" in (e.get("text") or "") for e in ev if e["type"] == "notice")
+
+
+def test_long_outputs_offload_to_artifacts(tmp_path):
+    root = tmp_path / "ws"
+    artifacts = root / agent.ARTIFACTS_DIR
+    big = "x" * 5000
+    msg = agent.format_results([({"name": "run_cmd", "params": {"cmd": "big"}}, "ok", big)],
+                                artifact_dir=artifacts)
+    assert len(msg) < 1200
+    assert "x" * 1000 not in msg
+    assert ".arena-artifacts/run_cmd-" in msg
+    saved = list(artifacts.iterdir())
+    assert len(saved) == 1 and saved[0].read_text() == big
+    # Short outputs still travel inline, untouched.
+    small = agent.format_results([({"name": "ls", "params": {"path": "."}}, "ok", "a/")],
+                                 artifact_dir=artifacts)
+    assert "a/" in small and len(list(artifacts.iterdir())) == 1
+
+
+def test_trim_output_collapses_repeats_and_ansi():
+    noisy = "\x1b[31merr\x1b[0m\n" + "same\n" * 50 + "tail"
+    out = agent.trim_output(noisy)
+    assert "\x1b" not in out and "err" in out and "tail" in out
+    assert out.count("same") <= 3 and "same line x" in out
+
+
+def test_read_file_ranges_and_large_file_hint(tmp_path):
+    tools = agent.LocalTools(tmp_path)
+    f = tmp_path / "a.txt"
+    f.write_text("\n".join(f"line{i}" for i in range(1, 101)))
+    ok, out = tools.run({"name": "read_file",
+                         "params": {"path": "a.txt", "start_line": "10", "end_line": "12"}})
+    assert ok and out.startswith("[lines 10-12 of 100]") and "line11" in out and "line13" not in out
+    big = tmp_path / "big.txt"
+    big.write_text("y" * 9000)
+    ok2, out2 = tools.run({"name": "read_file", "params": {"path": "big.txt"}})
+    assert ok2 and len(out2) < 6500 and "start_line" in out2
+
+
+class _StubConnectors:
+    def ensure_started(self, timeout=30):
+        return {"srv_tool": {"server": "srv", "input_schema": {}}}
+
+    def guide(self, tools):
+        return "MCPGUIDE-TEXT"
+
+
+def test_mcp_guide_not_resent_when_unchanged(web, monkeypatch):
+    import hashlib as _hashlib
+    appmod, c, cfg, use, sent = web
+    cfg["permission_mode"] = "bypassPermissions"
+    monkeypatch.setattr(appmod, "CONNECTORS", _StubConnectors())
+    appmod._ui_mode = "agent"
+    cid = "33333333-3333-7333-8333-333333333333"
+    digest = _hashlib.sha1(b"MCPGUIDE-TEXT").hexdigest()[:12]
+    appmod._save_chat(cid, title="t", messages=[{"role": "user", "text": "hi"},
+                                                {"role": "assistant", "text": "hi"}],
+                      mode="agent", modality="text", model_a="m1",
+                      eval_id="11111111-1111-7111-8111-111111111111",
+                      tools_guide=True, agent_backend="local", mcp_guide_hash=digest)
+    use(FakeResp(['a0:"done"']))
+    events(c.post("/api/chat", json={"message": "next", "chat_id": cid}))
+    assert "MCPGUIDE-TEXT" not in sent[0][1]["userMessage"]["content"]
+    # A changed guide (hash mismatch) is sent again.
+    appmod._save_chat(cid, title="t", messages=[{"role": "user", "text": "hi"},
+                                                {"role": "assistant", "text": "hi"}],
+                      mode="agent", modality="text", model_a="m1",
+                      eval_id="11111111-1111-7111-8111-111111111111",
+                      tools_guide=True, agent_backend="local", mcp_guide_hash="stale")
+    use(FakeResp(['a0:"done"']))
+    events(c.post("/api/chat", json={"message": "next", "chat_id": cid}))
+    assert "MCPGUIDE-TEXT" in sent[-1][1]["userMessage"]["content"]
+
+
+def test_long_chat_warns_once_when_crossing_limit(web):
+    appmod, c, _cfg, use, _sent = web
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    cid = "44444444-4444-7444-8444-444444444444"
+    appmod._save_chat(cid, title="t",
+                      messages=[{"role": "user", "text": "q"},
+                                {"role": "assistant", "text": "z" * 79_500}],
+                      mode="direct", modality="text", model_a="m1",
+                      eval_id="22222222-2222-7222-8222-222222222222")
+    use(FakeResp(["a0:" + json.dumps("w" * 1000)]))
+    ev = events(c.post("/api/chat", json={"message": "next", "chat_id": cid,
+                                          "mode": "direct", "modality": "text",
+                                          "model_id": "m1", "tools": False}))
+    assert any("getting long" in (e.get("text") or "") for e in ev if e["type"] == "notice")
+
+
+def test_memory_sent_once_per_session_and_on_change(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent = web
+    ws = tmp_path / "proj"; ws.mkdir()
+    (ws / "MEMORY.md").write_text("- PROJECT-FACT-42: DB is Postgres\n", encoding="utf-8")
+    gmem = tmp_path / "gmem.md"
+    gmem.write_text("- GLOBAL-FACT-7: short answers\n", encoding="utf-8")
+    monkeypatch.setattr(appmod, "GLOBAL_MEMORY_FILE", gmem)
+    cfg["workspace_dir"] = str(ws)
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    use(FakeResp(['a0:"ok"']))
+    ev = events(c.post("/api/chat", json={"message": "hello", "mode": "direct",
+                                          "modality": "text", "model_id": "m1", "tools": False}))
+    first = sent[-1][1]["userMessage"]["content"]
+    assert "PROJECT-FACT-42" in first and "GLOBAL-FACT-7" in first
+    cid = next(e["chat_id"] for e in ev if e.get("chat_id"))
+    # Same Arena session: memory is not resent.
+    use(FakeResp(['a0:"ok2"']))
+    events(c.post("/api/chat", json={"message": "again", "chat_id": cid, "mode": "direct",
+                                     "modality": "text", "model_id": "m1", "tools": False}))
+    assert "PROJECT-FACT-42" not in sent[-1][1]["userMessage"]["content"]
+    # Edited memory: sent again with the new text.
+    (ws / "MEMORY.md").write_text("- PROJECT-FACT-43: now SQLite\n", encoding="utf-8")
+    use(FakeResp(['a0:"ok3"']))
+    events(c.post("/api/chat", json={"message": "third", "chat_id": cid, "mode": "direct",
+                                     "modality": "text", "model_id": "m1", "tools": False}))
+    assert "PROJECT-FACT-43" in sent[-1][1]["userMessage"]["content"]
+
+
+def test_compact_arms_digest_and_next_send_uses_it(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent = web
+    monkeypatch.setattr(appmod, "GLOBAL_MEMORY_FILE", tmp_path / "none.md")
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    cid = "55555555-5555-7555-8555-555555555555"
+    msgs = [{"role": "user", "text": "Build a landing page for a bakery"},
+            {"role": "assistant", "text": "Created index.html with hero section",
+             "tools": [{"tool": "write_file", "summary": "Write file index.html"}]},
+            {"role": "user", "text": "Add a dark theme toggle"},
+            {"role": "assistant", "text": "Dark theme added via CSS variables"}]
+    appmod._save_chat(cid, title="Bakery landing", messages=msgs, mode="direct",
+                      modality="text", model_a="m1",
+                      eval_id="66666666-6666-7666-8666-666666666666")
+    r = c.post(f"/api/chats/{cid}/compact", json={})
+    assert r.status_code == 200
+    saved = appmod._load_chat(cid)
+    assert saved["eval_id"] is None
+    digest = saved["pending_digest"] or ""
+    assert 0 < len(digest) <= 6000
+    assert "landing page for a bakery" in digest and "index.html" in digest
+    assert saved["messages"][-1].get("compact") is True
+    # Next send: fresh session seeded with the digest; digest then consumed.
+    use(FakeResp(['a0:"continued"']))
+    events(c.post("/api/chat", json={"message": "Now add a footer", "chat_id": cid,
+                                     "mode": "direct", "modality": "text",
+                                     "model_id": "m1", "tools": False}))
+    content = sent[-1][1]["userMessage"]["content"]
+    assert "continued conversation" in content and "dark theme" in content.lower()
+    assert content.rstrip().endswith("Now add a footer")
+    assert not (appmod._load_chat(cid).get("pending_digest") or "")
+
+
+def test_compact_appends_digest_to_workspace_memory(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent = web
+    ws = tmp_path / "proj2"; ws.mkdir()
+    cfg["workspace_dir"] = str(ws)
+    monkeypatch.setattr(appmod, "GLOBAL_MEMORY_FILE", tmp_path / "none.md")
+    cid = "77777777-7777-7777-8777-777777777777"
+    appmod._save_chat(cid, title="Big refactor",
+                      messages=[{"role": "user", "text": "Refactor the parser module"},
+                                {"role": "assistant", "text": "x" * 9000}],
+                      mode="direct", modality="text", model_a="m1",
+                      eval_id="88888888-8888-7888-8888-888888888888")
+    r = c.post(f"/api/chats/{cid}/compact", json={})
+    assert r.status_code == 200 and r.get_json()["memory_saved"] is True
+    mem = (ws / "MEMORY.md").read_text(encoding="utf-8")
+    assert "Session digest" in mem and "Big refactor" in mem and "parser module" in mem
+    # The context meter restarts at the digest, not the 9k of old history.
+    saved = appmod._load_chat(cid)
+    assert appmod._history_chars(saved["messages"]) < 7000
+
+
+def test_compact_guards_and_memory_endpoints(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent = web
+    monkeypatch.setattr(appmod, "GLOBAL_MEMORY_FILE", tmp_path / "mem" / "memory.md")
+    cid = "99999999-9999-7999-8999-999999999999"
+    appmod._save_chat(cid, title="t", messages=[{"role": "user", "text": "hi"}],
+                      mode="direct", modality="text", model_a="m1")
+    assert c.post(f"/api/chats/{cid}/compact", json={}).status_code == 400
+    r = c.post("/api/memory", json={"global": "- be brief", "enabled": True})
+    assert r.status_code == 200
+    got = c.get("/api/memory").get_json()
+    assert got["global"] == "- be brief" and got["enabled"] is True
+    # Disabled memory is never injected.
+    c.post("/api/memory", json={"enabled": False})
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    use(FakeResp(['a0:"ok"']))
+    events(c.post("/api/chat", json={"message": "hello", "mode": "direct",
+                                     "modality": "text", "model_id": "m1", "tools": False}))
+    assert "be brief" not in sent[-1][1]["userMessage"]["content"]

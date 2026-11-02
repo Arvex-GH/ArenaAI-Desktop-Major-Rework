@@ -1232,6 +1232,14 @@ svg { display: block; }
 .composer-chip .chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-chip .chip-chevron { width: 11px; height: 11px; color: #737d77; flex: 0 0 auto; }
 .composer-chip.is-pending .icon:first-child { animation: spin 900ms linear infinite; border-radius: 50%; }
+.compact-chip.is-warn { color: #f3c67b; border-color: #6b5426; background: #2f2a1c; }
+.compact-chip.is-warn .icon { color: #f3c67b; }
+.compact-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); flex: 0 0 auto; animation: compact-pulse 1.6s ease-in-out infinite; }
+@keyframes compact-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.chat-divider { display: flex; align-items: center; gap: 8px; margin: 18px auto; max-width: 640px; padding: 8px 12px; color: #aeb8b1; background: #232826; border: 1px dashed #3d4540; border-radius: 8px; font-size: 12px; line-height: 1.5; }
+.chat-divider .icon { width: 14px; height: 14px; flex: 0 0 auto; color: #8fa398; }
+.memory-field { width: 100%; min-height: 110px; resize: vertical; }
+.setting-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0 4px; color: #dfe5e0; font-size: 13px; cursor: pointer; }
 .composer-chip.permission-chip { color: #9fbaa3; }
 .composer-chip.permission-chip .icon { color: #91b097; }
 .composer-chip.permission-chip.is-danger { color: var(--red); background: rgba(112, 54, 47, .16); border-color: #573b36; }

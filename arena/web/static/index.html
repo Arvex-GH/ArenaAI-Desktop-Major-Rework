@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark">
   <meta name="description" content="Arena Desktop — an unofficial local Windows client for arena.ai. A desktop interface over a local Flask + pywebview backend.">
   <title>Arena Desktop</title>
-  <link rel="stylesheet" href="/static/style.css?v=4.13.0" onerror="this.onerror=null;this.href='static/style.css?v=4.13.0'">
+  <link rel="stylesheet" href="/static/style.css?v=4.15.0" onerror="this.onerror=null;this.href='static/style.css?v=4.15.0'">
 </head>
 <body>
   <a class="skip-link" href="#prompt">Skip to the message box</a>
@@ -268,6 +268,11 @@
                   <span class="switch-track" aria-hidden="true"></span>
                 </span>
               </label>
+              <button class="composer-chip compact-chip" type="button" id="compactButton" hidden title="Compact: continue this chat in a fresh Arena session with a summary">
+                <span data-icon="compress"></span>
+                <span class="chip-label">Compact</span>
+                <span class="compact-dot" id="compactDot" hidden aria-hidden="true"></span>
+              </button>
               <span class="pending-permissions-badge" id="pendingPermissionsBadge" hidden></span>
               <div class="toolbar-spacer"></div>
               <button class="stop-button" type="button" id="stopButton" hidden>
@@ -382,6 +387,6 @@
     <div class="noscript-message">Arena Desktop needs JavaScript. Enable it in the WebView2 settings.</div>
   </noscript>
 
-  <script src="/static/app.js?v=4.13.0" defer onerror="this.onerror=null;this.src='static/app.js?v=4.13.0'"></script>
+  <script src="/static/app.js?v=4.15.0" defer onerror="this.onerror=null;this.src='static/app.js?v=4.15.0'"></script>
 </body>
 </html>

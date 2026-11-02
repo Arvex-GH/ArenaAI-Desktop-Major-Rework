@@ -79,7 +79,8 @@
     message: '<path d="M20.5 12a8.3 8.3 0 0 1-12 7.2L4 20.5l1.4-4.2A8.3 8.3 0 1 1 20.5 12Z"/>',
     type: '<path d="M5 5h14M12 5v14M9.5 19h5"/>',
     play: '<circle cx="12" cy="12" r="8.7"/><path d="m10 8.5 5 3.5-5 3.5v-7Z"/>',
-    'arrow-down': '<path d="M12 5v14M6.5 13.5 12 19l5.5-5.5"/>'
+    'arrow-down': '<path d="M12 5v14M6.5 13.5 12 19l5.5-5.5"/>',
+    compress: '<path d="M9.5 3.5 4 9M4 4.8V9h4.2M14.5 3.5 20 9M20 4.8V9h-4.2M9.5 20.5 4 15M4 19.2V15h4.2M14.5 20.5 20 15M20 19.2V15h-4.2"/>'
   };
 
   function icon(name, className = '') {
@@ -504,6 +505,9 @@
     vote(chatId, body) { return this.request(`/api/chats/${encodeURIComponent(chatId)}/vote`, { method: 'POST', body }); },
     getChat(id) { return this.request(`/api/chats/${encodeURIComponent(id)}`); },
     deleteChat(id) { return this.request(`/api/chats/${encodeURIComponent(id)}/delete`, { method: 'POST', body: {} }); },
+    compactChat(id) { return this.request(`/api/chats/${encodeURIComponent(id)}/compact`, { method: 'POST', body: {} }); },
+    getMemory() { return this.request('/api/memory'); },
+    saveMemory(body) { return this.request('/api/memory', { method: 'POST', body }); },
     getHistory() { return this.request('/api/history'); },
     getPermissions() { return this.request('/api/permissions'); },
     decidePermission(id, decision) {
@@ -982,7 +986,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '4.13.0',
+        app_version: '4.15.0',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -1144,7 +1148,8 @@
       if (!chat) throw new ApiError("Demo chat not found.", 404);
       if (chat.mode) demoStore.mode = chat.mode;
       if (chat.modality) demoStore.modality = chat.modality;
-      return { ...chat };
+      const histChars = (demoStore.messages[chat.id] || []).reduce((sum, m) => sum + String(m.text || '').length + String(m.text_b || '').length, 0);
+      return { ...chat, history_chars: histChars };
     },
     async deleteChat(id) {
       const chat = demoStore.chats.find((item) => item.id === id);
@@ -1153,6 +1158,25 @@
       delete demoStore.messages[id];
       await sleep(120);
       return { ok: true, arena: chat?.eval_id || chat?.source === 'arena' ? 'archived' : 'none', demo: true };
+    },
+    async compactChat(id) {
+      await sleep(150);
+      const list = demoStore.messages[id] || (demoStore.messages[id] = []);
+      const notice = "Context compacted \u2014 this conversation continues in a fresh Arena session with a summary of everything above.";
+      list.push({ role: 'notice', compact: true, digest_chars: 1200, text: notice });
+      return { ok: true, digest_chars: 1200, history_chars: 1200, memory_saved: Boolean(demoStore.workspace), notice, demo: true };
+    },
+    async getMemory() {
+      await sleep(80);
+      return { enabled: demoStore.memoryEnabled !== false, folder: demoStore.workspace || null,
+               global: demoStore.memoryGlobal || '', workspace: demoStore.memoryWorkspace ?? '', demo: true };
+    },
+    async saveMemory(body = {}) {
+      await sleep(80);
+      if (typeof body.global === 'string') demoStore.memoryGlobal = body.global;
+      if (typeof body.workspace === 'string') demoStore.memoryWorkspace = body.workspace;
+      if ('enabled' in body) demoStore.memoryEnabled = Boolean(body.enabled);
+      return { ok: true, enabled: demoStore.memoryEnabled !== false, demo: true };
     },
     async archiveArenaChat(id) {
       demoStore.cloudChats = demoStore.cloudChats.filter((item) => item.eval_id !== id && item.id !== id);
@@ -1603,6 +1627,10 @@ You can start with a more structured option: one script, short captions, and a c
     // site, never a Direct chat) and the local folder-tools loop.
     agentKind: (() => { try { return window.localStorage.getItem('ap-agent-kind') === 'local' ? 'local' : 'native'; } catch { return 'native'; } })(),
     directTools: (() => { try { return window.localStorage.getItem('ap-direct-tools') !== '0'; } catch { return true; } })(),
+    rateLimitUntil: 0,
+    historyChars: 0,
+    memoryData: null,
+    _rateLimitTimer: null,
     appVersion: '',
     workspaceChosen: false,
     permissionMode: 'default',
@@ -3355,6 +3383,11 @@ You can start with a more structured option: one script, short captions, and a c
           });
         });
       }
+      if (turn.divider) {
+        els.messageList.appendChild(el('div', { class: 'chat-divider', role: 'note' },
+          iconEl('compress'), el('span', { text: turn.divider })));
+        return;
+      }
       const isPair = Boolean(turn?.lanes?.a && turn?.lanes?.b);
       if (isPair) pairIndex += 1;
       els.messageList.appendChild(renderTurn(turn, isPair ? pairIndex : -1));
@@ -3460,6 +3493,62 @@ You can start with a more structured option: one script, short captions, and a c
     toast(state.directTools
       ? "Workspace Sync is on: models can run commands and use tools in the folder selected on this computer, and the results return to them automatically."
       : "Workspace Sync is off: models answer with regular text and cannot touch the folder on this computer.", 'info', "Workspace Sync");
+  }
+
+
+  const CONTEXT_WARN_CHARS = 80000;
+
+  function syncCompactChip() {
+    const button = els.compactButton;
+    if (!button) return;
+    const show = Boolean(state.activeChatId) && state.view === 'chat'
+      && !['image', 'video'].includes(state.modality)
+      && (state.messages || []).length > 0;
+    button.hidden = !show;
+    if (!show) return;
+    const warn = (state.historyChars || 0) >= CONTEXT_WARN_CHARS;
+    button.classList.toggle('is-warn', warn);
+    button.disabled = state.generating;
+    if (els.compactDot) els.compactDot.hidden = !warn;
+    button.title = warn
+      ? `This conversation is ~${Math.round((state.historyChars || 0) / 1000)}k characters and likely close to Arena's context limit. Compact continues it in a fresh session with a summary, so replies keep working.`
+      : "Compact: continue this chat in a fresh Arena session with a summary of everything so far. Use it when a long conversation starts returning empty replies.";
+  }
+
+  function confirmCompact() {
+    const chatId = state.activeChatId;
+    if (!chatId || state.generating) return;
+    const warn = (state.historyChars || 0) >= CONTEXT_WARN_CHARS;
+    const lines = [
+      warn
+        ? `This conversation is about ${Math.round((state.historyChars || 0) / 1000)}k characters and is likely close to Arena's context limit \u2014 that is when replies start coming back empty. Compact keeps you working in this same chat.`
+        : "Compact keeps this chat going when Arena's context gets full.",
+      "Your next message will open a fresh Arena session, seeded with a summary: the original task, files changed, and the most recent exchanges. The full transcript above stays here; on arena.ai the continuation appears as a new conversation."
+    ];
+    if (state.workspaceChosen) lines.push("The summary is also appended to MEMORY.md in the selected folder, so future chats in this project inherit it (Settings \u2192 Memory).");
+    if (state.mode === 'battle' || state.mode === 'side-by-side') lines.push("Note: after compacting you can no longer vote on the last pair of replies.");
+    mountModal({
+      title: 'Compact conversation',
+      content: el('div', {}, ...lines.map((text) => el('p', { class: 'modal-copy', text }))),
+      actions: [
+        { label: 'Cancel', variant: 'quiet' },
+        { label: 'Compact', variant: 'primary', icon: 'compress', autofocus: true,
+          onClick: async () => { await runCompact(chatId); } }
+      ]
+    });
+  }
+
+  async function runCompact(chatId) {
+    const result = await API.compactChat(chatId);
+    if (String(state.activeChatId) !== String(chatId)) return;
+    state.historyChars = Number(result?.history_chars ?? result?.digest_chars ?? 0);
+    const notice = result?.notice || "Context compacted \u2014 this conversation continues in a fresh Arena session with a summary of everything above.";
+    state.messages.push({ user: null, lanes: {}, notices: [], error: null, round: null, divider: notice });
+    renderMessages({ preserveScroll: false });
+    syncCompactChip();
+    toast(result?.memory_saved
+      ? "Compacted. Your next message continues in a fresh session with a summary \u2014 also saved to MEMORY.md in the selected folder."
+      : "Compacted. Your next message continues in a fresh session with a summary of everything so far.", 'success', "Compact");
   }
 
   function renderModeBars() {
@@ -3605,7 +3694,13 @@ You can start with a more structured option: one script, short captions, and a c
     const noServer = Boolean(state.serverError) || state.networkOffline;
     const noAuth = state.status && state.authenticated === false;
     let disabledReason = '';
+    const rateLimitLeft = Math.max(0, Math.ceil((state.rateLimitUntil - Date.now()) / 1000));
     if (busy) disabledReason = "Wait for the current generation to complete";
+    else if (rateLimitLeft > 0) {
+      const mm = Math.floor(rateLimitLeft / 60);
+      const ss = String(rateLimitLeft % 60).padStart(2, '0');
+      disabledReason = `Arena rate limit — wait ${mm > 0 ? `${mm}:${ss}` : `${rateLimitLeft}s`}`;
+    }
     else if (state.stopping) disabledReason = "Stopping generation";
     else if (transitions) disabledReason = "Applying settings";
     else if (noServer) disabledReason = "No connection to the local server";
@@ -3661,6 +3756,7 @@ You can start with a more structured option: one script, short captions, and a c
 
     const locked = chatLocked();
     syncWorkspaceSyncToggle();
+    syncCompactChip();
     els.modeButton.disabled = busy || locked;
     els.modalityButton.disabled = busy || locked;
     els.permissionButton.disabled = busy || transitions;
@@ -3903,6 +3999,15 @@ You can start with a more structured option: one script, short captions, and a c
     for (const item of messages) {
       if (!item || typeof item !== 'object') continue;
       const role = String(item.role ?? item.type ?? '').toLowerCase();
+      if (role === 'notice') {
+        // Compaction marker: a divider between the old context and the
+        // fresh Arena session that follows it.
+        turns.push({ user: null, lanes: {}, notices: [], error: null, round: null,
+                     divider: textValue(item.text ?? item.content ?? '') });
+        current = null;
+        assistantOrdinal = 0;
+        continue;
+      }
       if (role === 'user' || role === 'human') {
         newTurn({
           content: textValue(item.content ?? item.text ?? item.message),
@@ -4024,6 +4129,7 @@ You can start with a more structured option: one script, short captions, and a c
         state.modality = selection.modality;
         state.selectionTouched = true;
         if (chat.agent_backend) state.agentKind = chat.agent_backend === 'arena' ? 'native' : 'local';
+        state.historyChars = Number(chat.raw?.history_chars || 0);
         // Restore manual selections saved by Flask only in modes where Arena
         // permits them.  Battle ignores ids and Agent never exposes one.
         if (allowsManualModels()) {
@@ -4706,6 +4812,21 @@ You can start with a more structured option: one script, short captions, and a c
     if (type === 'error') {
       const message = textValue(event.message ?? event.error ?? event.detail ?? 'The server reported an error.');
       generation.hadError = true;
+      if (event.code === 'rate_limit' && Number(event.wait) > 0) {
+        // Respect Arena's own reset window instead of letting retry spam
+        // keep the account throttled.
+        state.rateLimitUntil = Date.now() + Number(event.wait) * 1000;
+        if (!state._rateLimitTimer) {
+          state._rateLimitTimer = window.setInterval(() => {
+            if (Date.now() >= state.rateLimitUntil) {
+              window.clearInterval(state._rateLimitTimer);
+              state._rateLimitTimer = null;
+              state.rateLimitUntil = 0;
+            }
+            updateComposerState();
+          }, 1000);
+        }
+      }
       if (event.model === 'a' || event.model === 'b' || event.lane === 'a' || event.lane === 'b' || event.ui_lane === 'a' || event.ui_lane === 'b') {
         // Lane-scoped error: only this model's card fails. A surviving
         // Battle lane keeps streaming to its own terminal event.
@@ -4724,6 +4845,9 @@ You can start with a more structured option: one script, short captions, and a c
     }
     if (type === 'done') {
       generation.done = true;
+      if (typeof event.history_chars === 'number' && String(event.chat_id) === String(state.activeChatId)) {
+        state.historyChars = event.history_chars;
+      }
       if (event.arena_message_ids && typeof event.arena_message_ids === 'object') {
         turn.arenaIds = event.arena_message_ids;
       }
@@ -5067,6 +5191,13 @@ You can start with a more structured option: one script, short captions, and a c
 
   async function sendMessage() {
     if (state.starting) return;
+    if (state.rateLimitUntil > Date.now()) {
+      const left = Math.ceil((state.rateLimitUntil - Date.now()) / 1000);
+      const mm = Math.floor(left / 60);
+      const ss = String(left % 60).padStart(2, '0');
+      toast(`Arena asked to wait before sending again (${mm > 0 ? `${mm}:${ss}` : `${left}s`} left). Retrying early can extend the limit.`, 'warning', 'Rate limited');
+      return;
+    }
     if (chatIsGenerating(state.activeChatId)) {
       toast("This chat is still working on the previous message. You can use other chats meanwhile.", 'warning', "Generation is already in progress");
       return;
@@ -6377,6 +6508,7 @@ You can start with a more structured option: one script, short captions, and a c
       { id: 'connection', label: 'Account', icon: 'user' },
       { id: 'permissions', label: 'Permissions', icon: 'shield' },
       { id: 'workspace', label: 'Folder', icon: 'folder' },
+      { id: 'memory', label: 'Memory', icon: 'layers' },
       { id: 'about', label: 'About', icon: 'info' }
     ];
     let currentTab = tabDefs.some((tab) => tab.id === initialTab) ? initialTab : 'connection';
@@ -6597,6 +6729,48 @@ You can start with a more structured option: one script, short captions, and a c
       return wrap;
     }
 
+    function renderMemoryPanel() {
+      const wrap = el('div');
+      const data = state.memoryData || null;
+      wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Memory across chats' }));
+      wrap.appendChild(el('p', { class: 'setting-desc', text: "Short Markdown notes that travel with the first message of every new conversation, so models remember your projects between chats \u2014 like Claude Code's memory. General memory applies everywhere. Project memory lives in MEMORY.md inside the selected folder: models working there can update it, and Compact appends a session summary to it." }));
+      if (!data) {
+        wrap.appendChild(el('p', { class: 'setting-desc', text: 'Loading memory\u2026' }));
+        return wrap;
+      }
+      const toggle = el('input', { type: 'checkbox', class: 'switch-input', checked: data.enabled !== false, 'aria-label': 'Use memory in chats' });
+      wrap.appendChild(el('label', { class: 'setting-toggle-row' },
+        el('span', { text: 'Use memory in chats' }),
+        el('span', { class: 'switch' }, toggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
+
+      wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'General memory (all projects)' }));
+      const globalField = el('textarea', { class: 'input mono memory-field', rows: '6', spellcheck: 'false',
+        'aria-label': 'General memory', placeholder: '- Prefer short, direct answers\n- Explain trade-offs before big changes' });
+      globalField.value = data.global || '';
+      wrap.appendChild(globalField);
+
+      wrap.appendChild(el('h3', { class: 'modal-section-title', text: data.folder ? `Project memory \u2014 MEMORY.md in ${data.folder}` : 'Project memory (MEMORY.md)' }));
+      const wsField = el('textarea', { class: 'input mono memory-field', rows: '8', spellcheck: 'false',
+        'aria-label': 'Project memory', disabled: !data.folder,
+        placeholder: data.folder ? '# Project memory\n- Stack: \u2026\n- Conventions: \u2026' : 'Select a folder first \u2014 project memory is stored as MEMORY.md inside it.' });
+      wsField.value = data.workspace || '';
+      wrap.appendChild(wsField);
+      if (!data.folder) wrap.appendChild(el('p', { class: 'setting-desc', text: 'Choose a folder in the Folder tab to keep per-project memory next to the project itself.' }));
+
+      const save = settingsActionButton('Save memory', 'check', async () => {
+        const body = { global: globalField.value, enabled: toggle.checked };
+        if (data.folder) body.workspace = wsField.value;
+        const result = await API.saveMemory(body);
+        state.memoryData = { ...data, global: globalField.value,
+          workspace: data.folder ? wsField.value : data.workspace, enabled: result?.enabled !== false };
+        toast('Memory saved. It applies from the next new conversation, or right away in a chat you compact.', 'success', 'Memory');
+        refreshPanel();
+      }, { variant: 'primary' });
+      wrap.appendChild(el('div', { class: 'setting-actions' }, save));
+      wrap.appendChild(el('p', { class: 'setting-desc', text: 'Tip: in any chat with Workspace Sync on, just tell the model \u201cremember this\u201d \u2014 it will write it to MEMORY.md itself.' }));
+      return wrap;
+    }
+
     function renderAboutPanel() {
       const wrap = el('div');
       wrap.appendChild(el('div', { class: 'about-mark' }, iconEl('spark')));
@@ -6619,6 +6793,7 @@ You can start with a more structured option: one script, short captions, and a c
     function contentFor(tab) {
       if (tab === 'permissions') return renderPermissionsPanel();
       if (tab === 'workspace') return renderWorkspacePanel();
+      if (tab === 'memory') return renderMemoryPanel();
       if (tab === 'about') return renderAboutPanel();
       return renderConnectionPanel();
     }
@@ -6632,6 +6807,8 @@ You can start with a more structured option: one script, short captions, and a c
           .then(() => { if (state.settingsTab === 'permissions') refreshPanel(); });
       } else if (tab === 'workspace') {
         loadWorkspaceFromServer({ quiet: true }).then(() => { if (state.settingsTab === 'workspace') refreshPanel(); });
+      } else if (tab === 'memory') {
+        API.getMemory().then((data) => { state.memoryData = data; if (state.settingsTab === 'memory') refreshPanel(); }).catch(() => {});
       }
     }
 
@@ -7888,6 +8065,8 @@ You can start with a more structured option: one script, short captions, and a c
     els.permissionButton = $('#permissionButton');
     els.workspaceSyncChip = $('#workspaceSyncChip');
     els.workspaceSyncToggle = $('#workspaceSyncToggle');
+    els.compactButton = $('#compactButton');
+    els.compactDot = $('#compactDot');
     els.permissionLabel = $('#permissionLabel');
     els.pendingPermissionsBadge = $('#pendingPermissionsBadge');
     els.sendButton = $('#sendButton');
@@ -8066,6 +8245,7 @@ You can start with a more structured option: one script, short captions, and a c
       if (!els.permissionButton.disabled) openPermissionModePopover();
     });
     els.workspaceSyncToggle?.addEventListener('change', () => setWorkspaceSync(els.workspaceSyncToggle.checked));
+    els.compactButton?.addEventListener('click', confirmCompact);
     els.sendButton?.setAttribute('type', 'submit');
     els.stopButton?.addEventListener('click', () => { void stopGeneration(); });
     els.chatSettingsButton?.addEventListener('click', () => openSettings('permissions'));

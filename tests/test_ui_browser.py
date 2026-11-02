@@ -652,7 +652,7 @@ def test_v47_battle_lane_error_avatar_and_model_logo(site):
                     'engine': {'open': False, 'ready': True},
                     'permission_mode': 'default', 'workspace': 'C:\\test',
                     'pending_permissions': 0, 'generating': False,
-                    'app_version': '4.13.0'})
+                    'app_version': '4.15.0'})
             if path == 'mode' and route.request.method == 'POST':
                 body = route.request.post_data_json or {}
                 return fulfill(route, {'ok': True, 'mode': body.get('mode', 'battle'), 'modality': 'text'})
@@ -978,4 +978,46 @@ def test_v410_parallel_chats_status_marks_and_account_switching(site):
             "() => document.querySelectorAll('.chat-row .done-dot').length === 0",
             timeout=10000)
         assert not errors, errors
+        browser.close()
+
+
+def test_v415_compact_button_and_memory_settings(site):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
+        page = browser.new_page(viewport={'width': 1400, 'height': 950})
+        errors = []
+        page.on('pageerror', lambda err: errors.append(str(err)))
+        page.goto(site + '/?demo=1', wait_until='networkidle')
+
+        # No Compact chip before a chat exists; it appears in a started chat.
+        assert page.locator('#compactButton').is_hidden()
+        choose_mode(page, 'Battle Mode')
+        page.locator('#prompt').fill('Write a haiku about autumn')
+        page.locator('#prompt').press('Enter')
+        page.locator('#stopButton').wait_for(state='hidden', timeout=30000)
+        page.locator('#compactButton').wait_for(state='visible', timeout=10000)
+
+        # Confirm dialog explains the fresh session; compacting drops a
+        # divider into the transcript.
+        page.locator('#compactButton').click()
+        page.locator('.modal', has_text='Compact conversation').wait_for()
+        modal_text = page.locator('.modal').inner_text()
+        assert 'fresh Arena session' in modal_text
+        assert 'vote' in modal_text  # Battle caveat
+        page.locator('.modal .button', has_text='Compact').click()
+        page.locator('.chat-divider').wait_for(timeout=10000)
+        assert 'Context compacted' in page.locator('.chat-divider').inner_text()
+
+        # Settings → Memory: two editable memory files and a save round-trip.
+        page.locator('[data-action="settings"]').first.click()
+        page.locator('#settings-tab-memory').click()
+        page.locator('.memory-field').first.wait_for()
+        assert page.locator('.memory-field').count() == 2
+        page.locator('.memory-field').first.fill('- demo fact: keep answers short')
+        page.locator('.settings-panels .button', has_text='Save memory').click()
+        page.wait_for_timeout(600)
+        assert page.locator('.memory-field').first.input_value() == '- demo fact: keep answers short'
+        page.keyboard.press('Escape')
+        assert not errors
         browser.close()

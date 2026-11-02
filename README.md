@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.13.0-8b5cf6?style=flat-square" alt="Version 4.13.0" />
+  <img src="https://img.shields.io/badge/version-4.15.0-8b5cf6?style=flat-square" alt="Version 4.15.0" />
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue?style=flat-square" alt="Windows 10/11" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776ab?style=flat-square" alt="Python 3.11+" />
   <img src="https://img.shields.io/badge/models-400%2B%20via%20arena.ai-10b981?style=flat-square" alt="400+ models via arena.ai" />
@@ -68,6 +68,18 @@ The app orchestrates chats, tools, files and permissions around it.
   Arena Agent creates in its cloud workspace are downloaded into that folder automatically
   (hash-deduped across turns, one permission decision per chat).
   Off: models only chat, Code-mode files are not mirrored, and Arena Agent files stay in Arena's workspace.
+- The loop keeps the model's context lean: long tool outputs are saved to `.arena-artifacts/` in the
+  folder and only a preview travels back (the model reads the full file only if it needs to),
+  repeated output lines collapse, `read_file` reads line ranges, and a model that keeps repeating
+  the same tool call is stopped automatically.
+- **Compact button** next to Workspace Sync: when a conversation nears Arena's context limit
+  (~80k characters — the button lights up), one click continues the same chat in a fresh Arena
+  session seeded with a summary, instead of the chat dying with empty replies. The full
+  transcript stays in the app; only the server-side context restarts.
+- **Memory across chats**, in the style of Claude Code: a general memory plus a per-project
+  `MEMORY.md` in the selected folder travel with the first message of each new conversation.
+  Models can update `MEMORY.md` while they work ("remember this"), Compact appends its session
+  summary there, and both files are editable in Settings → Memory.
 - Permission modes modelled on Claude Code (Plan / Ask / Accept edits / Bypass) gate every local action;
   requests are tied to the chat that asked, so a waiting permission never blocks your other chats.
 - Code (webdev) answers have their created/edited files mirrored into your folder

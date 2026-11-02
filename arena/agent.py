@@ -9,6 +9,7 @@ its own copy of the folder (option-a, option-b) so their work never collides.
 """
 
 import difflib
+import hashlib
 import json
 import re
 import shutil
@@ -18,6 +19,13 @@ from typing import Any, Dict, List, Tuple
 
 MAX_ROUNDS = 8
 OUTPUT_LIMIT = 6000
+# Outputs longer than this are saved to a file in the workspace and only a
+# preview travels back to the model (it can read_file the rest on demand),
+# so long tool chats stop drowning the Arena-side context in raw output.
+INLINE_LIMIT = 1500
+PREVIEW_LIMIT = 600
+ARTIFACTS_DIR = ".arena-artifacts"
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _TOOL_RE = re.compile(r"<tool\s+name\s*=\s*[\"']?([\w-]+)[\"']?\s*>(.*?)</tool\s*>", re.S | re.I)
 _EMPTY_FENCE = re.compile(r"```[\w-]*[ \t]*\n?\s*```")
 _PARAM_RE = re.compile(r"<([A-Za-z_][\w-]*)>(.*?)</\1\s*>", re.S | re.I)
@@ -36,7 +44,7 @@ Permission mode: {mode_label}. {mode_note}{lane_note}
 
 To use a tool, write its tag as plain text in your reply, not inside a code block. The app runs the tags in order and sends you the results in the next message.
 <tool name="ls"><path>.</path></tool>
-<tool name="read_file"><path>src/main.py</path></tool>
+<tool name="read_file"><path>src/main.py</path></tool> (optional <start_line>40</start_line><end_line>120</end_line>)
 <tool name="search"><pattern>def main</pattern><path>.</path></tool>
 <tool name="write_file"><path>index.html</path><content>
 FULL FILE CONTENT
@@ -47,6 +55,9 @@ FULL FILE CONTENT
 <tool name="run_cmd"><cmd>python -m pytest -q</cmd></tool>
 {extra_tools}
 Rules: paths are relative to the folder. Read a file before editing it. write_file takes the whole file. When the task is done, reply with a short summary and no tool tags. If the message does not need files, just answer it.
+Keep the context lean: batch independent tool calls in one reply instead of one call per round. read_file accepts <start_line> and <end_line> — read only the part you need, and do not re-read files you just wrote. Very long tool outputs are saved under .arena-artifacts/ and you only see a preview; read_file that path if you need the full text.
+
+Persistent memory: MEMORY.md in the workspace root is shared across chats about this project, and its content may be included above as established context. When you learn durable facts worth keeping beyond this chat \u2014 project conventions, decisions, user preferences, the current state of the work \u2014 update MEMORY.md briefly with write_file/edit_file (short bullet points; point to files instead of copying code). Do not store secrets, one-off details, or anything obvious from the code itself. If the user says \u201cremember this\u201d, that goes to MEMORY.md.
 
 User message:
 """
@@ -196,28 +207,77 @@ def _diff(old: str, new: str, name: str, limit: int = 80) -> str:
     return "\n".join(lines)
 
 
-def _result_lines(outcomes) -> List[str]:
+def trim_output(text: str) -> str:
+    """Shrink a tool output for the trip back to the model: no ANSI codes,
+    repeated lines collapsed, head+tail kept when it is still too long."""
+    cleaned = _ANSI_RE.sub("", str(text or ""))
+    out_lines: List[str] = []
+    run_line, run_count = None, 0
+    for line in cleaned.splitlines():
+        if line == run_line:
+            run_count += 1
+            continue
+        if run_count > 2:
+            out_lines.append(f"... (same line x{run_count})")
+        elif run_count == 2:
+            out_lines.append(run_line or "")
+        run_line, run_count = line, 1
+        out_lines.append(line)
+    if run_count > 2:
+        out_lines.append(f"... (same line x{run_count})")
+    elif run_count == 2 and run_line is not None:
+        out_lines.append(run_line)
+    cleaned = "\n".join(out_lines)
+    if len(cleaned) > OUTPUT_LIMIT:
+        head = cleaned[: OUTPUT_LIMIT * 3 // 5]
+        tail = cleaned[-(OUTPUT_LIMIT * 2 // 5):]
+        cleaned = head + f"\n... [{len(cleaned) - len(head) - len(tail)} chars omitted] ...\n" + tail
+    return cleaned
+
+
+def _offload(output: str, call, artifact_dir, artifact_rel: str) -> str:
+    """Save a long output under .arena-artifacts/ and return a preview +
+    pointer instead of the whole text. Falls back to trimming on any error."""
+    try:
+        digest = hashlib.sha1(output.encode("utf-8", "replace")).hexdigest()[:8]
+        name = f"{call.get('name') or 'tool'}-{digest}.txt"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / name).write_text(output[:200_000], encoding="utf-8")
+        return (output[:PREVIEW_LIMIT]
+                + f"\n... [full output ({len(output)} chars) saved to {artifact_rel}/{name}"
+                  " - use read_file on it if you need the rest]")
+    except OSError:
+        return trim_output(output)
+
+
+def _result_lines(outcomes, artifact_dir=None, artifact_rel: str = ARTIFACTS_DIR) -> List[str]:
     lines = []
     for i, (call, status, output) in enumerate(outcomes, 1):
         target = call["params"].get("path") or call["params"].get("cmd") or ""
         lines.append(f"[{i}] {call['name']} {target}: {status}")
         if output:
-            lines.append(str(output)[:OUTPUT_LIMIT])
+            cleaned = _ANSI_RE.sub("", str(output))
+            if (artifact_dir is not None and call.get("name") != "read_file"
+                    and len(cleaned) > INLINE_LIMIT):
+                lines.append(_offload(cleaned, call, artifact_dir, artifact_rel))
+            else:
+                lines.append(trim_output(cleaned))
     return lines
 
 
 _CONTINUE = "Continue the task. When it is complete, reply with a short summary and no tool tags."
 
 
-def format_results(outcomes) -> str:
-    return "\n".join(["Tool results:"] + _result_lines(outcomes) + [_CONTINUE])
+def format_results(outcomes, artifact_dir=None, artifact_rel: str = ARTIFACTS_DIR) -> str:
+    return "\n".join(["Tool results:"] + _result_lines(outcomes, artifact_dir, artifact_rel) + [_CONTINUE])
 
 
-def format_lane_results(per_lane) -> str:
+def format_lane_results(per_lane, artifact_dirs=None, artifact_rel: str = ARTIFACTS_DIR) -> str:
     """Results for a two-model chat: one block per reply, each listing the calls it answers."""
     parts = ["Tool results for both replies. Use only the block for the tool calls you wrote."]
     for lane, outcomes in per_lane.items():
-        parts.append(f"Reply {lane.upper()}:\n" + "\n".join(_result_lines(outcomes)) if outcomes
+        lane_dir = (artifact_dirs or {}).get(lane)
+        parts.append(f"Reply {lane.upper()}:\n" + "\n".join(_result_lines(outcomes, lane_dir, artifact_rel)) if outcomes
                      else f"Reply {lane.upper()}: no tool calls.")
     return "\n\n".join(parts + [_CONTINUE])
 
@@ -336,7 +396,26 @@ class LocalTools:
         if target.stat().st_size > 1_000_000:
             raise ValueError("file is larger than 1 MB")
         text = _read(target)
-        return text if len(text) <= 40_000 else text[:40_000] + "\n...[truncated]"
+        lines = text.splitlines()
+        total = len(lines)
+        try:
+            start = int(prm.get("start_line") or 0)
+        except (TypeError, ValueError):
+            start = 0
+        try:
+            end = int(prm.get("end_line") or 0)
+        except (TypeError, ValueError):
+            end = 0
+        if start > 0 or end > 0:
+            start = max(1, start or 1)
+            end = min(total, end or total)
+            part = "\n".join(lines[start - 1:end])
+            return f"[lines {start}-{end} of {total}]\n{part}"
+        if len(text) > OUTPUT_LIMIT:
+            return (text[:OUTPUT_LIMIT]
+                    + f"\n... [file continues: {total} lines total - call read_file with "
+                      "start_line/end_line to read a specific part]")
+        return text
 
     def _t_search(self, prm) -> str:
         target, _ = self.resolve(prm.get("path", "."))
