@@ -11,7 +11,10 @@ import shutil
 import subprocess
 import tempfile
 import time
-import winreg
+try:
+    import winreg
+except ImportError:  # Allow portable unit tests; Windows remains the desktop target.
+    winreg = None
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 

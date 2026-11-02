@@ -1,1961 +1,8444 @@
-/* Arena.ai Desktop Client — Frontend */
+/* Arena Desktop — local interface controller
+ * Unofficial client shell. No direct requests to arena.ai.
+ * The only optional simulated data lives behind ?demo=1.
+ */
+(() => {
+  'use strict';
 
-let currentMode = 'battle';
-let currentModality = 'auto';
-let selectedModel = null;
-let selectedModelB = null;
-let models = [];
-let isStreaming = false;
-let isUploading = false;
-let chatCounter = 0;
-let isLoggedIn = false;
-let accounts = [];
-let loginAddMode = false;
-let uploadedFiles = [];
-let lastSentAttachments = [];
-let currentChatId = null;
-let streamAbort = null;
+  if (window.__arenaDesktopApp) return;
+  window.__arenaDesktopApp = true;
 
-const MODE_NEEDS_MODEL = ['direct', 'side-by-side', 'agent'];
-const MODE_LABELS = { battle: 'Battle', direct: 'Direct', 'side-by-side': 'Side by Side', agent: 'Agent' };
+  const DEMO = new URLSearchParams(window.location.search).get('demo') === '1';
+  const $ = (selector, root = document) => root.querySelector(selector);
+  const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
-const ORG_LOGOS = {
-  google: `<svg viewBox="0 0 24 24" width="18" height="18"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18A10.96 10.96 0 0 0 1 12c0 1.77.42 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>`,
-  openai: `<svg viewBox="0 0 24 24" width="18" height="18"><path d="M22.28 9.37a6.17 6.17 0 0 0-.53-5.07 6.24 6.24 0 0 0-6.73-2.98A6.2 6.2 0 0 0 10.36 0a6.24 6.24 0 0 0-5.95 4.33A6.17 6.17 0 0 0 .27 8.06a6.24 6.24 0 0 0 .77 7.32 6.17 6.17 0 0 0 .53 5.07 6.24 6.24 0 0 0 6.73 2.98A6.2 6.2 0 0 0 12.96 24a6.24 6.24 0 0 0 5.95-4.33 6.17 6.17 0 0 0 4.14-3.73 6.24 6.24 0 0 0-.77-6.57z" fill="#10B981"/></svg>`,
-  anthropic: `<svg viewBox="0 0 24 24" width="18" height="18"><path d="M13.83 2H16.7l6.3 20h-2.87l-1.46-4.83H12.6L14.04 14h4.5L15.27 4.37 10.15 22H7.28L13.83 2zM1 22L7.2 2h2.87l-1.85 5.97L4.69 22H1z" fill="#F97316"/></svg>`,
-  xai: `<svg viewBox="0 0 24 24" width="18" height="18"><path d="M3 3l7.5 9L3 21h2.2l6.3-7.56L17.8 21H21l-7.8-9.36L20.4 3h-2.2l-5.7 6.84L6.2 3H3z" fill="#D946EF"/></svg>`,
-  meta: `<svg viewBox="0 0 24 24" width="18" height="18"><path d="M6.91 4.24C5.21 4.24 3.76 5.6 2.73 7.74 1.46 10.38.87 13.59.87 15.46c0 2.74 1.16 4.3 3.24 4.3 1.62 0 3.15-1.34 4.88-4.28.73-1.23 1.44-2.67 2.15-4.28l.98-2.27c.89-2.04 1.92-3.87 3.12-5.14A5.87 5.87 0 0 1 19.35 2c2.39 0 3.78 1.74 3.78 4.45 0 3.09-1.4 6.63-3.52 8.92a8.97 8.97 0 0 1-2.8 2.22" fill="none" stroke="#06B6D4" stroke-width="2"/></svg>`,
-  mistral: `<svg viewBox="0 0 24 24" width="18" height="18"><rect x="2" y="2" width="5" height="5" fill="#F7D046"/><rect x="9.5" y="2" width="5" height="5" fill="#F7D046"/><rect x="17" y="2" width="5" height="5" fill="#EF4444"/><rect x="2" y="9.5" width="5" height="5" fill="#F7D046"/><rect x="9.5" y="9.5" width="5" height="5" fill="#EF4444"/><rect x="17" y="9.5" width="5" height="5" fill="#F7D046"/><rect x="2" y="17" width="5" height="5" fill="#EF4444"/><rect x="9.5" y="17" width="5" height="5" fill="#F7D046"/><rect x="17" y="17" width="5" height="5" fill="#F7D046"/></svg>`,
-  deepseek: `<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#3B82F6"/><text x="12" y="16" text-anchor="middle" fill="white" font-size="12" font-weight="700" font-family="sans-serif">D</text></svg>`,
-  alibaba: `<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#F59E0B"/><text x="12" y="16" text-anchor="middle" fill="white" font-size="11" font-weight="700" font-family="sans-serif">Q</text></svg>`,
-  nvidia: `<svg viewBox="0 0 24 24" width="18" height="18"><path d="M9.2 9.48v-.72c.04 0 .08 0 .14-.01 2.1-.14 3.66 1.71 3.66 1.71s-1.74 2.04-3.52 2.04c-.11 0-.2-.01-.28-.03V9.48zm0-2.97v1.68l.06-.01c2.68-.2 4.63 2.2 4.63 2.2s-2.35 2.72-4.47 2.72a2.5 2.5 0 0 1-.22-.01v1.1c.06 0 .13.01.2.01 2.54 0 4.42-1.3 6.22-2.82a17.4 17.4 0 0 1 1.37 1.12c-2.06 1.66-6.86 3.22-7.77 3.22h-.02v1.26C11.5 16.96 18 13.18 18 13.18a21.88 21.88 0 0 0-4.06-3.84c1.3-1.14 2.82-1.85 2.82-1.85A16.67 16.67 0 0 0 9.2 6.51z" fill="#76B900"/></svg>`,
-};
+  /* ---------------------------------------------------------------------- */
+  /* Icons: static, local SVG only. Never derived from server/model text.   */
+  /* ---------------------------------------------------------------------- */
+  const ICONS = {
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    'panel-left': '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/>',
+    'panel-right': '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M15 4v16"/>',
+    layers: '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>',
+    search: '<circle cx="11" cy="11" r="6.8"/><path d="m16 16 4.2 4.2"/>',
+    clock: '<circle cx="12" cy="12" r="8.7"/><path d="M12 7.6v4.9l3.2 1.8"/>',
+    refresh: '<path d="M20 11a8 8 0 1 0-2.1 6.5"/><path d="M20 4v7h-7"/>',
+    folder: '<path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v8.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-10Z"/>',
+    settings: '<circle cx="12" cy="12" r="3.2"/><path d="M19.2 13.5a7.7 7.7 0 0 0 0-3l2-1.6-2-3.4-2.4 1a8.4 8.4 0 0 0-2.6-1.5L14 2.5h-4L9.8 5a8.4 8.4 0 0 0-2.6 1.5l-2.4-1-2 3.4 2 1.6a7.7 7.7 0 0 0 0 3l-2 1.6 2 3.4 2.4-1A8.4 8.4 0 0 0 9.8 19l.2 2.5h4l.2-2.5a8.4 8.4 0 0 0 2.6-1.5l2.4 1 2-3.4-2-1.6Z"/>',
+    help: '<circle cx="12" cy="12" r="8.7"/><path d="M9.6 9.2a2.5 2.5 0 1 1 3.5 2.3c-.7.35-1.1.9-1.1 1.7v.4"/><path d="M12 17.2h.01"/>',
+    globe: '<circle cx="12" cy="12" r="8.7"/><path d="M3.6 12h16.8M12 3.3c2.2 2.3 3.4 5.3 3.4 8.7s-1.2 6.4-3.4 8.7c-2.2-2.3-3.4-5.3-3.4-8.7S9.8 5.6 12 3.3Z"/>',
+    x: '<path d="m6 6 12 12M18 6 6 18"/>',
+    'chevron-down': '<path d="m6.5 9 5.5 5.5L17.5 9"/>',
+    'chevron-right': '<path d="m9 6.5 5.5 5.5L9 17.5"/>',
+    'arrow-up': '<path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/>',
+    stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="1.6" fill="currentColor" stroke="none"/>',
+    shield: '<path d="M12 3.2 19 6v5.1c0 4.4-2.9 7.8-7 9.6-4.1-1.8-7-5.2-7-9.6V6l7-2.8Z"/><path d="m9.2 12 1.9 1.9 3.8-4"/>',
+    'shield-alert': '<path d="M12 3.2 19 6v5.1c0 4.4-2.9 7.8-7 9.6-4.1-1.8-7-5.2-7-9.6V6l7-2.8Z"/><path d="M12 8v4.5"/><path d="M12 16h.01"/>',
+    'wifi-off': '<path d="m3 3 18 18M8.6 15.3a5.2 5.2 0 0 1 6.8 0M5.5 12.2a10.2 10.2 0 0 1 4-2M14.2 9.9a10.2 10.2 0 0 1 4.3 2.3M2.5 8.8A15.8 15.8 0 0 1 7 6.4M12 5c2.1 0 4.1.5 6 1.4M12 20h.01"/>',
+    flask: '<path d="M9 3h6M10 3v6.1l-5 8.2A2 2 0 0 0 6.7 20h10.6a2 2 0 0 0 1.7-2.7l-5-8.2V3"/><path d="M7.3 14h9.4"/>',
+    trophy: '<path d="M7.5 4h9v5a4.5 4.5 0 0 1-9 0V4Z"/><path d="M7.5 5.5H4.7a2.8 2.8 0 0 0 2.9 4M16.5 5.5h2.8a2.8 2.8 0 0 1-2.9 4M12 13.6v3M8.8 20h6.4M10 20l.6-3.4M14 20l-.6-3.4"/>',
+    'thumbs-up': '<path d="M6.8 10.2v9.3H4.3a.8.8 0 0 1-.8-.8v-7.7a.8.8 0 0 1 .8-.8h2.5ZM6.8 12.4l3.9-7.3c1.3-.2 2.4.8 2.3 2l-.6 3.1h5.9c1 0 1.7 1 1.4 1.9l-1.4 5.4a2 2 0 0 1-2 1.5H8.5c-.9 0-1.7-.7-1.7-1.7v-4.9Z"/>',
+    'thumbs-down': '<path d="M17.2 13.8V4.5h2.5a.8.8 0 0 1 .8.8v7.7a.8.8 0 0 1-.8.8h-2.5ZM17.2 11.6l-3.9 7.3c-1.3.2-2.4-.8-2.3-2l.6-3.1H5.7c-1 0-1.7-1-1.4-1.9l1.4-5.4a2 2 0 0 1 2-1.5h7.8c.9 0 1.7.7 1.7 1.7v4.9Z"/>',
+    scale: '<path d="M12 4v16M7.5 20h9M12 4 6 6.4M12 4l6 2.4M6 6.4 3.4 12a3.4 3.4 0 0 0 5.2 0L6 6.4ZM18 6.4 15.4 12a3.4 3.4 0 0 0 5.2 0L18 6.4Z"/>',
+    menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    trash: '<path d="M4.8 7h14.4M9.2 7V4.6h5.6V7M7.2 7l.9 13h7.8l.9-13M10 10.5v6M14 10.5v6"/>',
+    layout: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9h17M9 9v10.5"/>',
+    chart: '<path d="M4 20V4M4 20h16"/><path d="M8 16v-4M12.5 16V7.5M17 16v-6"/>',
+    gamepad: '<path d="M8.5 8.2h7a4.5 4.5 0 0 1 4.3 3.2l1 3.4a2.4 2.4 0 0 1-4.2 2.1l-1.2-1.5H8.6l-1.2 1.5a2.4 2.4 0 0 1-4.2-2.1l1-3.4a4.5 4.5 0 0 1 4.3-3.2Z"/><path d="M8 11v3M6.5 12.5h3M16 11.5h.01M18 13.5h.01"/>',
+    bug: '<rect x="7" y="7.5" width="10" height="12" rx="5"/><path d="M9.5 7.5a2.5 2.5 0 0 1 5 0M4 11h3M17 11h3M4 16h3M17 16h3M8.5 19l-2 2M15.5 19l2 2"/>',
+    'git-branch': '<circle cx="6" cy="5" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10M8 7c4 0 4.5-1 8-1"/>',
+    'file-text': '<path d="M7 3.5h7l4 4V20H7z"/><path d="M14 3.5V8h4M9.5 12h5M9.5 15.5h5"/>',
+    image: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="9.5" r="1.5"/><path d="m4 17 4.6-4.5 3.3 3 2.4-2.1 5.7 5"/>',
+    video: '<rect x="3.5" y="5.5" width="12.5" height="13" rx="2"/><path d="m16 10 4.5-2.5v9L16 14"/>',
+    code: '<path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5l-3 14"/>',
+    'search-plus': '<circle cx="10.5" cy="10.5" r="6.4"/><path d="m15.3 15.3 4.2 4.2M10.5 7.8v5.4M7.8 10.5h5.4"/>',
+    copy: '<rect x="8.2" y="8.2" width="11.3" height="11.3" rx="2"/><path d="M15.8 8.2V6a1.8 1.8 0 0 0-1.8-1.8H6A1.8 1.8 0 0 0 4.2 6v8a1.8 1.8 0 0 0 1.8 1.8h2.2"/>',
+    check: '<path d="m5 12.4 4.4 4.4L19 7"/>',
+    package: '<path d="m12 3 8 4.3v9.4L12 21l-8-4.3V7.3L12 3Z"/><path d="m4.3 7.5 7.7 4 7.7-4M12 11.5V21"/>',
+    sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+    download: '<path d="M12 3.5v11M7.5 10.5 12 15l4.5-4.5M4 19.5h16"/>',
+    external: '<path d="M13 4h7v7M20 4l-8 8"/><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"/>',
+    terminal: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="m7.2 9 2.8 2.7L7.2 14.5M12.4 15h4.2"/>',
+    plug: '<path d="M9 3v5M15 3v5M6.8 8h10.4v3.4a5.2 5.2 0 0 1-10.4 0V8Z"/><path d="M12 16.6V21"/>',
+    cloud: '<path d="M17.5 18.2a4.2 4.2 0 0 0 .6-8.36A6.2 6.2 0 0 0 6.5 7.7 5.2 5.2 0 0 0 6.8 18z"/>',
+    braces: '<path d="M8 4H7a3 3 0 0 0-3 3v2.5A2.5 2.5 0 0 1 1.8 12 2.5 2.5 0 0 1 4 14.5V17a3 3 0 0 0 3 3h1M16 4h1a3 3 0 0 1 3 3v2.5a2.5 2.5 0 0 0 2.2 2.5A2.5 2.5 0 0 0 20 14.5V17a3 3 0 0 1-3 3h-1"/>',
+    info: '<circle cx="12" cy="12" r="8.7"/><path d="M12 10.5v5.2M12 7.8h.01"/>',
+    alert: '<path d="M10.3 4.6a2 2 0 0 1 3.4 0l7.4 12.7a2 2 0 0 1-1.7 3H4.6a2 2 0 0 1-1.7-3L10.3 4.6Z"/><path d="M12 9v4M12 16.4h.01"/>',
+    lock: '<rect x="4.8" y="10" width="14.4" height="10.5" rx="2"/><path d="M8.2 10V7.5a3.8 3.8 0 0 1 7.6 0V10M12 14v2.4"/>',
+    user: '<circle cx="12" cy="8.5" r="3.7"/><path d="M4.8 20a7.2 7.2 0 0 1 14.4 0"/>',
+    login: '<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M9 8l4 4-4 4M13 12H3.5"/>',
+    logout: '<path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M15 8l4 4-4 4M19 12H9"/>',
+    mail: '<rect x="3.5" y="5.2" width="17" height="14" rx="2"/><path d="m4.5 7 7.5 6 7.5-6"/>',
+    file: '<path d="M7 3.5h7l4 4V20H7z"/><path d="M14 3.5V8h4"/>',
+    archive: '<rect x="3.5" y="4.5" width="17" height="5" rx="1.2"/><path d="M5 9.5V20h14V9.5M9.5 13h5"/>',
+    spark: '<path d="M12 2.8c.55 5.35 3.85 8.65 9.2 9.2-5.35.55-8.65 3.85-9.2 9.2-.55-5.35-3.85-8.65-9.2-9.2 5.35-.55 8.65-3.85 9.2-9.2Z"/>',
+    swords: '<path d="M4.5 4.5 15 15M19.5 4.5 9 15M4.5 4.5v3.2M4.5 4.5h3.2M19.5 4.5v3.2M19.5 4.5h-3.2M13.8 13.8 19 19M10.2 13.8 5 19"/>',
+    columns: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M12 4.5v15"/>',
+    message: '<path d="M20.5 12a8.3 8.3 0 0 1-12 7.2L4 20.5l1.4-4.2A8.3 8.3 0 1 1 20.5 12Z"/>',
+    type: '<path d="M5 5h14M12 5v14M9.5 19h5"/>',
+    play: '<circle cx="12" cy="12" r="8.7"/><path d="m10 8.5 5 3.5-5 3.5v-7Z"/>',
+    'arrow-down': '<path d="M12 5v14M6.5 13.5 12 19l5.5-5.5"/>'
+  };
 
-function getOrgLogo(org) {
-  const key = (org || '').toLowerCase();
-  if (ORG_LOGOS[key]) return ORG_LOGOS[key];
-  const initial = (org || '?')[0].toUpperCase();
-  const colors = { minimax: '#14B8A6', zai: '#8B5CF6', stepfun: '#EC4899', bytedance: '#00D1FF', tencent: '#2B82EE', amazon: '#FF9900', microsoft: '#00BCF2', ibm: '#054ADA' };
-  const color = colors[key] || '#C7C2BC';
-  return `<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="${color}"/><text x="12" y="16" text-anchor="middle" fill="white" font-size="11" font-weight="700" font-family="sans-serif">${initial}</text></svg>`;
-}
+  function icon(name, className = '') {
+    const body = ICONS[name] || ICONS.info;
+    return `<svg${className ? ` class="${className}"` : ''} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${body}</svg>`;
+  }
 
-document.addEventListener('DOMContentLoaded', () => {
-  checkStatus();
-  loadModels();
-  loadChatHistory();
-  loadAccounts();
-  document.getElementById('chatInput').focus();
-});
+  function iconEl(name, className = '') {
+    const span = document.createElement('span');
+    span.className = `icon${className ? ` ${className}` : ''}`;
+    span.setAttribute('aria-hidden', 'true');
+    span.innerHTML = icon(name);
+    return span;
+  }
 
-/* ── Custom title bar (the desktop window is frameless) ── */
-const _tb = () => window.pywebview && window.pywebview.api;
-function tbMinimize() { _tb()?.tb_minimize(); }
-function tbToggleMaximize() { _tb()?.tb_toggle_maximize(); }
-function tbClose() { _tb()?.tb_close(); }
+  function hydrateIcons(root = document) {
+    $$('[data-icon]', root).forEach((node) => {
+      if (node.dataset.iconReady === '1' || node.querySelector('svg')) return;
+      node.innerHTML = icon(node.dataset.icon);
+      node.dataset.iconReady = '1';
+      node.setAttribute('aria-hidden', 'true');
+    });
+  }
 
-/* Called by the shell when the window is maximized/restored, to swap the icon. */
-function titlebarState(maximized) {
-  const btn = document.getElementById('tbMaxBtn');
-  if (!btn) return;
-  btn.classList.toggle('minimized', !!maximized);
-  btn.title = maximized ? 'Restore' : 'Maximize';
-  btn.innerHTML = maximized
-    ? '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="4" width="6" height="6" rx="1"/><path d="M4.2 4V2.6a1 1 0 0 1 1-1h4.2a1 1 0 0 1 1 1v4.2a1 1 0 0 1-1 1H8"/></svg>'
-    : '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="2.5" width="7" height="7" rx="1"/></svg>';
-}
-
-/* ── API ── */
-async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
-  return res.json();
-}
-
-/* ── Auth ── */
-let statusTimer = null;
-async function checkStatus(refresh) {
-  clearTimeout(statusTimer);
-  try {
-    const s = await api('/api/status' + (refresh ? '?refresh=1' : ''));
-    window.appState = s;
-    hideSplash();
-    permMode = s.permission_mode || 'default';
-    updatePermUI();
-    currentMode = s.mode || currentMode;
-    currentModality = s.modality || currentModality;
-    if (currentMode === 'agent' && currentModality !== 'auto') {
-      currentModality = 'auto';
-      api('/api/modality', { method: 'POST', body: JSON.stringify({ modality: 'auto' }) });
+  /* ---------------------------------------------------------------------- */
+  /* Small DOM and formatting helpers                                      */
+  /* ---------------------------------------------------------------------- */
+  function append(parent, child) {
+    if (child === null || child === undefined || child === false) return;
+    if (Array.isArray(child)) {
+      child.forEach((item) => append(parent, item));
+      return;
     }
-    updateModeUI();
-    updateModalityUI();
-    if (modelsWanted !== apiModalityForUI()) loadModels();  // status restored a different modality than the first list
-    const ws = document.getElementById('settingsWorkspace');
-    if (ws) ws.textContent = s.workspace || '-';
-    updateWsChip(s.workspace);
-    const pd = document.getElementById('settingsProjects');
-    if (pd) pd.textContent = s.projects_dir || '-';
-    const el = document.getElementById('userEmail');
-    const av = document.getElementById('userAvatar');
-    const name = s.full_name || s.email;
-    if (s.authenticated) {
-      el.textContent = name || (s.loading ? 'Connecting...' : 'Guest session');
-      av.textContent = '';
-      if (s.avatar_url) {
-        const img = new Image();
-        img.className = 'avatar-img';
-        img.alt = '';
-        img.src = s.avatar_url;
-        av.appendChild(img);
-      } else {
-        av.textContent = (name || 'U')[0].toUpperCase();
+    if (child instanceof Node) {
+      parent.appendChild(child);
+      return;
+    }
+    parent.appendChild(document.createTextNode(String(child)));
+  }
+
+  function el(tag, props = {}, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(props || {})) {
+      if (value === null || value === undefined || value === false) continue;
+      if (key === 'class' || key === 'className') node.className = String(value);
+      else if (key === 'text') node.textContent = String(value);
+      else if (key === 'style' && typeof value === 'object') Object.assign(node.style, value);
+      else if (key === 'dataset' && typeof value === 'object') Object.assign(node.dataset, value);
+      else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2).toLowerCase(), value);
+      else if (value === true) node.setAttribute(key, '');
+      else node.setAttribute(key, String(value));
+    }
+    children.forEach((child) => append(node, child));
+    return node;
+  }
+
+  function clear(node) {
+    if (node) node.replaceChildren();
+    return node;
+  }
+
+  function announce(text) {
+    const region = $('#liveRegion');
+    if (!region) return;
+    region.textContent = '';
+    window.setTimeout(() => { region.textContent = text; }, 20);
+  }
+
+  function textValue(value) {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (Array.isArray(value)) return value.map((item) => textValue(typeof item === 'object' ? (item?.text ?? item?.content ?? '') : item)).filter(Boolean).join('\n');
+    if (typeof value === 'object') return textValue(value.text ?? value.content ?? value.message ?? '');
+    return '';
+  }
+
+  function safeUrl(raw, { image = false } = {}) {
+    if (typeof raw !== 'string') return null;
+    const value = raw.trim();
+    if (!value) return null;
+    if (image && value.startsWith('data:image/')) {
+      if (/^data:image\/(png|jpe?g|webp|gif);/i.test(value)) return value;
+      if (/^data:image\/svg\+xml[,;]/i.test(value)) {
+        try {
+          const decoded = decodeURIComponent(value.split(',').slice(1).join(','));
+          if (/<script|on[a-z]+\s*=|javascript:/i.test(decoded)) return null;
+        } catch { return null; }
+        return value;
       }
-      isLoggedIn = true;
-      updateAuthUI(true, name || 'arena.ai user');
-    } else {
-      el.textContent = s.session_error ? 'Session expired: sign in' : 'Sign in';
-      av.textContent = '?';
-      isLoggedIn = false;
-      updateAuthUI(false);
+      return null;
     }
-    const eng = s.engine || {};
-    updateConnectionBadge(eng.challenge ? 'check' : s.loading ? 'loading' : s.offline ? 'error'
-      : s.authenticated ? 'connected' : s.session_error ? 'expired' : 'disconnected');
-    if (s.loading || eng.challenge) statusTimer = setTimeout(checkStatus, 2500);
-  } catch (e) {
-    updateConnectionBadge('error');
-    statusTimer = setTimeout(checkStatus, 5000);
+    if (image && /^blob:/i.test(value)) return value;
+    if (value.startsWith('/') && !value.startsWith('//')) return value;
+    try {
+      const parsed = new URL(value, window.location.href);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.href;
+    } catch { /* invalid URL */ }
+    return null;
   }
-}
 
-function updateConnectionBadge(state) {
-  let badge = document.getElementById('connBadge');
-  if (!badge) {
-    badge = document.createElement('div');
-    badge.id = 'connBadge';
-    badge.className = 'conn-badge';
-    const footer = document.querySelector('.input-footer');
-    if (footer) footer.prepend(badge);
+  function hostOf(raw) {
+    const safe = safeUrl(raw);
+    if (!safe) return '';
+    try { return new URL(safe, window.location.href).host.replace(/^www\./, ''); } catch { return ''; }
   }
-  const labels = { connected: 'Connected', disconnected: 'Not signed in', expired: 'Session expired', error: 'Offline',
-    loading: 'Connecting to arena.ai...', check: 'arena.ai needs a check: click' };
-  badge.onclick = state === 'check' || state === 'loading' ? showEngine : null;
-  badge.className = 'conn-badge ' + state;
-  badge.textContent = labels[state] || state;
-}
 
-function updateAuthUI(loggedIn, email) {
-  const settingsLogin = document.getElementById('settingsLoginBtn');
-  const settingsLogout = document.getElementById('settingsLogoutBtn');
-  const accountLogout = document.getElementById('accountLogoutBtn');
-  const settingsAuth = document.getElementById('settingsAuthStatus');
-  const settingsEmail = document.getElementById('settingsEmail');
-
-  if (loggedIn) {
-    if (settingsLogin) settingsLogin.style.display = 'none';
-    if (accountLogout) accountLogout.style.display = '';
-    if (settingsLogout) settingsLogout.style.display = '';
-    if (settingsAuth) { settingsAuth.textContent = 'Logged in'; settingsAuth.style.color = 'var(--interactive-positive)'; }
-    if (settingsEmail) settingsEmail.textContent = email || '—';
-  } else {
-    if (settingsLogin) settingsLogin.style.display = '';
-    if (accountLogout) accountLogout.style.display = 'none';
-    if (settingsLogout) settingsLogout.style.display = 'none';
-    if (settingsAuth) { settingsAuth.textContent = 'Not logged in'; settingsAuth.style.color = 'var(--text-muted)'; }
-    if (settingsEmail) settingsEmail.textContent = '—';
+  function safeColor(raw) {
+    if (typeof raw !== 'string') return '';
+    const value = raw.trim();
+    if (/^#[0-9a-f]{3,8}$/i.test(value)) return value;
+    if (/^rgba?\(\s*[\d.%\s,/]+\)$/i.test(value)) return value;
+    if (/^hsla?\(\s*[\d.%\s,/deg]+\)$/i.test(value)) return value;
+    return '';
   }
-}
 
-/* ── Accounts ── */
-async function loadAccounts() {
-  try {
-    const r = await api('/api/accounts');
-    accounts = Array.isArray(r.accounts) ? r.accounts : [];
-    renderAccountMenu();
-  } catch (_) {}
-}
+  function initialLetters(name, max = 2) {
+    const clean = String(name || 'Arena Desktop').replace(/[^\p{L}\p{N}\s._-]/gu, ' ').trim();
+    const words = clean.split(/[\s._-]+/).filter(Boolean);
+    if (!words.length) return 'AD';
+    return words.slice(0, max).map((word) => word[0]).join('').toUpperCase();
+  }
 
-function renderAccountMenu() {
-  const list = document.getElementById('accountList');
-  if (!list) return;
-  if (!accounts.length) {
-    list.innerHTML = '<div class="account-empty">No saved accounts</div>';
-  } else {
-    list.innerHTML = accounts.map(a => {
-      const initial = (a.email || '?')[0].toUpperCase();
-      const avatar = a.avatar_url
-        ? `<img src="${attr(safeUrl(a.avatar_url))}" alt="">`
-        : esc(initial);
-      return `<button type="button" class="account-item${a.active ? ' active' : ''}" data-account="${attr(a.id)}">
-        <span class="account-avatar">${avatar}</span>
-        <span class="account-info"><span class="account-email">${esc(a.email || 'Account')}</span>${a.name ? `<span class="account-name">${esc(a.name)}</span>` : ''}</span>
-        ${a.active ? '<span class="account-check">current</span>' : '<span class="account-remove" data-remove="1" title="Remove account">&times;</span>'}
-      </button>`;
-    }).join('');
-    list.querySelectorAll('.account-item').forEach(btn => {
-      btn.onclick = e => {
-        const id = btn.dataset.account;
-        if (e.target.closest('[data-remove]')) removeAccount(id);
-        else switchAccount(id);
+  // Arena's model catalog carries no per-model icon: the website draws the
+  // organization's logo. Keep the same local brand marks (static SVG only);
+  // an icon_url from the catalog, when Arena provides one, wins.
+  const ORG_LOGOS = {
+    google: '<svg viewBox="0 0 24 24" width="18" height="18"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18A10.96 10.96 0 0 0 1 12c0 1.77.42 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>',
+    openai: '<svg viewBox="0 0 24 24" width="18" height="18"><path d="M22.28 9.37a6.17 6.17 0 0 0-.53-5.07 6.24 6.24 0 0 0-6.73-2.98A6.2 6.2 0 0 0 10.36 0a6.24 6.24 0 0 0-5.95 4.33A6.17 6.17 0 0 0 .27 8.06a6.24 6.24 0 0 0 .77 7.32 6.17 6.17 0 0 0 .53 5.07 6.24 6.24 0 0 0 6.73 2.98A6.2 6.2 0 0 0 12.96 24a6.24 6.24 0 0 0 5.95-4.33 6.17 6.17 0 0 0 4.14-3.73 6.24 6.24 0 0 0-.77-6.57z" fill="#10B981"/></svg>',
+    anthropic: '<svg viewBox="0 0 24 24" width="18" height="18"><path d="M13.83 2H16.7l6.3 20h-2.87l-1.46-4.83H12.6L14.04 14h4.5L15.27 4.37 10.15 22H7.28L13.83 2zM1 22L7.2 2h2.87l-1.85 5.97L4.69 22H1z" fill="#F97316"/></svg>',
+    xai: '<svg viewBox="0 0 24 24" width="18" height="18"><path d="M3 3l7.5 9L3 21h2.2l6.3-7.56L17.8 21H21l-7.8-9.36L20.4 3h-2.2l-5.7 6.84L6.2 3H3z" fill="#D946EF"/></svg>',
+    meta: '<svg viewBox="0 0 24 24" width="18" height="18"><path d="M6.91 4.24C5.21 4.24 3.76 5.6 2.73 7.74 1.46 10.38.87 13.59.87 15.46c0 2.74 1.16 4.3 3.24 4.3 1.62 0 3.15-1.34 4.88-4.28.73-1.23 1.44-2.67 2.15-4.28l.98-2.27c.89-2.04 1.92-3.87 3.12-5.14A5.87 5.87 0 0 1 19.35 2c2.39 0 3.78 1.74 3.78 4.45 0 3.09-1.4 6.63-3.52 8.92a8.97 8.97 0 0 1-2.8 2.22" fill="none" stroke="#06B6D4" stroke-width="2"/></svg>',
+    mistral: '<svg viewBox="0 0 24 24" width="18" height="18"><rect x="2" y="2" width="5" height="5" fill="#F7D046"/><rect x="9.5" y="2" width="5" height="5" fill="#F7D046"/><rect x="17" y="2" width="5" height="5" fill="#EF4444"/><rect x="2" y="9.5" width="5" height="5" fill="#F7D046"/><rect x="9.5" y="9.5" width="5" height="5" fill="#EF4444"/><rect x="17" y="9.5" width="5" height="5" fill="#F7D046"/><rect x="2" y="17" width="5" height="5" fill="#EF4444"/><rect x="9.5" y="17" width="5" height="5" fill="#F7D046"/><rect x="17" y="17" width="5" height="5" fill="#F7D046"/></svg>',
+    deepseek: '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#3B82F6"/><text x="12" y="16" text-anchor="middle" fill="white" font-size="12" font-weight="700" font-family="sans-serif">D</text></svg>',
+    alibaba: '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#F59E0B"/><text x="12" y="16" text-anchor="middle" fill="white" font-size="11" font-weight="700" font-family="sans-serif">Q</text></svg>',
+    nvidia: '<svg viewBox="0 0 24 24" width="18" height="18"><path d="M9.2 9.48v-.72c.04 0 .08 0 .14-.01 2.1-.14 3.66 1.71 3.66 1.71s-1.74 2.04-3.52 2.04c-.11 0-.2-.01-.28-.03V9.48zm0-2.97v1.68l.06-.01c2.68-.2 4.63 2.2 4.63 2.2s-2.35 2.72-4.47 2.72a2.5 2.5 0 0 1-.22-.01v1.1c.06 0 .13.01.2.01 2.54 0 4.42-1.3 6.22-2.82a17.4 17.4 0 0 1 1.37 1.12c-2.06 1.66-6.86 3.22-7.77 3.22h-.02v1.26C11.5 16.96 18 13.18 18 13.18a21.88 21.88 0 0 0-4.06-3.84c1.3-1.14 2.82-1.85 2.82-1.85A16.67 16.67 0 0 0 9.2 6.51z" fill="#76B900"/></svg>'
+  };
+
+  function orgLogoSvg(org, color) {
+    const key = String(org || '').trim().toLowerCase();
+    if (ORG_LOGOS[key]) return ORG_LOGOS[key];
+    const initial = (key || '?')[0].toUpperCase();
+    const colors = { minimax: '#14B8A6', zai: '#8B5CF6', stepfun: '#EC4899', bytedance: '#00D1FF', tencent: '#2B82EE', amazon: '#FF9900', microsoft: '#00BCF2', ibm: '#054ADA', cohere: '#F43F5E' };
+    const fill = safeColor(color) || colors[key] || '#C7C2BC';
+    return `<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="${fill}"/><text x="12" y="16" text-anchor="middle" fill="white" font-size="11" font-weight="700" font-family="sans-serif">${initial}</text></svg>`;
+  }
+
+  function inferOrgFromModelName(name) {
+    const text = String(name || '').toLowerCase();
+    if (/gpt|openai|chatgpt|o[0-9]\b/.test(text)) return 'openai';
+    if (/claude|anthropic/.test(text)) return 'anthropic';
+    if (/gemini|gemma|google/.test(text)) return 'google';
+    if (/grok|xai/.test(text)) return 'xai';
+    if (/llama|meta/.test(text)) return 'meta';
+    if (/mistral|mixtral|codestral/.test(text)) return 'mistral';
+    if (/deepseek/.test(text)) return 'deepseek';
+    if (/qwen|alibaba|tongyi/.test(text)) return 'alibaba';
+    if (/nvidia|nemotron/.test(text)) return 'nvidia';
+    if (/command|cohere/.test(text)) return 'cohere';
+    if (/minimax/.test(text)) return 'minimax';
+    return '';
+  }
+
+  function modelIconNode(model) {
+    const iconUrl = safeUrl(model?.icon_url || model?.iconUrl || model?.logo_url || '', { image: true });
+    const org = model?.org || model?.org_display || inferOrgFromModelName(model?.name || model?.modelName || '');
+    const wrap = el('span', { class: 'model-org-logo', 'aria-hidden': 'true' });
+    if (iconUrl) {
+      const img = el('img', { src: iconUrl, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' });
+      img.addEventListener('error', () => { wrap.innerHTML = orgLogoSvg(org, model?.color); }, { once: true });
+      wrap.appendChild(img);
+    } else if (org) {
+      wrap.innerHTML = orgLogoSvg(org, model?.color);
+    } else {
+      return null;
+    }
+    return wrap;
+  }
+
+  const CONNECTOR_DOMAINS = {
+    github: 'github.com', googledrive: 'drive.google.com', drive: 'drive.google.com',
+    googledocs: 'docs.google.com', docs: 'docs.google.com', googlesheets: 'docs.google.com',
+    googleslides: 'docs.google.com', gmail: 'mail.google.com', googlecalendar: 'calendar.google.com',
+    calendar: 'calendar.google.com', notion: 'notion.so', linear: 'linear.app',
+    dropbox: 'dropbox.com', vercel: 'vercel.com', supabase: 'supabase.com', slack: 'slack.com',
+    figma: 'figma.com', airtable: 'airtable.com', hubspot: 'hubspot.com',
+    salesforce: 'salesforce.com', stripe: 'stripe.com', discord: 'discord.com',
+    spotify: 'spotify.com', youtube: 'youtube.com', asana: 'asana.com', jira: 'atlassian.com',
+    confluence: 'atlassian.com', gitlab: 'gitlab.com', zoom: 'zoom.us', outlook: 'outlook.live.com'
+  };
+
+  function connectorFallbackLogoUrl(item) {
+    const key = String(item?.slug || item?.id || item?.preset_id || item?.name || '')
+      .toLowerCase().replace(/[^a-z0-9]/g, '');
+    const domain = CONNECTOR_DOMAINS[key];
+    return domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=64` : '';
+  }
+
+  function connectorLogoNode(item) {
+    const fallback = () => el('span', {
+      class: 'arena-connector-logo is-fallback', 'aria-hidden': 'true',
+      text: initialLetters(item?.name || item?.slug || '?')
+    });
+    const logoUrl = safeUrl(item?.logo_url || item?.logoUrl || '', { image: true }) || connectorFallbackLogoUrl(item);
+    if (!logoUrl) return fallback();
+    const img = el('img', { class: 'arena-connector-logo', src: logoUrl, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' });
+    img.addEventListener('error', () => { img.replaceWith(fallback()); }, { once: true });
+    return img;
+  }
+
+  function accountAvatarNode(extraClass = '') {
+    const node = el('span', {
+      class: `avatar${extraClass ? ` ${extraClass}` : ''}${state.demo ? ' is-demo' : state.authenticated ? '' : ' is-anonymous'}`
+    });
+    fillAvatarNode(node);
+    return node;
+  }
+
+  function fillAvatarNode(node) {
+    if (!node) return;
+    const displayName = state.fullName || state.email || 'Arena';
+    const url = state.authenticated && !state.demo ? safeUrl(state.avatarUrl || '', { image: true }) : '';
+    if (url) {
+      if (node.dataset.avatarUrl === url && node.querySelector('img')) return;
+      node.dataset.avatarUrl = url;
+      node.textContent = '';
+      const img = el('img', { src: url, alt: '', referrerpolicy: 'no-referrer' });
+      img.addEventListener('error', () => {
+        delete node.dataset.avatarUrl;
+        node.textContent = initialLetters(displayName, 2);
+      }, { once: true });
+      node.appendChild(img);
+      return;
+    }
+    delete node.dataset.avatarUrl;
+    node.textContent = state.authenticated ? initialLetters(displayName, 2) : '—';
+  }
+
+  function relativeTime(raw) {
+    if (!raw) return '';
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return String(raw);
+    const diff = Date.now() - date.getTime();
+    const minute = 60 * 1000;
+    const hour = 60 * minute;
+    const day = 24 * hour;
+    if (diff < 55 * 1000 && diff > -60 * 1000) return "just now";
+    if (diff < hour) return `${Math.max(1, Math.round(diff / minute))} minutes ago`;
+    if (diff < day) return `${Math.round(diff / hour)} hours ago`;
+    if (diff < 2 * day) return "yesterday";
+    if (diff < 7 * day) return `${Math.round(diff / day)} days ago`;
+    try {
+      return new Intl.DateTimeFormat('en-US', { day: 'numeric', month: 'short' }).format(date);
+    } catch { return date.toLocaleDateString(); }
+  }
+
+  function formatClock(raw) {
+    const date = raw ? new Date(raw) : new Date();
+    if (Number.isNaN(date.getTime())) return '';
+    try {
+      return new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit' }).format(date);
+    } catch { return ''; }
+  }
+
+  function truncate(value, length = 54) {
+    const text = textValue(value).replace(/\s+/g, ' ').trim();
+    return text.length > length ? `${text.slice(0, Math.max(1, length - 1))}…` : text;
+  }
+
+  function baseName(path) {
+    if (!path) return '';
+    const parts = String(path).replace(/[\\/]+$/, '').split(/[\\/]/);
+    return parts[parts.length - 1] || String(path);
+  }
+
+  function errorMessage(error) {
+    if (!error) return "An unknown error.";
+    if (error instanceof ApiError) return error.message;
+    if (error.name === 'AbortError') return "Request has been stopped.";
+    if (error instanceof TypeError) {
+      return "The local application server is unavailable. Check that the application is running and try again.";
+    }
+    return String(error.message || error);
+  }
+
+  async function copyText(value) {
+    const text = String(value ?? '');
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch { /* fall through to legacy method */ }
+    try {
+      const area = el('textarea', { class: 'sr-only', readonly: true });
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand('copy');
+      area.remove();
+      return ok;
+    } catch { return false; }
+  }
+
+  function showButtonFeedback(button, label = "Copied and copied") {
+    if (!button) return;
+    const original = button.dataset.originalLabel || button.textContent.trim();
+    button.dataset.originalLabel = original;
+    button.textContent = label;
+    window.setTimeout(() => {
+      if (button.isConnected) button.textContent = original;
+    }, 1500);
+  }
+
+  function focusFirst(root) {
+    if (!root) return;
+    const candidate = root.querySelector('[data-autofocus], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])');
+    if (candidate) {
+      try { candidate.focus({ preventScroll: true }); } catch { candidate.focus(); }
+    }
+  }
+
+  function trapFocus(event, container) {
+    if (event.key !== 'Tab' || !container) return;
+    const focusable = $$('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])', container)
+      .filter((node) => node.offsetParent !== null || node === document.activeElement);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const anchor = el('a', { href: url, download: filename });
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 2500);
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* API layer: relative URLs only, no token, no arena.ai requests.         */
+  /* ---------------------------------------------------------------------- */
+  class ApiError extends Error {
+    constructor(message, status = 0, details = null) {
+      super(message);
+      this.name = 'ApiError';
+      this.status = status;
+      this.details = details;
+    }
+  }
+
+  function extractError(payload, status) {
+    let message = '';
+    if (typeof payload === 'string') {
+      const trimmed = payload.trim();
+      const looksLikeMarkup = /^<!doctype|^<html|<\/body>|<\/html>/i.test(trimmed);
+      if (!looksLikeMarkup && trimmed.length <= 500) message = trimmed;
+    } else if (payload && typeof payload === 'object') {
+      const value = payload.error ?? payload.detail ?? payload.message ?? payload.status_message;
+      if (typeof value === 'string') message = value.slice(0, 700);
+      else if (value && typeof value === 'object') message = textValue(value.message ?? value.detail ?? value.error).slice(0, 700);
+    }
+    if (!message) message = status ? `Server returned an error ${status}. Check that the local application is running.` : "It was not possible to execute the request.";
+    return message;
+  }
+
+  async function parseResponsePayload(response) {
+    const text = await response.text().catch(() => '');
+    if (!text) return null;
+    try { return JSON.parse(text); } catch { return text; }
+  }
+
+  const liveApi = {
+    async request(path, { method = 'GET', body, signal } = {}) {
+      const options = {
+        method,
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+        signal
       };
-    });
-  }
-  const logout = document.getElementById('accountLogoutBtn');
-  if (logout) logout.style.display = accounts.some(a => a.active) ? '' : 'none';
-}
-
-function toggleAccountMenu(e) {
-  if (e) e.stopPropagation();
-  if (!isLoggedIn && !accounts.length) { showLogin(false); return; }
-  const menu = document.getElementById('accountMenu');
-  const wrap = menu.parentElement;
-  const open = menu.classList.toggle('open');
-  wrap.classList.toggle('open', open);
-  if (open) loadAccounts();
-}
-
-function closeAccountMenu() {
-  const menu = document.getElementById('accountMenu');
-  if (!menu) return;
-  menu.classList.remove('open');
-  menu.parentElement.classList.remove('open');
-}
-
-async function switchAccount(id) {
-  closeAccountMenu();
-  const target = accounts.find(a => a.id === id);
-  if (target && target.active) return;
-  if (isStreaming) await stopStreaming();
-  notice(`Switching to ${(target && target.email) || 'account'}...`);
-  const r = await api('/api/accounts/switch', { method: 'POST', body: JSON.stringify({ id }) });
-  if (!r || !r.ok) return notice((r && r.error) || 'Could not switch account.', 'err');
-  await checkStatus(true);
-  await newChat();
-  await loadAccounts();
-  notice(`Switched to ${r.email || 'account'}.`, 'ok');
-}
-
-async function removeAccount(id) {
-  const a = accounts.find(x => x.id === id);
-  if (!a) return;
-  if (!confirm(`Remove ${a.email || 'this account'} from this app?\n\nIts saved session will be forgotten here.`)) return;
-  const r = await api('/api/accounts/remove', { method: 'POST', body: JSON.stringify({ id }) });
-  if (!r || !r.ok) return notice((r && r.error) || 'Could not remove account.', 'err');
-  if (a.active) {
-    if (isStreaming) await stopStreaming();
-    await checkStatus(true);
-    await newChat();
-  }
-  await loadAccounts();
-  notice(r.switched_to ? `Removed. Switched to ${r.switched_to}.` : 'Account removed.', 'ok');
-}
-
-let loginPoll = null;
-
-async function showLogin(add) {
-  loginAddMode = !!add;
-  closeAccountMenu();
-  if (isStreaming) await stopStreaming();
-  if (loginAddMode) await loadAccounts();
-  document.getElementById('loginModal').classList.add('open');
-  setLoginStatus('');
-  const desktop = !!(window.appState && window.appState.desktop);
-  const hasAccounts = accounts.length > 0;
-  const blockedByCurrentAccount = loginAddMode && hasAccounts;
-  document.getElementById('loginTitle').textContent = loginAddMode && hasAccounts ? 'Add another arena.ai account' : 'Sign in to arena.ai';
-  document.getElementById('windowLoginBtn').style.display = desktop && !blockedByCurrentAccount ? '' : 'none';
-  document.getElementById('windowLoginNote').style.display = !desktop && !blockedByCurrentAccount ? '' : 'none';
-  document.getElementById('windowLoginIntro').style.display = desktop && !blockedByCurrentAccount ? '' : 'none';
-  document.getElementById('addAccountNote').style.display = blockedByCurrentAccount ? '' : 'none';
-}
-
-function closeLogin() {
-  document.getElementById('loginModal').classList.remove('open');
-  clearInterval(loginPoll);
-  loginPoll = null;
-  loginAddMode = false;
-}
-
-function setLoginStatus(msg, kind = 'info') {
-  document.getElementById('loginStatus').innerHTML = msg ? `<div class="status-msg ${kind}" style="white-space:pre-line">${esc(msg)}</div>` : '';
-}
-
-async function loginDone(r, how) {
-  setLoginStatus(`${loginAddMode ? 'Added' : 'Signed in as'}${r.email ? ' ' + r.email : ''} (${how}).`, 'ok');
-  await loadAccounts();
-  setTimeout(() => { closeLogin(); checkStatus(true); loadModels(); newChat(); }, 900);
-}
-
-async function windowLogin() {
-  const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ method: 'window' }) });
-  if (!r.ok) return setLoginStatus(r.error, 'err');
-  setLoginStatus('The arena.ai window is open. Sign in there with Google or email. This box updates by itself.');
-  clearInterval(loginPoll);
-  loginPoll = setInterval(async () => {
-    let p;
-    try { p = await api('/api/login/poll'); } catch (_) { return; }
-    if (p.ok) { clearInterval(loginPoll); loginPoll = null; loginDone(p, 'arena.ai window'); }
-    else if (p.done) { clearInterval(loginPoll); loginPoll = null; setLoginStatus(p.error || p.hint || 'Sign-in did not finish.', 'err'); }
-    else if (p.hint) setLoginStatus(p.hint);
-  }, 2000);
-}
-
-async function copySnippet(btn) {
-  try {
-    await navigator.clipboard.writeText('copy(document.cookie)');
-    btn.textContent = 'Copied';
-  } catch (_) {
-    btn.textContent = 'Copy it by hand';
-  }
-  setTimeout(() => { btn.textContent = 'Copy'; }, 1800);
-}
-
-async function clipboardLogin() {
-  setLoginStatus('Reading the clipboard and checking the session with arena.ai...');
-  const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ method: 'clipboard' }) });
-  if (r.ok) loginDone(r, 'clipboard'); else setLoginStatus(r.error, 'err');
-}
-
-async function autoLogin() {
-  setLoginStatus('Looking for a signed-in arena.ai session in Chrome, Edge and Brave...');
-  const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ method: 'auto' }) });
-  if (r.ok) loginDone(r, 'browser'); else setLoginStatus(r.error, 'err');
-}
-
-async function manualLogin() {
-  const box = document.getElementById('cookieInput');
-  const cookie = box.value.trim();
-  if (!cookie) return setLoginStatus('Paste the cookie text first.', 'err');
-  setLoginStatus('Checking the session with arena.ai...');
-  const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ method: 'manual', cookie }) });
-  if (r.ok) { box.value = ''; loginDone(r, 'pasted cookies'); } else setLoginStatus(r.error, 'err');
-}
-
-async function logout() {
-  const active = accounts.find(a => a.active);
-  const who = active && active.email ? ` ${active.email}` : '';
-  if (!confirm(`Sign out${who}? Its saved session will be removed from this app.`)) return;
-  closeAccountMenu();
-  if (isStreaming) await stopStreaming();
-  const r = await api('/api/logout', { method: 'POST' });
-  if (!r || !r.ok) return notice((r && r.error) || 'Could not sign out.', 'err');
-  isLoggedIn = false;
-  updateAuthUI(false);
-  await checkStatus(true);
-  await newChat();
-  await loadAccounts();
-  notice(r.switched_to ? `Signed out. Switched to ${r.switched_to}.` : 'Signed out.', 'ok');
-}
-
-/* ── Settings ── */
-function showSettings(keepOpen) {
-  const openPanel = document.getElementById('settingsPanel');
-  if (!keepOpen && openPanel && openPanel.style.display !== 'none') return closeSettings();
-  document.getElementById('settingsPanel').style.display = '';
-  document.getElementById('welcome').style.display = 'none';
-  document.getElementById('messages').style.display = 'none';
-  document.getElementById('settingsMode').value = currentMode;
-  const modSel = document.getElementById('settingsModality');
-  if (modSel) modSel.value = currentModality;
-}
-
-function closeSettings() {
-  document.getElementById('settingsPanel').style.display = 'none';
-  const msgs = document.getElementById('messages');
-  if (msgs.classList.contains('active')) {
-    msgs.style.display = '';
-  } else {
-    document.getElementById('welcome').style.display = 'flex';
-  }
-}
-
-function saveSetting(key, value) {
-  api('/api/settings', { method: 'POST', body: JSON.stringify({ [key]: value }) });
-}
-
-async function clearAllChats() {
-  if (!confirm('Clear all chat history? This cannot be undone.')) return;
-  const chats = await api('/api/chats');
-  if (Array.isArray(chats)) {
-    for (const c of chats) await api('/api/chats/' + c.id + '/delete', { method: 'POST' });
-  }
-  document.getElementById('chatHistory').innerHTML = '';
-  document.getElementById('starredChats').innerHTML = '';
-  newChat();
-  closeSettings();
-}
-
-/* ── Sidebar ── */
-function toggleSidebar() {
-  const sidebar = document.getElementById('sidebar');
-  sidebar.classList.toggle('collapsed');
-  document.querySelector('.app').classList.toggle('sidebar-collapsed', sidebar.classList.contains('collapsed'));
-}
-
-function toggleFolder(id) {
-  const header = event.currentTarget;
-  header.classList.toggle('collapsed');
-  const items = header.nextElementSibling;
-  items.style.display = items.style.display === 'none' ? '' : 'none';
-}
-
-function searchChats() {
-  const q = prompt('Search chats:');
-  if (!q) return;
-  document.querySelectorAll('.history-item').forEach(el => {
-    el.style.display = el.textContent.toLowerCase().includes(q.toLowerCase()) ? '' : 'none';
-  });
-}
-
-/* ── Models ── */
-let modelsRequest = 0;
-let modelsWanted = null;
-let modelsLoadedAt = 0;
-function apiModalityForUI() {
-  return {auto:'chat',text:'chat',code:'webdev',search:'search',image:'image',video:'video'}[currentModality] || 'chat';
-}
-async function loadModels(force = false) {
-  const apiMod = apiModalityForUI();
-  if (!force && apiMod === modelsWanted && Date.now() - modelsLoadedAt < 30000) return;
-  const req = ++modelsRequest;  // a newer mode/modality wins even if an older request answers last
-  const el = document.getElementById('modelList');
-  modelsWanted = apiMod;
-  el.innerHTML = '<div style="padding:12px"><div class="skeleton loading-bar"></div><div class="skeleton loading-bar"></div><div class="skeleton loading-bar"></div></div>';
-  try {
-    const data = await api(`/api/models?modality=${apiMod}${force ? '&refresh=1' : ''}`);
-    if (req !== modelsRequest) return;
-    if (Array.isArray(data)) {
-      models = data;
-      if (selectedModel && !data.some(m => m.id === selectedModel.id)) {
-        selectedModel = null;
-        document.getElementById('modelBtnText').textContent = 'Auto';
+      if (body !== undefined) {
+        options.headers['Content-Type'] = 'application/json';
+        options.body = JSON.stringify(body);
       }
-      if (selectedModelB && !data.some(m => m.id === selectedModelB.id)) {
-        selectedModelB = null;
-        const btnB = document.getElementById('modelBtnTextB');
-        if (btnB) btnB.textContent = 'Model B';
+      let response;
+      try {
+        response = await fetch(path, options);
+      } catch (error) {
+        if (error?.name === 'AbortError') throw error;
+        throw new ApiError("The local application server is unavailable. Check that the application is running and try again.", 0, error);
       }
-      renderModelList(models);
-      renderModelListB(models);
-      if (document.getElementById('modelSearch').value) filterModels();
-      if (document.getElementById('modelSearchB').value) filterModelsB();
-      modelsLoadedAt = Date.now();
-    } else {
-      el.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:13px;text-align:center">Failed to load models</div>';
-    }
-  } catch (e) {
-    if (req !== modelsRequest) return;
-    el.innerHTML = '<div style="padding:12px;color:var(--interactive-negative);font-size:13px;text-align:center">Connection error</div>';
-  }
-}
-
-// Keep the picker in step with arena's live catalog while the app stays open.
-setInterval(() => { if (!document.hidden) loadModels(); }, 6 * 60 * 1000);
-window.addEventListener('focus', () => loadModels());
-
-function renderModelList(list) {
-  const el = document.getElementById('modelList');
-  el.innerHTML = '';
-  if (!list.length) { el.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:13px;text-align:center">No models found</div>'; return; }
-  list.forEach(m => {
-    const div = document.createElement('div');
-    div.className = 'dd-item' + (selectedModel && selectedModel.id === m.id ? ' sel' : '');
-    div.innerHTML = `<span class="org-logo">${getOrgLogo(m.org)}</span><div class="model-info"><span class="model-name">${esc(m.name)}</span><span class="model-org-label">${esc(m.org_display || m.org)}</span></div>${m.rank ? `<span class="model-rank">#${m.rank}</span>` : ''}`;
-    div.onclick = () => selectModel(m);
-    el.appendChild(div);
-  });
-}
-
-function filterModels() {
-  const q = document.getElementById('modelSearch').value.toLowerCase();
-  renderModelList(models.filter(m => m.name.toLowerCase().includes(q) || m.org.toLowerCase().includes(q)));
-}
-
-function selectModel(m) {
-  selectedModel = m;
-  document.getElementById('modelBtnText').textContent = m.name;
-  closeAllDD();
-}
-
-function renderModelListB(list) {
-  const el = document.getElementById('modelListB');
-  if (!el) return;
-  el.innerHTML = '';
-  if (!list.length) { el.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:13px;text-align:center">No models found</div>'; return; }
-  list.forEach(m => {
-    const div = document.createElement('div');
-    div.className = 'dd-item' + (selectedModelB && selectedModelB.id === m.id ? ' sel' : '');
-    div.innerHTML = `<span class="org-logo">${getOrgLogo(m.org)}</span><div class="model-info"><span class="model-name">${esc(m.name)}</span><span class="model-org-label">${esc(m.org_display || m.org)}</span></div>${m.rank ? `<span class="model-rank">#${m.rank}</span>` : ''}`;
-    div.onclick = () => selectModelB(m);
-    el.appendChild(div);
-  });
-}
-
-function filterModelsB() {
-  const q = document.getElementById('modelSearchB').value.toLowerCase();
-  renderModelListB(models.filter(m => m.name.toLowerCase().includes(q) || m.org.toLowerCase().includes(q)));
-}
-
-function selectModelB(m) {
-  selectedModelB = m;
-  document.getElementById('modelBtnTextB').textContent = m.name;
-  closeAllDD();
-}
-
-/* ── Mode ── */
-function selectMode(mode) {
-  currentMode = mode;
-  if (mode === 'agent') currentModality = 'auto';
-  api('/api/mode', { method: 'POST', body: JSON.stringify({ mode }) });
-  updateModeUI();
-  updateModalityUI();
-  loadModels();
-  closeAllDD();
-}
-
-const MODE_ICONS = {
-  battle: '<polyline points="14.5 17.5 3 6 3 3 6 3 17.5 14.5"/><line x1="13" y1="19" x2="19" y2="13"/><line x1="16" y1="16" x2="20" y2="20"/><line x1="19" y1="21" x2="21" y2="19"/><polyline points="14.5 6.5 18 3 21 3 21 6 17.5 9.5"/><line x1="5" y1="14" x2="9" y2="18"/><line x1="7" y1="17" x2="4" y2="20"/><line x1="3" y1="19" x2="5" y2="21"/>',
-  direct: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
-  'side-by-side': '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/>',
-  agent: '<path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
-};
-
-function updateModeUI() {
-  const labels = { battle: 'Battle', direct: 'Direct', 'side-by-side': 'Side by Side', agent: 'Agent' };
-  const isPrimary = currentMode === 'battle' || currentMode === 'direct';
-  // Segmented toggle owns the two headline modes; everything else shows in the "More" menu.
-  document.getElementById('segBattle')?.classList.toggle('active', currentMode === 'battle');
-  document.getElementById('segDirect')?.classList.toggle('active', currentMode === 'direct');
-  const moreText = document.getElementById('modeBtnText');
-  if (moreText) moreText.textContent = isPrimary ? 'More' : (labels[currentMode] || currentMode);
-  document.getElementById('modeBtn')?.classList.toggle('active', !isPrimary);
-  document.querySelectorAll('#modeMenu .dd-item').forEach(el => {
-    el.classList.toggle('sel', el.dataset.mode === currentMode);
-  });
-
-  const showModelA = MODE_NEEDS_MODEL.includes(currentMode);
-  const showModelB = currentMode === 'side-by-side';
-  document.getElementById('modelDropdown').style.display = showModelA ? 'inline-flex' : 'none';
-  const ddB = document.getElementById('modelDropdownB');
-  if (ddB) ddB.style.display = showModelB ? 'inline-flex' : 'none';
-  if (showModelA) document.getElementById('modelBtnText').textContent = selectedModel ? selectedModel.name : (showModelB ? 'Model A' : 'Auto');
-  if (showModelB && ddB) document.getElementById('modelBtnTextB').textContent = selectedModelB ? selectedModelB.name : 'Model B';
-}
-
-/* ── Modality ── */
-function selectModality(mod) {
-  if (currentMode === 'agent' && mod !== 'auto') {
-    notice('Agent mode uses Auto only.', 'warn');
-    updateModalityUI();
-    return;
-  }
-  currentModality = mod;
-  api('/api/modality', { method: 'POST', body: JSON.stringify({ modality: mod }) });
-  updateModalityUI();
-  loadModels();
-  closeAllDD();
-}
-
-function updateModalityUI() {
-  const labels = { auto: 'Auto', text: 'Text', code: 'Code', search: 'Web Search', image: 'Image', video: 'Video' };
-  const agentOnly = currentMode === 'agent';
-  document.getElementById('modalityBtnText').textContent = agentOnly ? 'Auto' : (labels[currentModality] || currentModality);
-  document.querySelectorAll('#modalityMenu .dd-item').forEach(el => {
-    const allowed = !agentOnly || el.dataset.modality === 'auto';
-    el.classList.toggle('sel', el.dataset.modality === currentModality);
-    el.style.display = allowed ? '' : 'none';
-  });
-  const sel = document.getElementById('settingsModality');
-  if (sel) {
-    Array.from(sel.options).forEach(o => { o.disabled = agentOnly && o.value !== 'auto'; });
-    sel.value = agentOnly ? 'auto' : currentModality;
-  }
-}
-
-/* ── File Upload ── */
-const MAX_UPLOAD_MB = 15;
-const MAX_UPLOAD_COUNT = 12;
-const EXT_MIME = {
-  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
-  bmp: 'image/bmp', svg: 'image/svg+xml', pdf: 'application/pdf', txt: 'text/plain', md: 'text/markdown',
-  csv: 'text/csv', tsv: 'text/tab-separated-values', json: 'application/json', py: 'text/x-python',
-  js: 'text/javascript', mjs: 'text/javascript', ts: 'text/typescript', tsx: 'text/typescript',
-  html: 'text/html', htm: 'text/html', css: 'text/css', xml: 'application/xml', yaml: 'application/yaml',
-  yml: 'application/yaml', mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm',
-  mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', zip: 'application/zip',
-};
-const TEXT_FILE_RE = /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|cfg|conf|log|py|js|mjs|cjs|jsx|ts|tsx|html?|css|scss|sass|less|xml|sql|sh|bash|bat|cmd|ps1|c|h|cc|cpp|hpp|cs|java|kt|go|rs|rb|php|swift|lua|r|m|mm|pl|vue|svelte|astro|env|gitignore|dockerfile|makefile)$/i;
-
-function guessMime(name) {
-  const ext = (name.split('.').pop() || '').toLowerCase();
-  return EXT_MIME[ext] || '';
-}
-
-function isTextUpload(name, type) {
-  return !type.startsWith('image/') && !type.startsWith('video/') && !type.startsWith('audio/')
-    && (type.startsWith('text/') || ['application/json', 'application/xml', 'application/javascript'].includes(type)
-      || TEXT_FILE_RE.test(name));
-}
-
-function addUploadedFile(name, type, size, data, path, binary) {
-  if (uploadedFiles.length >= MAX_UPLOAD_COUNT) {
-    notice(`Attach at most ${MAX_UPLOAD_COUNT} files at once.`, 'warn');
-    return;
-  }
-  if (uploadedFiles.some(f => f.name === name && f.size === size && f.path === (path || null))) return;
-  uploadedFiles.push({ name, type, size, data, path: path || null, binary: !!binary });
-  renderUploadPreviews();
-  updateSendBtn();
-}
-
-function addFiles(files) {
-  files.forEach(file => {
-    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
-      notice(`${file.name} is larger than ${MAX_UPLOAD_MB} MB.`, 'warn');
-      return;
-    }
-    const type = file.type || guessMime(file.name) || 'application/octet-stream';
-    const binary = !isTextUpload(file.name, type);
-    const reader = new FileReader();
-    reader.onload = () => addUploadedFile(file.name, type, file.size, reader.result, null, binary);
-    reader.onerror = () => notice(`Could not read ${file.name}.`, 'err');
-    if (binary) reader.readAsDataURL(file);
-    else reader.readAsText(file);
-  });
-}
-
-async function openFileUpload() {
-  if (window.pywebview && window.pywebview.api) {
-    try {
-      const paths = await window.pywebview.api.open_file_dialog([
-        'Images (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)',
-        'Documents (*.pdf;*.txt;*.md;*.csv)',
-        'Code (*.py;*.js;*.ts;*.tsx;*.html;*.css;*.json)',
-      ]);
-      if (paths && paths.length) {
-        for (const p of paths) {
-          const name = p.split(/[\\/]/).pop();
-          const type = guessMime(name) || 'application/octet-stream';
-          addUploadedFile(name, type, 0, null, p, !isTextUpload(name, type));
-        }
+      const payload = await parseResponsePayload(response);
+      if (!response.ok) throw new ApiError(extractError(payload, response.status), response.status, payload);
+      return payload ?? {};
+    },
+    getStatus() { return this.request('/api/status'); },
+    getSettings() { return this.request('/api/settings'); },
+    saveSettings(body) { return this.request('/api/settings', { method: 'POST', body }); },
+    login() { return this.request('/api/login', { method: 'POST', body: { method: 'window' } }); },
+    loginCookie(cookie) { return this.request('/api/login', { method: 'POST', body: { method: 'manual', cookie } }); },
+    loginPoll() { return this.request('/api/login/poll'); },
+    engineShow() { return this.request('/api/engine/show', { method: 'POST', body: {} }); },
+    engineHide() { return this.request('/api/engine/hide', { method: 'POST', body: {} }); },
+    logout() { return this.request('/api/logout', { method: 'POST', body: {} }); },
+    getModels(modality, mode) { return this.request(`/api/models?mode=${encodeURIComponent(mode || '')}&modality=${encodeURIComponent(modality)}`); },
+    setMode(mode) { return this.request('/api/mode', { method: 'POST', body: { mode } }); },
+    setModality(modality) { return this.request('/api/modality', { method: 'POST', body: { modality } }); },
+    newChat() { return this.request('/api/new', { method: 'POST', body: {} }); },
+    getChats() { return this.request('/api/chats'); },
+    getArenaChats() { return this.request('/api/arena-chats?limit=50'); },
+    openArenaChat(id, type, title) { return this.request(`/api/arena-chats/${encodeURIComponent(id)}/open`, { method: 'POST', body: { type, title } }); },
+    archiveArenaChat(id, type) { return this.request(`/api/arena-chats/${encodeURIComponent(id)}/archive`, { method: 'POST', body: { type } }); },
+    vote(chatId, body) { return this.request(`/api/chats/${encodeURIComponent(chatId)}/vote`, { method: 'POST', body }); },
+    getChat(id) { return this.request(`/api/chats/${encodeURIComponent(id)}`); },
+    deleteChat(id) { return this.request(`/api/chats/${encodeURIComponent(id)}/delete`, { method: 'POST', body: {} }); },
+    getHistory() { return this.request('/api/history'); },
+    getPermissions() { return this.request('/api/permissions'); },
+    decidePermission(id, decision) {
+      return this.request(`/api/permissions/${encodeURIComponent(id)}`, { method: 'POST', body: { decision } });
+    },
+    getPermissionMode() { return this.request('/api/permission-mode'); },
+    setPermissionMode(mode) { return this.request('/api/permission-mode', { method: 'POST', body: { mode } }); },
+    getWorkspace() { return this.request('/api/workspace'); },
+    setWorkspace(path) { return this.request('/api/workspace/set', { method: 'POST', body: { path } }); },
+    clearWorkspace() { return this.request('/api/workspace/set', { method: 'POST', body: { clear: true } }); },
+    async uploadAttachment(file, kind, modality) {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      form.append('kind', kind || 'evaluation');
+      if (modality) form.append('modality', modality);
+      let response;
+      try {
+        response = await fetch('/api/uploads', {
+          method: 'POST', credentials: 'same-origin', cache: 'no-store',
+          headers: { Accept: 'application/json' }, body: form
+        });
+      } catch (error) {
+        throw new ApiError("The local application server is unavailable. The file was not uploaded.", 0, error);
       }
-      return;
-    } catch (_) {}
-  }
-  document.getElementById('fileInput').click();
-}
-
-function handleFileUpload(e) {
-  addFiles(Array.from(e.target.files));
-  e.target.value = '';
-}
-
-function renderUploadPreviews() {
-  const container = document.getElementById('uploadPreview');
-  container.innerHTML = '';
-  uploadedFiles.forEach((f, i) => {
-    const thumb = document.createElement('div');
-    thumb.className = 'upload-thumb';
-    thumb.title = `${f.name}${f.size ? ` (${Math.max(1, Math.round(f.size / 1024))} KB)` : ''}`;
-    if (f.type.startsWith('image/') && f.data) {
-      thumb.innerHTML = `<img src="${f.data}" alt="${esc(f.name)}"><div class="remove-upload" onclick="removeUpload(${i})">&times;</div>`;
-    } else {
-      const label = f.type.startsWith('image/') ? 'Image' : 'File';
-      thumb.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;background:var(--surface-tertiary);font-size:10px;color:var(--text-muted);padding:4px;text-align:center;word-break:break-all"><b>${label}</b>${esc(f.name)}</div><div class="remove-upload" onclick="removeUpload(${i})">&times;</div>`;
-    }
-    container.appendChild(thumb);
-  });
-}
-
-function removeUpload(i) {
-  uploadedFiles.splice(i, 1);
-  renderUploadPreviews();
-  updateSendBtn();
-}
-
-/* ── Chat ── */
-async function newChat() {
-  const r = await api('/api/new', { method: 'POST' });
-  currentChatId = r.chat_id || null;
-  document.getElementById('messages').innerHTML = '';
-  document.getElementById('messages').classList.remove('active');
-  document.getElementById('messages').style.display = '';
-  document.getElementById('welcome').style.display = 'flex';
-  document.getElementById('settingsPanel').style.display = 'none';
-  uploadedFiles = [];
-  lastSentAttachments = [];
-  renderUploadPreviews();
-  loadChatHistory();
-  document.getElementById('chatInput').focus();
-}
-
-function handleKey(e) {
-  const menu = document.getElementById('slashMenu');
-  const open = menu && menu.classList.contains('open');
-  if (open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
-    e.preventDefault();
-    const n = menu.children.length;
-    slashIdx = (slashIdx + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
-    updateSlash();
-    return;
-  }
-  if (open && !e.shiftKey && (e.key === 'Tab' || e.key === 'Enter')) {
-    const item = menu.children[slashIdx];
-    if (item) {
-      e.preventDefault();
-      completeSlash(item.querySelector('.slash-cmd').textContent, e.key === 'Enter');
-      return;
-    }
-  }
-  if (e.key === 'Tab' && e.shiftKey) { e.preventDefault(); cyclePerm(); return; }
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-}
-
-function autoResize(el) {
-  el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
-}
-
-function updateSendBtn() {
-  const btn = document.getElementById('sendBtn');
-  const val = document.getElementById('chatInput').value.trim();
-  btn.disabled = isUploading || (!isStreaming && !val && !uploadedFiles.length);
-  btn.classList.toggle('has-text', !isUploading && (!!val || uploadedFiles.length > 0));
-  btn.classList.toggle('stop', isStreaming);
-  btn.title = isStreaming ? 'Stop' : (isUploading ? 'Uploading...' : 'Send message');
-  if (!btn.dataset.sendIcon) btn.dataset.sendIcon = btn.innerHTML;
-  btn.innerHTML = isStreaming ? '<svg width="14" height="14" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>' : btn.dataset.sendIcon;
-}
-
-function useSuggestion(text) {
-  document.getElementById('chatInput').value = text;
-  autoResize(document.getElementById('chatInput'));
-  updateSendBtn();
-  sendMessage();
-}
-
-let lastSent = '';
-async function sendMessage(retryText) {
-  if (isStreaming) { stopStreaming(); return; }
-  if (isUploading) return;
-  const input = document.getElementById('chatInput');
-  const isRetry = typeof retryText === 'string';
-  const msg = (isRetry ? retryText : input.value).trim();
-  if (!msg && !uploadedFiles.length && !(isRetry && lastSentAttachments.length)) return;
-  if (!isRetry && msg.startsWith('/') && runSlash(msg)) {
-    input.value = '';
-    autoResize(input);
-    hideSlash();
-    updateSendBtn();
-    return;
-  }
-  if (MODE_NEEDS_MODEL.includes(currentMode) && !selectedModel) {
-    notice(`${MODE_LABELS[currentMode]} mode needs a model: pick one first. Battle picks two anonymous models for you.`, 'warn');
-    return;
-  }
-  if (currentMode === 'side-by-side' && !selectedModelB) {
-    notice('Side by Side needs a second model: pick one first.', 'warn');
-    return;
-  }
-  if (!isRetry) { input.value = ''; input.style.height = 'auto'; }
-  hideSlash();
-
-  document.getElementById('welcome').style.display = 'none';
-  document.getElementById('settingsPanel').style.display = 'none';
-  const msgsEl = document.getElementById('messages');
-  msgsEl.style.display = '';
-  msgsEl.classList.add('active');
-
-  const sentFiles = isRetry ? [] : [...uploadedFiles];
-  let content = msg;
-  let attachments = isRetry ? [...lastSentAttachments] : [];
-
-  if (sentFiles.length) {
-    isUploading = true;
-    updateSendBtn();
-    try {
-      const resp = await fetch('/api/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          files: sentFiles.map(f => ({ name: f.name, type: f.type, data: f.data, path: f.path, size: f.size, binary: !!f.binary })),
-        }),
+      const payload = await parseResponsePayload(response);
+      if (!response.ok) throw new ApiError(extractError(payload, response.status), response.status, payload);
+      return payload ?? {};
+    },
+    saveWorkspace(chatId, lane) { return this.request('/api/workspace/save', { method: 'POST', body: { chat_id: chatId, lane } }); },
+    openWorkspace(path) { return this.request('/api/workspace/open', { method: 'POST', body: { path } }); },
+    getWorkspaceTree(path = '.') { return this.request(`/api/workspace/tree?path=${encodeURIComponent(path)}`); },
+    getWorkspaceFile(path) { return this.request(`/api/workspace/file?path=${encodeURIComponent(path)}`); },
+    getConnectors() { return this.request('/api/connectors'); },
+    reloadConnectors() { return this.request('/api/connectors/reload', { method: 'POST', body: {} }); },
+    openConnectorConfig() { return this.request('/api/connectors/config/open', { method: 'POST', body: {} }); },
+    installConnectorPreset(presetId, values, connect = true) { return this.request('/api/connectors/preset', { method: 'POST', body: { preset_id: presetId, values, connect } }); },
+    addConnectorCli(body) { return this.request('/api/connectors/cli', { method: 'POST', body }); },
+    connectConnector(name) { return this.request(`/api/connectors/${encodeURIComponent(name)}/connect`, { method: 'POST', body: {} }); },
+    disconnectConnector(name) { return this.request(`/api/connectors/${encodeURIComponent(name)}/disconnect`, { method: 'POST', body: {} }); },
+    setConnectorEnabled(name, enabled) { return this.request(`/api/connectors/${encodeURIComponent(name)}/enabled`, { method: 'POST', body: { enabled } }); },
+    deleteConnector(name) { return this.request(`/api/connectors/${encodeURIComponent(name)}/delete`, { method: 'POST', body: {} }); },
+    getArenaConnectors() { return this.request('/api/arena-connectors'); },
+    openNativeAgent(message) { return this.request('/api/agent/native', { method: 'POST', body: { message } }); },
+    connectArenaConnector(slug) { return this.request(`/api/arena-connectors/${encodeURIComponent(slug)}/connect`, { method: 'POST', body: {} }); },
+    pollArenaConnector(slug) { return this.request(`/api/arena-connectors/${encodeURIComponent(slug)}/connect/poll`); },
+    disconnectArenaConnector(slug) { return this.request(`/api/arena-connectors/${encodeURIComponent(slug)}/disconnect`, { method: 'POST', body: {} }); },
+    saveMedia(url) { return this.request('/api/media/save', { method: 'POST', body: { url } }); },
+    getDoctor() { return this.request('/api/doctor'); },
+    async workspaceZip(path) {
+      let response;
+      try {
+        response = await fetch(`/api/workspace/zip?path=${encodeURIComponent(path)}`, { credentials: 'same-origin', cache: 'no-store' });
+      } catch (error) {
+        throw new ApiError("The local application server is unavailable.", 0, error);
+      }
+      if (!response.ok) {
+        const payload = await parseResponsePayload(response);
+        throw new ApiError(extractError(payload, response.status), response.status, payload);
+      }
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const payload = await response.json().catch(() => null);
+        throw new ApiError(extractError(payload, response.status), response.status, payload);
+      }
+      return response.blob();
+    },
+    async stop(chatId) { return this.request('/api/stop', { method: 'POST', body: chatId ? { chat_id: chatId } : {} }); },
+    getAccounts() { return this.request('/api/accounts'); },
+    switchAccount(id) { return this.request('/api/accounts/switch', { method: 'POST', body: { id } }); },
+    addAccount() { return this.request('/api/accounts/add', { method: 'POST', body: {} }); },
+    removeAccount(id) { return this.request('/api/accounts/remove', { method: 'POST', body: { id } }); },
+    async streamChat(body, onEvent, signal) {
+      let response;
+      try {
+        response = await fetch('/api/chat', {
+          method: 'POST',
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json' },
+          body: JSON.stringify(body),
+          signal
+        });
+      } catch (error) {
+        if (error?.name === 'AbortError') throw error;
+        throw new ApiError("The local application server is unavailable. Check that the application is running and try again.", 0, error);
+      }
+      if (!response.ok) {
+        const payload = await parseResponsePayload(response);
+        throw new ApiError(extractError(payload, response.status), response.status, payload);
+      }
+      if (!response.body) throw new ApiError("The server opened an empty response stream.", response.status);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      const parser = new SSEParser(onEvent, (raw) => {
+        onEvent({ type: 'notice', message: "A damaged flow event was missed." });
       });
-      let up = null;
-      try { up = await resp.json(); } catch (_) {}
-      if (!resp.ok) throw new Error((up && up.error) || `Upload failed (HTTP ${resp.status}).`);
-      if (!up || up.error) throw new Error((up && up.error) || 'Upload failed.');
-      const added = [];
-      for (const f of up.files || []) {
-        if (typeof f.text === 'string') content += `\n\nFile ${f.name}:\n\`\`\`\n${f.text}\n\`\`\``;
-        if (f.attachment) added.push(f.attachment);
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          parser.push(decoder.decode(value, { stream: true }));
+        }
+        parser.push(decoder.decode());
+        parser.flush();
+      } finally {
+        try { reader.releaseLock(); } catch { /* already released */ }
       }
-      attachments = added;
-    } catch (err) {
-      isUploading = false;
-      updateSendBtn();
-      notice(err.message || 'Upload failed.', 'err');
-      uploadedFiles = sentFiles;
-      renderUploadPreviews();
-      if (!isRetry) { input.value = msg; autoResize(input); }
+    }
+  };
+
+  /**
+   * SSE parser for fetch + ReadableStream.
+   * Handles partial chunks, CRLF boundaries, UTF-8 decoding, multiline data.
+   */
+  class SSEParser {
+    constructor(onEvent, onMalformed) {
+      this.buffer = '';
+      this.onEvent = onEvent;
+      this.onMalformed = onMalformed;
+      this.closed = false;
+    }
+    push(chunk) {
+      if (this.closed) return;
+      this.buffer += chunk;
+      this.buffer = this.buffer.replace(/\r\n/g, '\n');
+      let index;
+      while ((index = this.buffer.indexOf('\n\n')) !== -1) {
+        const block = this.buffer.slice(0, index);
+        this.buffer = this.buffer.slice(index + 2);
+        this.parseBlock(block);
+      }
+    }
+    flush() {
+      if (this.buffer.trim()) this.parseBlock(this.buffer);
+      this.buffer = '';
+    }
+    parseBlock(block) {
+      const dataLines = [];
+      for (const line of block.split('\n')) {
+        if (!line || line.startsWith(':')) continue;
+        const colon = line.indexOf(':');
+        const field = colon === -1 ? line : line.slice(0, colon);
+        let value = colon === -1 ? '' : line.slice(colon + 1);
+        if (value.startsWith(' ')) value = value.slice(1);
+        if (field === 'data') dataLines.push(value);
+      }
+      if (!dataLines.length) return;
+      const raw = dataLines.join('\n');
+      if (raw.trim() === '[DONE]') {
+        this.onEvent({ type: 'done' });
+        return;
+      }
+      try {
+        const data = JSON.parse(raw);
+        if (!data || typeof data !== 'object') return;
+        if (!data.type && (data.error || data.detail)) data.type = 'error';
+        this.onEvent(data);
+      } catch (error) {
+        if (this.onMalformed) this.onMalformed(raw, error);
+      }
+    }
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Demo backend (only with ?demo=1). Every event here is simulated locally. */
+  /* ---------------------------------------------------------------------- */
+  function demoArtwork(title, hue = 145, subline = 'Arena Desktop · demo') {
+    const safeTitle = String(title).replace(/[<>&"]/g, '');
+    const safeSub = String(subline).replace(/[<>&"]/g, '');
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="500" viewBox="0 0 800 500"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${hue} 34% 13%)"/><stop offset="1" stop-color="hsl(${hue + 36} 24% 7%)"/></linearGradient><radialGradient id="glow" cx=".68" cy=".2" r=".8"><stop offset="0" stop-color="hsl(${hue} 54% 66%)" stop-opacity=".42"/><stop offset="1" stop-color="hsl(${hue} 54% 54%)" stop-opacity="0"/></radialGradient></defs><rect width="800" height="500" fill="url(#bg)"/><rect width="800" height="500" fill="url(#glow)"/><circle cx="640" cy="240" r="128" fill="none" stroke="hsl(${hue} 42% 68%)" stroke-opacity=".27"/><circle cx="640" cy="240" r="84" fill="none" stroke="hsl(${hue} 42% 68%)" stroke-opacity=".42"/><circle cx="640" cy="240" r="18" fill="hsl(${hue} 54% 73%)" fill-opacity=".9"/><path d="M75 384h400M75 358h286M75 332h322" stroke="hsl(${hue} 22% 50%)" stroke-opacity=".45" stroke-width="2" stroke-linecap="round"/><text x="75" y="174" fill="#edf2ed" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="600">${safeTitle}</text><text x="75" y="214" fill="hsl(${hue} 25% 69%)" font-family="Segoe UI, Arial, sans-serif" font-size="17">${safeSub}</text><rect x="75" y="284" width="122" height="29" rx="6" fill="hsl(${hue} 30% 44%)" fill-opacity=".28"/><text x="91" y="304" fill="hsl(${hue} 42% 82%)" font-family="Segoe UI, Arial, sans-serif" font-size="13">simulated media</text></svg>`;
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  }
+
+  function demoModel(id, name, org, color, rank, score, capabilities = []) {
+    return { id, name, org, org_display: org, color, rank, arena_score: score, capabilities };
+  }
+
+  const demoModels = {
+    text: [
+      demoModel('atlas-3', 'Atlas 3', 'Nordic Labs', '#9fc7f4', 1, 1385, ["Text", "Reasoning", "200K context"]),
+      demoModel('sable-r1', 'Sable R1', 'Sable AI', '#bda7eb', 2, 1364, ["Text", "Reasoning", "Code"]),
+      demoModel('lumen-2-pro', 'Lumen 2 Pro', 'Tessera', '#eac28f', 3, 1320, ["Text", "Long context"]),
+      demoModel('kestrel-max', 'Kestrel Max', 'Monolith', '#98d6b1', 4, 1298, ["Text", "Fast"]),
+      demoModel('northstar-mini', 'Northstar Mini', 'Fjord', '#a6d9d6', 5, 1240, ["Text", "Economical"]),
+      demoModel('meridian-2', 'Meridian 2', 'Arcadia', '#e1adad', 6, 1198, ["Text", "Instructions"])
+    ],
+    code: [
+      demoModel('forge-1-coder', 'Forge 1 Coder', 'Monolith', '#97d9b8', 1, 1392, ["Code", "Tools"]),
+      demoModel('atlas-3', 'Atlas 3', 'Nordic Labs', '#9fc7f4', 2, 1360, ["Code", "Reasoning"]),
+      demoModel('kestrel-code', 'Kestrel Code', 'Sable AI', '#c1b1ec', 3, 1318, ["Code", "Fast"]),
+      demoModel('lumen-dev', 'Lumen Dev', 'Tessera', '#ebc48f', 4, 1272, ["Code", "Files"])
+    ],
+    search: [
+      demoModel('compass-search', 'Compass Search', 'Arcadia', '#a9c7ef', 1, 1330, ["Search", "Sources"]),
+      demoModel('atlas-search', 'Atlas Search', 'Nordic Labs', '#9fc7f4', 2, 1296, ["Search", "Reasoning"]),
+      demoModel('scout-mini', 'Scout Mini', 'Fjord', '#a6d9d6', 3, 1215, ["Search", "Economical"])
+    ],
+    image: [
+      demoModel('prism-canvas', 'Prism Canvas', 'Tessera', '#e5b48e', 1, 1310, ["Images"]),
+      demoModel('aurora-image', 'Aurora Image', 'Sable AI', '#bfa8e9', 2, 1278, ["Images"]),
+      demoModel('lumen-sketch', 'Lumen Sketch', 'Nordic Labs', '#a7d8c2', 3, 1224, ["Images"])
+    ],
+    video: [
+      demoModel('reelforge', 'ReelForge', 'Monolith', '#e3b58f', 1, 1200, ["Video · preview"]),
+      demoModel('motionlite', 'MotionLite', 'Arcadia', '#a9c7ef', 2, 1168, ["Video · preview"])
+    ]
+  };
+
+  const demoStore = {
+    authenticated: true,
+    email: 'demo@local.invalid',
+    engineOpen: false,
+    offline: false,
+    loading: false,
+    sessionError: null,
+    permissionMode: 'acceptEdits',
+    workspace: 'C:\\ArenaWorkspace\\foto-studio',
+    mode: 'direct',
+    modality: 'text',
+    chats: [],
+    messages: {},
+    cloudChats: [],
+    cloudMessages: {},
+    connectors: [],
+    pendingPermissions: [],
+    loginAt: 0,
+    pendingAdd: false,
+    activeChatId: null,
+    activeStream: null,
+    streams: new Set(),
+    currentAccountId: 'demo-acc-1',
+    accounts: [
+      { id: 'demo-acc-1', email: 'demo@local.invalid', name: 'Demo User', avatar_url: null, expired: false },
+      { id: 'demo-acc-2', email: 'second@local.invalid', name: 'Second User', avatar_url: null, expired: false },
+      { id: 'demo-acc-3', email: 'old@local.invalid', name: 'Old User', avatar_url: null, expired: true }
+    ],
+    serial: 0,
+    settings: {}
+  };
+
+  (function seedDemoChats() {
+    const now = Date.now();
+    const landingId = 'demo-chat-landing';
+    const testsId = 'demo-chat-tests';
+    const searchId = 'demo-chat-search';
+    const imageId = 'demo-chat-image';
+    demoStore.messages[landingId] = [
+      {
+        role: 'user', created_at: new Date(now - 2.4 * 3600e3).toISOString(),
+        content: "Put together a landing structure for a small photo studio. We need a calm visual language, no noise, and an adaptive grid. Suggest two directions."
+      },
+      {
+        role: 'assistant', lane: 'a', model_id: 'atlas-3', model_name: 'Atlas 3', created_at: new Date(now - 2.3 * 3600e3).toISOString(),
+        content: "### direction A - \"quiet gallery\"\n\nMain idea: photos are an interface. Minimum text, lots of air and one clear scenario.\n\n1.  ** first screen :** series of 3 frames, studio name and one button.\n2.  ** work :** grid 2 x 2 with different proportions.\n3.  ** about studio :** short manifesto and contact.\n4.  ** palette :** warm graphite, paper, one low accent.\n\n```css\n.hero {\n  display: grid;\n  grid-template-columns: minmax(0, 1.2fr) minmax(220px, .8fr);\n  gap: clamp(1rem, 4vw, 4rem);\n}\n\n@media (max-width: 760px) {\n  .hero { grid-template-columns: 1fr; }\n}\n```\n\nI do not promise a ready site before launch: first it is necessary to agree on the structure and photos.",
+        reasoning: "Comparing two calm approaches. For a photo studio, the rhythm of the grid and the quality of the shots are more important than decorative effects.",
+        sources: []
+      },
+      {
+        role: 'assistant', lane: 'b', model_id: 'sable-r1', model_name: 'Sable R1', created_at: new Date(now - 2.3 * 3600e3).toISOString(),
+        content: "### Direction B — \"Magazine Story\"\n\nRestrained editorial grid, large typography, and thoughtful captions for the works.\n\n- Top row: studio name, city, contact.\n- Large headline-story instead of an advertising slogan.\n- Asymmetrical pairs of photos.\n- The mobile version maintains the feeling of a magazine rather than turning into cards.\n\n**Next step:** choose one hero scenario and select 6–9 photos for the first screen.",
+        sources: []
+      }
+    ];
+    demoStore.messages[testsId] = [
+      { role: 'user', created_at: new Date(now - 26 * 3600e3).toISOString(), content: "Check the approach to tests for the Flask endpoint. Which cases should be added?" },
+      { role: 'assistant', lane: 'a', model_id: null, model_name: 'Agent', created_at: new Date(now - 25.7 * 3600e3).toISOString(), content: "Add checks for a successful JSON response, an incorrect request body, an empty set, and a backend failure. Do not mix the network client and the Flask test client. In the demo, this is an illustrative example, not an actual run." }
+    ];
+    demoStore.messages[searchId] = [
+      { role: 'user', created_at: new Date(now - 3.2 * 86400e3).toISOString(), content: "Collect sources on WebView2 and pywebview — only for illustrating demo mode." },
+      { role: 'assistant', lane: 'a', model_id: 'compass-search', model_name: 'Compass Search', created_at: new Date(now - 3.1 * 86400e3).toISOString(), content: "Below are **simulated demo-mode sources**. These are not the results of actual search.", sources: [
+        { title: "Demonstration source on WebView2", url: 'https://example.com/demo/webview2', snippet: "Example of a source card." },
+        { title: "Demonstration source on pywebview", url: 'https://example.com/demo/pywebview', snippet: "Example of a source card." }
+      ] }
+    ];
+    demoStore.messages[imageId] = [
+      { role: 'user', created_at: new Date(now - 4.5 * 86400e3).toISOString(), content: "Come up with three calm covers for a podcast." },
+      { role: 'assistant', lane: 'a', model_id: 'prism-canvas', model_name: 'Prism Canvas', created_at: new Date(now - 4.4 * 86400e3).toISOString(), content: "Here is a sample demo cover. Real image generation was not performed.", media: [
+        { kind: 'image', url: demoArtwork("Quiet Echo", 155, "demo image · not generated"), title: "Quiet Echo · demo cover" }
+      ] }
+    ];
+    const secondId = 'demo-chat-second-account';
+    demoStore.messages[secondId] = [
+      { role: 'user', created_at: new Date(now - 1.2 * 3600e3).toISOString(), content: "A chat that belongs to the second demo account." },
+      { role: 'assistant', lane: 'a', model_id: 'atlas-3', model_name: 'Atlas 3', created_at: new Date(now - 1.1 * 3600e3).toISOString(), content: "This dialogue is only listed while the second demo account is current." }
+    ];
+    demoStore.chats = [
+      { id: secondId, title: "Second account notes", updated_at: new Date(now - 1.1 * 3600e3).toISOString(), mode: 'direct', modality: 'text', account: 'demo-acc-2' },
+      { id: landingId, title: "Landing page for a photo studio", updated_at: new Date(now - 2.3 * 3600e3).toISOString(), mode: 'side-by-side', modality: 'text' },
+      { id: testsId, title: "Check approach to tests", updated_at: new Date(now - 25.7 * 3600e3).toISOString(), mode: 'agent', modality: 'text' },
+      { id: searchId, title: "Sources: WebView2 and pywebview", updated_at: new Date(now - 3.1 * 86400e3).toISOString(), mode: 'direct', modality: 'search' },
+      { id: imageId, title: "Cover options", updated_at: new Date(now - 4.4 * 86400e3).toISOString(), mode: 'direct', modality: 'image' }
+    ];
+    const cloudEvalId = 'demo-cloud-evaluation';
+    const cloudAgentId = 'demo-cloud-agent';
+    demoStore.cloudMessages[cloudEvalId] = [
+      { role: 'user', created_at: new Date(now - 5.2 * 86400e3).toISOString(), content: "This dialogue seems to have been created on the arena.ai website." },
+      {
+        role: 'assistant', lane: 'a', model_id: 'atlas-3', model_name: 'Atlas 3',
+        created_at: new Date(now - 5.1 * 86400e3).toISOString(),
+        reasoning: "In the demo, I check that the reasoning remains a normal paragraph and that each word is not moved to a separate line.",
+        content: "When imported, this demonstration dialogue will also appear in the local history of Arena Desktop. The actual request to arena.ai was not performed."
+      }
+    ];
+    demoStore.cloudChats = [
+      {
+        id: cloudEvalId, eval_id: cloudEvalId, type: 'evaluation', title: "Dialogue from the arena.ai website · demo",
+        updated_at: new Date(now - 5.1 * 86400e3).toISOString(), created_at: new Date(now - 5.2 * 86400e3).toISOString(),
+        mode: 'direct', modality: 'text', message_count: 2, local_chat_id: null, source: 'arena'
+      },
+      {
+        id: cloudAgentId, eval_id: cloudAgentId, type: 'agentic', title: 'Arena Agent · demo',
+        updated_at: new Date(now - 6.4 * 86400e3).toISOString(), created_at: new Date(now - 6.5 * 86400e3).toISOString(),
+        mode: 'agent', modality: 'text', message_count: 4, local_chat_id: null, source: 'arena'
+      }
+    ];
+    demoStore.connectors = [{
+      id: 'filesystem', name: 'filesystem', preset_id: 'filesystem', source: 'official', transport: 'stdio',
+      enabled: true, running: false, status: 'stopped',
+      description: "Demo entry of the official MCP Filesystem. The real process does not run in preview.",
+      command_display: 'npx -y @modelcontextprotocol/server-filesystem C:\\ArenaWorkspace\\foto-studio',
+      tools: [], tools_count: 0, error: null
+    }];
+    demoStore.arenaConnectors = [
+      { slug: 'github', name: 'GitHub', description: 'Work with repos, issues, and pull requests.', auth_status: 'connected' },
+      { slug: 'google-drive', name: 'Drive', description: 'Find and manage files in Google Drive.', auth_status: 'connected' },
+      { slug: 'google-docs', name: 'Docs', description: 'Create, read, and edit Google Docs.', auth_status: 'disconnected' },
+      { slug: 'notion', name: 'Notion', description: 'Look up your documents.', auth_status: 'disconnected' },
+      { slug: 'gmail', name: 'Gmail', description: 'Connect your email account.', auth_status: 'disconnected' },
+      { slug: 'linear', name: 'Linear', description: 'Track issues, projects, and cycles.', auth_status: 'disconnected' },
+      { slug: 'google-calendar', name: 'Calendar', description: 'Connect your Google Calendar.', auth_status: 'disconnected' },
+      { slug: 'google-slides', name: 'Slides', description: 'Read and edit slides in your presentations.', auth_status: 'disconnected' },
+      { slug: 'google-sheets', name: 'Sheets', description: 'Read, edit, and format your spreadsheets.', auth_status: 'disconnected' },
+      { slug: 'dropbox', name: 'Dropbox', description: 'Browse, read, and organize your Dropbox files.', auth_status: 'disconnected' },
+      { slug: 'vercel', name: 'Vercel', description: 'Manage deployments and projects.', auth_status: 'disconnected' },
+      { slug: 'supabase', name: 'Supabase', description: 'Manage your Postgres database and auth.', auth_status: 'disconnected' }
+    ].map((item) => ({ ...item, logo_url: null, connected: item.auth_status === 'connected' }));
+    demoStore.arenaConnectorPending = {};
+    demoStore.activeChatId = null;
+  })();
+
+  const demoRouter = {
+    ...demoModel('demo-max-router', "Max Router (demo)", "Demo", '#a9c4ae', 0, null, ["Router"]),
+    provider: 'boss-bandit', user_selectable: true, is_router: true, fixed: true
+  };
+
+  function demoFindModel(id) {
+    if (!id) return null;
+    if (String(id) === String(demoRouter.id)) return demoRouter;
+    for (const list of Object.values(demoModels)) {
+      const found = list.find((model) => String(model.id) === String(id));
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function demoDefaultModels(modality) {
+    return demoModels[modality] || demoModels.text;
+  }
+
+  function demoValidateSelection(mode, modality) {
+    if (modality === 'video' && mode !== 'battle') throw new ApiError('Video is available only in Battle Mode; Arena selects both models.', 400);
+    if (modality === 'auto' && mode !== 'battle') throw new ApiError('Auto is available only in Battle Mode.', 400);
+    if (mode === 'agent' && modality !== 'text') throw new ApiError('Agent Mode is text-only; its model is assigned automatically.', 400);
+  }
+
+  const demoAgentIdentity = { id: 'agent', name: 'Agent', org: "Automatic model selection", org_display: "Automatic model selection", color: '#a9c4ae', capabilities: [] };
+
+  const demoWorkspaceTreeData = {
+    '.': [
+      { name: 'src', path: 'src', is_dir: true, size: 0 },
+      { name: 'tests', path: 'tests', is_dir: true, size: 0 },
+      { name: 'README.md', path: 'README.md', is_dir: false, size: 421 },
+      { name: 'notes.txt', path: 'notes.txt', is_dir: false, size: 188 }
+    ],
+    src: [
+      { name: 'app.py', path: 'src/app.py', is_dir: false, size: 1320 },
+      { name: 'normalize.py', path: 'src/normalize.py', is_dir: false, size: 640 }
+    ],
+    tests: [
+      { name: 'test_normalize.py', path: 'tests/test_normalize.py', is_dir: false, size: 512 }
+    ]
+  };
+
+  const demoWorkspaceFileData = {
+    'README.md': "# Photo Studio (demo)\n\nThis is a demonstration file in the browser. The real local folder was not read.",
+    'notes.txt': "Demo notes: check the light, the grid, and the mobile version. No actions were performed on the computer.",
+    'src/app.py': "# Demo file\n\ndef main() -> None:\n    print(\"Arena Desktop demo\")\n",
+    'src/normalize.py': 'def normalize_name(value: str) -> str:\n    return " ".join(value.strip().split()).casefold()\n',
+    'tests/test_normalize.py': "def test_demo() -> None:\n    assert True  # Demo file was not run\n"
+  };
+
+  function demoClone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function demoConnectorPresets() {
+    const ws = demoStore.workspace;
+    const installed = new Set(demoStore.connectors.map((server) => server.preset_id || server.name));
+    const presets = [
+      { id: 'filesystem', name: 'Filesystem', vendor: 'Model Context Protocol', description: "Files inside the selected working folder.", requirements: 'Node.js (npx)', docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem', Fields: [{ key: 'path', label: "Access folder", type: 'text', default: ws }], command: `npx -y @modelcontextprotocol/server-filesystem ${ws}` },
+      { id: 'git', name: 'Git', vendor: 'Model Context Protocol', description: "History, status, diff, and branches of the local repository.", requirements: 'uv (uvx), Git', docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/git', Fields: [{ key: 'path', label: "Repository folder", type: 'text', default: ws }], command: `uvx mcp-server-git --repository ${ws}` },
+      { id: 'fetch', name: 'Fetch', vendor: 'Model Context Protocol', description: "Loading web pages as text/Markdown.", requirements: 'uv (uvx)', docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/fetch', Fields: [], command: 'uvx mcp-server-fetch' },
+      { id: 'memory', name: 'Memory', vendor: 'Model Context Protocol', description: "Agent's local long-term memory.", requirements: 'Node.js (npx)', docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/memory', Fields: [], command: 'npx -y @modelcontextprotocol/server-memory' },
+      { id: 'time', name: 'Time', vendor: 'Model Context Protocol', description: "Current time and time zones.", requirements: 'uv (uvx)', docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/time', Fields: [], command: 'uvx mcp-server-time' },
+      { id: 'sequential_thinking', name: 'Sequential Thinking', vendor: 'Model Context Protocol', description: "Structured step-by-step reasoning.", requirements: 'Node.js (npx)', docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking', Fields: [], command: 'npx -y @modelcontextprotocol/server-sequential-thinking' },
+      { id: 'everything', name: "Everything (MCP demo)", vendor: 'Model Context Protocol', description: "Official test MCP server.", requirements: 'Node.js (npx)', docs: 'https://github.com/modelcontextprotocol/servers/tree/main/src/everything', Fields: [], command: 'npx -y @modelcontextprotocol/server-everything' },
+      { id: 'github', name: 'GitHub', vendor: 'GitHub', description: "Official GitHub MCP: repositories, issues, pull requests, and code.", requirements: 'Docker; GitHub Personal Access Token', docs: 'https://github.com/github/github-mcp-server', Fields: [{ key: 'token', label: 'GitHub Personal Access Token', type: 'password', required: false, help: "No token is required in the demo." }, { key: 'read_only', label: "Read-only (recommended)", type: 'checkbox', default: true }], command: 'docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN -e GITHUB_READ_ONLY=1 ghcr.io/github/github-mcp-server' },
+      { id: 'playwright', name: 'Playwright', vendor: 'Microsoft', description: "Official browser MCP Microsoft.", requirements: 'Node.js (npx)', docs: 'https://github.com/microsoft/playwright-mcp', Fields: [], command: 'npx -y @playwright/mcp@latest' }
+    ];
+    return presets.map((preset) => ({ ...preset, installed: installed.has(preset.id) }));
+  }
+
+  function demoConnectorSummary(server) {
+    const tools = Array.isArray(server.tools) ? server.tools : [];
+    return { ...demoClone(server), id: server.name, tools, tools_count: tools.length };
+  }
+
+  function demoConnectorsPayload() {
+    return {
+      ok: true,
+      demo: true,
+      config_path: 'C:\\Users\\Demo\\.arena-personal\\mcp.json',
+      config_error: null,
+      servers: demoStore.connectors.map(demoConnectorSummary),
+      presets: demoConnectorPresets(),
+      transports: { stdio: true, http: false }
+    };
+  }
+
+  function demoToolsFor(server) {
+    const byPreset = {
+      filesystem: ['list_allowed_directories', 'list_directory', 'read_text_file'],
+      git: ['git_status', 'git_log', 'git_diff_unstaged'],
+      fetch: ['fetch'],
+      memory: ['search_nodes', 'create_entities'],
+      time: ['get_current_time', 'convert_time'],
+      sequential_thinking: ['sequentialthinking'],
+      everything: ['echo', 'add', 'get-sum'],
+      github: ['search_repositories', 'get_me', 'list_issues'],
+      playwright: ['browser_navigate', 'browser_snapshot']
+    };
+    return (byPreset[server.preset_id] || ['demo_echo']).map((name) => ({ name, description: "Demo tool", annotations: {} }));
+  }
+
+  function demoConnectServer(server) {
+    server.running = true;
+    server.status = 'connected';
+    server.error = null;
+    server.tools = demoToolsFor(server);
+    return demoConnectorSummary(server);
+  }
+
+  const demoApi = {
+    async getSettings() { await sleep(40); return { ...demoStore.settings }; },
+    async saveSettings(body) { Object.assign(demoStore.settings, body || {}); await sleep(40); return { ok: true }; },
+    async getStatus() {
+      await sleep(180);
+      const current = demoStore.accounts.find((a) => a.id === demoStore.currentAccountId) || null;
+      return {
+        authenticated: demoStore.authenticated,
+        email: demoStore.authenticated && current ? current.email : demoStore.email,
+        full_name: demoStore.authenticated && current ? current.name : null,
+        avatar_url: null,
+        loading: false,
+        engine_loading: false,
+        generating: demoStore.streams.size > 0,
+        generating_chat_ids: [...demoStore.streams].map((stream) => stream.chatId).filter(Boolean),
+        accounts: demoStore.accounts.map((a) => ({ ...a, current: a.id === demoStore.currentAccountId && demoStore.authenticated })),
+        current_account_id: demoStore.authenticated ? demoStore.currentAccountId : null,
+        offline: demoStore.offline,
+        session_error: demoStore.sessionError,
+        mode: demoStore.mode,
+        modality: demoStore.modality,
+        desktop: true,
+        engine: demoStore.engineOpen,
+        permission_mode: demoStore.permissionMode,
+        workspace: demoStore.workspace,
+        workspace_chosen: true,
+        app_version: '4.12.0',
+        pending_permissions: demoStore.pendingPermissions.length,
+        demo: true
+      };
+    },
+    async login() { demoStore.pendingAdd = false; demoStore.loginAt = Date.now(); await sleep(220); return { ok: true, pending: true }; },
+    async addAccount() { demoStore.pendingAdd = true; demoStore.loginAt = Date.now(); await sleep(220); return { ok: true, pending: true }; },
+    async getAccounts() {
+      await sleep(60);
+      return { accounts: demoStore.accounts.map((a) => ({ ...a, current: a.id === demoStore.currentAccountId && demoStore.authenticated })), current_id: demoStore.authenticated ? demoStore.currentAccountId : null };
+    },
+    async switchAccount(id) {
+      await sleep(160);
+      const account = demoStore.accounts.find((a) => a.id === id);
+      if (!account) throw new ApiError('That account is not saved in this app.', 404, { accounts: demoStore.accounts });
+      if (account.expired) throw new ApiError('arena.ai rejected this session. Sign in to it again.', 401, { expired: true, accounts: demoStore.accounts.map((a) => ({ ...a, current: a.id === demoStore.currentAccountId })) });
+      demoStore.currentAccountId = account.id;
+      demoStore.authenticated = true;
+      demoStore.email = account.email;
+      return { ok: true, accounts: demoStore.accounts.map((a) => ({ ...a, current: a.id === account.id })) };
+    },
+    async removeAccount(id) {
+      await sleep(80);
+      demoStore.accounts = demoStore.accounts.filter((a) => a.id !== id);
+      return { ok: true, accounts: demoStore.accounts.map((a) => ({ ...a, current: a.id === demoStore.currentAccountId && demoStore.authenticated })) };
+    },
+    async loginPoll() {
+      await sleep(260);
+      if (!demoStore.loginAt) return { done: false };
+      if (Date.now() - demoStore.loginAt < 1700) return { done: false, pending: true };
+      if (demoStore.pendingAdd) {
+        demoStore.pendingAdd = false;
+        let added = demoStore.accounts.find((a) => a.id === 'demo-acc-added');
+        if (!added) {
+          added = { id: 'demo-acc-added', email: 'added@local.invalid', name: 'Added User', avatar_url: null, expired: false };
+          demoStore.accounts.push(added);
+        }
+        added.expired = false;
+        demoStore.currentAccountId = added.id;
+        demoStore.email = added.email;
+      } else if (!demoStore.currentAccountId || !demoStore.accounts.some((a) => a.id === demoStore.currentAccountId)) {
+        demoStore.currentAccountId = 'demo-acc-1';
+        if (!demoStore.accounts.some((a) => a.id === 'demo-acc-1')) {
+          demoStore.accounts.unshift({ id: 'demo-acc-1', email: 'demo@local.invalid', name: 'Demo User', avatar_url: null, expired: false });
+        }
+        demoStore.email = 'demo@local.invalid';
+      }
+      demoStore.authenticated = true;
+      return { done: true, ok: true, authenticated: true };
+    },
+    async engineShow() { demoStore.engineOpen = true; await sleep(160); return { ok: true, engine: true, demo: true }; },
+    async engineHide() { demoStore.engineOpen = false; await sleep(120); return { ok: true, engine: false, demo: true }; },
+    async logout() {
+      demoStore.accounts = demoStore.accounts.filter((a) => a.id !== demoStore.currentAccountId);
+      demoStore.currentAccountId = null;
+      demoStore.authenticated = false;
+      demoStore.email = '';
+      await sleep(180);
+      return { ok: true };
+    },
+    async getModels(modality, mode) {
+      await sleep(150);
+      demoValidateSelection(mode || demoStore.mode, modality || demoStore.modality);
+      if ((mode || demoStore.mode) === 'battle' || (modality || demoStore.modality) === 'video') return [];
+      if ((mode || demoStore.mode) === 'agent') return [];
+      const list = demoDefaultModels(modality).slice();
+      return ((mode || demoStore.mode) === 'direct' && (modality || demoStore.modality) === 'text')
+        ? [demoRouter, ...list] : list;
+    },
+    async setMode(mode) {
+      const pair = normalizeSelection(mode, demoStore.modality);
+      demoStore.mode = pair.mode;
+      demoStore.modality = pair.modality;
+      await sleep(180);
+      return { ok: true, mode: pair.mode, modality: pair.modality };
+    },
+    async setModality(modality) {
+      const next = demoStore.mode === 'agent' ? 'text' : modality;
+      demoValidateSelection(demoStore.mode, next);
+      demoStore.modality = next;
+      await sleep(160);
+      return { ok: true, modality: next };
+    },
+    async newChat() {
+      demoStore.serial += 1;
+      const id = `demo-chat-${Date.now()}-${demoStore.serial}`;
+      demoStore.activeChatId = id;
+      demoStore.messages[id] = [];
+      demoStore.chats.unshift({ id, title: "New chat", updated_at: new Date().toISOString(), mode: demoStore.mode, modality: demoStore.modality, account: demoStore.currentAccountId || 'demo-acc-1' });
+      await sleep(130);
+      return { ok: true, chat_id: id };
+    },
+    async getChats() {
+      await sleep(100);
+      const current = demoStore.currentAccountId || 'demo-acc-1';
+      return demoStore.chats.filter((chat) => (chat.account || 'demo-acc-1') === current).map((chat) => ({ ...chat }));
+    },
+    async getArenaChats() {
+      await sleep(120);
+      if (!demoStore.authenticated) throw new ApiError("Logged out of the profile in the demo.", 401);
+      return {
+        ok: true,
+        entries: demoStore.cloudChats.map((entry) => {
+          const local = demoStore.chats.find((chat) => chat.id === entry.eval_id || chat.eval_id === entry.eval_id);
+          return { ...entry, local_chat_id: local?.id || null, local_mode: local?.mode || null };
+        })
+      };
+    },
+    async openArenaChat(id, type) {
+      await sleep(160);
+      const existing = demoStore.chats.find((chat) => chat.id === id || chat.eval_id === id);
+      if (existing) return { ok: true, chat_id: existing.id, imported: false, demo: true };
+      const entry = demoStore.cloudChats.find((item) => item.eval_id === id || item.id === id);
+      if (!entry) throw new ApiError("Demo chat arena.ai not found.", 404);
+      const chat = {
+        id: entry.eval_id, eval_id: entry.eval_id, title: entry.title, updated_at: entry.updated_at,
+        created_at: entry.created_at, mode: entry.mode, modality: entry.modality, source: 'arena',
+        agent_backend: type === 'agentic' ? 'arena' : null
+      };
+      demoStore.chats.unshift(chat);
+      demoStore.messages[chat.id] = demoClone(demoStore.cloudMessages[entry.eval_id] || []);
+      return { ok: true, chat_id: chat.id, imported: true, demo: true };
+    },
+    async uploadAttachment(file, kind) {
+      await sleep(260);
+      const mediaType = file?.type || 'application/octet-stream';
+      if (kind === 'agent') {
+        return { ok: true, kind: 'agent', filename: file?.name || 'file', mediaType, url: 'demo://agent-file', size: file?.size || 0, demo: true };
+      }
+      return { ok: true, kind: 'evaluation', name: file?.name || 'file', contentType: mediaType, url: 'demo://file', size: file?.size || 0, demo: true };
+    },
+    async vote(chatId, body) {
+      await sleep(240);
+      const messages = demoStore.messages[chatId] || [];
+      // Pairs appear either as one dual record (text_b) or as consecutive
+      // lane records 'a' + 'b' written by the demo stream.
+      const pairs = [];
+      for (let i = 0; i < messages.length; i += 1) {
+        const item = messages[i];
+        if (!item || item.role !== 'assistant') continue;
+        if ('text_b' in item) pairs.push(item);
+        else if (item.lane === 'a') {
+          const next = messages[i + 1];
+          if (next && next.role === 'assistant' && next.lane === 'b') pairs.push(item);
+        }
+      }
+      const pairIndex = Number.isInteger(body?.pair_index) && body.pair_index >= 0 && body.pair_index < pairs.length
+        ? body.pair_index : pairs.length - 1;
+      const msg = pairs[pairIndex];
+      if (!msg) throw new ApiError("There is no paired answer for voting in the demo chat.", 422);
+      if (msg.vote) throw new ApiError("This answer has already been voted on.", 409);
+      msg.vote = body?.value || 'tie';
+      msg.names = { a: "Demo model A", b: "Demo model B" };
+      return { ok: true, vote: msg.vote, names: msg.names, model_a: 'demo-a', model_b: 'demo-b', demo: true };
+    },
+    async getChat(id) {
+      demoStore.activeChatId = id;
+      const chat = demoStore.chats.find((item) => item.id === id);
+      await sleep(110);
+      if (!chat) throw new ApiError("Demo chat not found.", 404);
+      if (chat.mode) demoStore.mode = chat.mode;
+      if (chat.modality) demoStore.modality = chat.modality;
+      return { ...chat };
+    },
+    async deleteChat(id) {
+      const chat = demoStore.chats.find((item) => item.id === id);
+      demoStore.chats = demoStore.chats.filter((item) => item.id !== id);
+      if (chat?.eval_id) demoStore.cloudChats = demoStore.cloudChats.filter((item) => item.eval_id !== chat.eval_id);
+      delete demoStore.messages[id];
+      await sleep(120);
+      return { ok: true, arena: chat?.eval_id || chat?.source === 'arena' ? 'archived' : 'none', demo: true };
+    },
+    async archiveArenaChat(id) {
+      demoStore.cloudChats = demoStore.cloudChats.filter((item) => item.eval_id !== id && item.id !== id);
+      await sleep(120);
+      return { ok: true, arena: 'archived', demo: true };
+    },
+    async getHistory() {
+      await sleep(130);
+      return (demoStore.messages[demoStore.activeChatId] || []).map((message) => ({ ...message }));
+    },
+    async getPermissions() { await sleep(80); return demoStore.pendingPermissions.map((item) => ({ ...item })); },
+    async decidePermission(id, decision) {
+      const permission = demoStore.pendingPermissions.find((item) => String(item.id) === String(id));
+      demoStore.pendingPermissions = demoStore.pendingPermissions.filter((item) => String(item.id) !== String(id));
+      if (permission?.resolve) permission.resolve(decision);
+      await sleep(160);
+      return { ok: true, decision, demo: true };
+    },
+    async getPermissionMode() { await sleep(90); return { mode: demoStore.permissionMode }; },
+    async setPermissionMode(mode) { demoStore.permissionMode = mode; await sleep(150); return { ok: true, mode }; },
+    async getWorkspace() { await sleep(80); return { path: demoStore.workspace, workspace: demoStore.workspace, panel_root: demoStore.workspace }; },
+    async setWorkspace(path) { demoStore.workspace = path; await sleep(160); return { ok: true, path }; },
+    async clearWorkspace() { demoStore.workspace = 'C:\\Users\\Demo\\ArenaProjects\\workspace'; await sleep(120); return { ok: true, workspace: demoStore.workspace, cleared: true }; },
+    async saveWorkspace(chatId, lane) {
+      await sleep(220);
+      return { ok: true, path: `${demoStore.workspace}\\demo-save-${lane || 'a'}`, demo: true };
+    },
+    async openWorkspace() { await sleep(120); return { ok: true, demo: true, note: "Cannot open demo folder." }; },
+    async getWorkspaceTree(path = '.') {
+      await sleep(90);
+      const key = String(path || '.');
+      if (!(key in demoWorkspaceTreeData)) throw new ApiError("Demo folder not found.", 404);
+      return { root: demoStore.workspace, path: key, entries: demoClone(demoWorkspaceTreeData[key]), truncated: false, demo: true };
+    },
+    async getWorkspaceFile(path) {
+      await sleep(90);
+      const key = String(path || '');
+      if (!(key in demoWorkspaceFileData)) throw new ApiError("Demo file not found or unavailable for preview.", 404);
+      return { path: key, name: key.split('/').pop(), size: demoWorkspaceFileData[key].length, content: demoWorkspaceFileData[key], demo: true };
+    },
+    async getConnectors() { await sleep(110); return demoConnectorsPayload(); },
+    async reloadConnectors() { await sleep(110); return demoConnectorsPayload(); },
+    async openConnectorConfig() { await sleep(110); return { ok: true, path: 'C:\\Users\\Demo\\.arena-personal\\mcp.json', demo: true }; },
+    async installConnectorPreset(presetId, values, connect = true) {
+      await sleep(180);
+      const preset = demoConnectorPresets().find((item) => item.id === presetId);
+      if (!preset) throw new ApiError("Demo connector not found.", 404);
+      if (demoStore.connectors.some((server) => server.name === presetId)) throw new ApiError(`Connector already exists: ${presetId}`, 400);
+      let command = preset.command;
+      if ((presetId === 'filesystem' || presetId === 'git') && values?.path) command = command.replace(demoStore.workspace, String(values.path));
+      const server = {
+        id: presetId, name: presetId, preset_id: presetId, source: 'official', transport: 'stdio',
+        enabled: true, running: false, status: 'stopped', description: `${preset.description} (demo: the process does not start)`,
+        command_display: command, tools: [], tools_count: 0, error: null
+      };
+      demoStore.connectors.push(server);
+      const summary = connect ? demoConnectServer(server) : demoConnectorSummary(server);
+      return { ...demoConnectorsPayload(), server: summary };
+    },
+    async addConnectorCli(body) {
+      await sleep(180);
+      const name = String(body?.name || '').trim();
+      const command = String(body?.command || '').trim();
+      if (!name || !command) throw new ApiError("Name and CLI command are required.", 400);
+      if (demoStore.connectors.some((server) => server.name === name)) throw new ApiError(`Connector already exists: ${name}`, 400);
+      const server = {
+        id: name, name, preset_id: null, source: 'custom', transport: 'stdio', enabled: true,
+        running: false, status: 'stopped', description: String(body.description || "Custom demo MCP. Command not executed."),
+        command_display: command, tools: [], tools_count: 0, error: null
+      };
+      demoStore.connectors.push(server);
+      const summary = body.connect === false ? demoConnectorSummary(server) : demoConnectServer(server);
+      return { ...demoConnectorsPayload(), server: summary };
+    },
+    async connectConnector(name) {
+      await sleep(180);
+      const server = demoStore.connectors.find((item) => item.name === name);
+      if (!server) throw new ApiError("Demo connector not found.", 404);
+      if (!server.enabled) throw new ApiError("Connector is disabled in demo configuration.", 400);
+      return { ...demoConnectorsPayload(), server: demoConnectServer(server) };
+    },
+    async disconnectConnector(name) {
+      await sleep(100);
+      const server = demoStore.connectors.find((item) => item.name === name);
+      if (server) { server.running = false; server.status = 'stopped'; server.tools = []; }
+      return demoConnectorsPayload();
+    },
+    async setConnectorEnabled(name, enabled) {
+      await sleep(120);
+      const server = demoStore.connectors.find((item) => item.name === name);
+      if (!server) throw new ApiError("Demo connector not found.", 404);
+      server.enabled = Boolean(enabled);
+      if (!enabled) { server.running = false; server.status = 'disabled'; server.tools = []; }
+      else if (server.status === 'disabled') server.status = 'stopped';
+      return demoConnectorsPayload();
+    },
+    async deleteConnector(name) {
+      await sleep(120);
+      demoStore.connectors = demoStore.connectors.filter((server) => server.name !== name);
+      return demoConnectorsPayload();
+    },
+    async getArenaConnectors() {
+      await sleep(110);
+      if (!demoStore.authenticated) throw new ApiError("Login not performed (demo).", 401);
+      return { ok: true, demo: true, source: 'arena', connectors: demoClone(demoStore.arenaConnectors) };
+    },
+    async connectArenaConnector(slug) {
+      await sleep(180);
+      const item = demoStore.arenaConnectors.find((entry) => entry.slug === slug);
+      if (!item) throw new ApiError("Demo connector Arena not found.", 404);
+      demoStore.arenaConnectorPending[slug] = Date.now();
+      return { ok: true, pending: true, slug, demo: true };
+    },
+    async pollArenaConnector(slug) {
+      await sleep(120);
+      const item = demoStore.arenaConnectors.find((entry) => entry.slug === slug);
+      const started = demoStore.arenaConnectorPending[slug] || 0;
+      if (item && started && Date.now() - started > 900) {
+        item.auth_status = 'connected';
+        item.connected = true;
+        delete demoStore.arenaConnectorPending[slug];
+        return { ok: true, done: true, connected: true, slug, demo: true, connectors: demoClone(demoStore.arenaConnectors) };
+      }
+      return { ok: true, done: false, connected: false, slug, demo: true };
+    },
+    async disconnectArenaConnector(slug) {
+      await sleep(140);
+      const item = demoStore.arenaConnectors.find((entry) => entry.slug === slug);
+      if (item) { item.auth_status = 'disconnected'; item.connected = false; }
+      return { ok: true, slug, demo: true, connectors: demoClone(demoStore.arenaConnectors) };
+    },
+    async openNativeAgent() { await sleep(160); return { ok: true, demo: true, url: 'https://arena.ai/agent' }; },
+    async saveMedia() { await sleep(180); return { ok: true, path: `${demoStore.workspace}\\demo-media.png`, demo: true }; },
+    async getDoctor() {
+      await sleep(220);
+      return {
+        demo: true,
+        backend: "browser simulation",
+        python: "unavailable in demo",
+        webview2: "checked by the application",
+        desktop_bridge: "simulated only for demo",
+        workspace: demoStore.workspace,
+        official_client: false,
+        note: "Demonstration data. Real diagnostics are only available through the local Flask backend."
+      };
+    },
+    async stop(chatId) {
+      for (const stream of demoStore.streams) {
+        if (!chatId || String(stream.chatId) === String(chatId)) stream.stopped = true;
+      }
+      for (const permission of demoStore.pendingPermissions) {
+        if (permission.resolve && (!chatId || String(permission.chat_id) === String(chatId))) permission.resolve('deny');
+      }
+      await sleep(100);
+      return { ok: true, demo: true };
+    },
+    async streamChat(body, onEvent, signal) {
+      demoStore.loading = true;
+      const chatId = body.chat_id || demoStore.activeChatId;
+      const controller = {
+        stopped: false,
+        signal,
+        chatId,
+        pendingResolvers: new Map()
+      };
+      demoStore.activeStream = controller;
+      demoStore.streams.add(controller);
+      const chat = demoStore.chats.find((item) => item.id === chatId);
+      let modality = body.modality || demoStore.modality;
+      const mode = body.mode || demoStore.mode;
+      if (mode === 'battle' && modality === 'auto') modality = 'text'; // demo router resolves to Text
+      demoStore.modality = modality;
+      demoStore.mode = mode;
+      demoValidateSelection(mode, modality);
+      const allModels = demoDefaultModels(modality);
+      const selectedA = mode === 'agent' ? demoAgentIdentity : (demoFindModel(body.model_id) || allModels[0]);
+      const selectedB = demoFindModel(body.model_id_b) || allModels.find((model) => model.id !== selectedA?.id) || allModels[0];
+      const laneModels = {
+        a: mode === 'battle' ? allModels[0] : selectedA,
+        b: mode === 'battle' ? allModels[1] || allModels[0] : selectedB
+      };
+      const emit = (event) => {
+        if (signal?.aborted) return;
+        try { onEvent(event); } catch (error) { console.error(error); }
+      };
+      const checkStop = () => controller.stopped || Boolean(signal?.aborted);
+      const stoppedNotice = () => {
+        emit({ type: 'notice', message: "Generation stopped. This is a demonstration event." });
+        emit({ type: 'done', stopped: true, demo: true });
+      };
+      const typeOut = async (lane, text, model) => {
+        let index = 0;
+        while (index < text.length) {
+          if (checkStop()) return false;
+          const size = 5 + Math.floor(Math.random() * 18);
+          emit({ type: 'text', model: lane, text: text.slice(index, index + size) });
+          index += size;
+          await sleep(14 + Math.floor(Math.random() * 18));
+        }
+        return true;
+      };
+      const requestPermission = (permission) => new Promise((resolve) => {
+        const record = {
+          ...permission,
+          demo: true,
+          resolve,
+          status: 'pending',
+          chat_id: chatId
+        };
+        demoStore.pendingPermissions.push(record);
+        emit({ type: 'permission', ...permission, chat_id: chatId });
+      });
+
+      try {
+        emit({
+          type: 'meta',
+          mode,
+          modality,
+          chat_id: chatId,
+          models: {
+            a: laneModels.a ? { ...laneModels.a } : null,
+            b: (mode === 'battle' || mode === 'side-by-side') && laneModels.b ? { ...laneModels.b } : null
+          }
+        });
+        emit({ type: 'reasoning', model: 'a', text: "Demo mode: response " });
+        emit({ type: 'reasoning', model: 'a', text: "and events are generated locally. " });
+        emit({ type: 'reasoning', model: 'a', text: "No real request to the models was sent." });
+        await sleep(160);
+
+        const prompt = body.message.toLowerCase();
+        const twoLanes = mode === 'battle' || mode === 'side-by-side';
+        const wantsLanding = /landing|website|page/.test(prompt);
+        const wantsCode = modality === 'code' || /code|python|javascript|function/.test(prompt);
+
+        const textA = wantsCode || modality === 'code'
+          ? `### Demo mode: plan without execution
+
+Below is a **conditional example**, not the result of a real model or sandbox.
+
+1. First, identify the input data and expected behavior.
+2. Isolate the problem with a small test.
+3. Check edge cases and only then change the implementation.
+
+\`\`\`python
+def normalize_name(value: str) -> str:
+    """Safe demonstration example."""
+    return " ".join(value.strip().split()).casefold()
+\`\`\`
+
+The local folder is not fully transferred to the remote sandbox. Files and preview links appear only based on server events.`
+          : wantsLanding
+            ? `### Calm Page Framework
+
+In the demo, I will show the direction, not the finished published result.
+
+- **Hero:** a large photo and a short phrase.
+- **Works:** an airy grid with different proportions.
+- **Approach:** one accent color and lots of white space.
+- **Mobile version:** single-column rhythm without losing air.
+
+\`\`\`css
+.hero {
+  display: grid;
+  gap: clamp(1.25rem, 4vw, 4rem);
+  grid-template-columns: minmax(0, 1.2fr) minmax(220px, .8fr);
+}
+
+@media (max-width: 720px) {
+  .hero { grid-template-columns: 1fr; }
+}
+\`\`\`
+
+The next step is to agree on the structure, content, and images.`
+            : `### Demonstration Response
+
+Thank you, the request has been received. This is a **interface simulation**: text, models, and events are generated locally, without a request to arena.ai.
+
+- Settings can be changed in the input field.
+- A/B responses are displayed side by side in Battle and Side-by-side modes.
+- Permissions and sandbox actions require explicit confirmation.
+
+How can I assist further?`;
+
+        const textB = mode === 'battle'
+          ? `### Second Demonstration Variant
+
+A more compact approach: start with a single scenario and test it in a narrow window.
+
+1. One key screen.
+2. Check at a width of 360 px.
+3. Only after that — additional blocks.
+
+This is **not an Arena model evaluation** and not the result of actual generation.`
+          : wantsLanding
+            ? `### Alternative Presentation
+
+Editorial grid: large typography, photo captions, and one clear contact.
+
+- Studio name instead of an advertising slogan.
+- Series of shots with an asymmetric rhythm.
+- Dark or paper palette.
+
+All content is for demonstration.`
+            : `### Second Direction
+
+You can start with a more structured option: one script, short captions, and a clear next action. This is a simulated demo mode response.`;
+
+        const okA = await typeOut('a', textA);
+        if (!okA) { stoppedNotice(); return; }
+        if (twoLanes) {
+          const okB = await typeOut('b', textB);
+          if (!okB) { stoppedNotice(); return; }
+        }
+
+        if (modality === 'search') {
+          emit({ type: 'source', model: 'a', title: "Demo source: WebView2 overview", url: 'https://example.com/demo/webview2', snippet: "Simulated source card." });
+          emit({ type: 'source', model: 'a', title: "Demo source: pywebview documentation", url: 'https://example.com/demo/pywebview', snippet: "The link is marked as a demonstration." });
+          emit({ type: 'notice', message: "Sources and links in demo mode are simulated." });
+        }
+
+        if (modality === 'image') {
+          emit({ type: 'media', model: 'a', kind: 'image', url: demoArtwork("Calm cover", 162, "demo image · without real generation"), title: "Demo cover · 16:10" });
+          emit({ type: 'notice', message: "Media in demo mode is created locally, not by the arena.ai server." });
+        }
+
+        if (modality === 'video') {
+          emit({ type: 'media', model: 'a', kind: 'video', poster: demoArtwork("Video · demo", 205, "no file was created"), title: "Demonstration video event · without file" });
+          emit({ type: 'notice', message: "The video file was not created. Only a demonstration event is shown." });
+        }
+
+        if (mode === 'agent') {
+          emit({ type: 'agent', stage: 'planning', message: "I am making a demonstration plan. Commands are not executed without permission." });
+          emit({
+            type: 'tool_call', id: 'demo-tool-1', name: 'read_file', model: 'a',
+            title: "Read the project file",
+            path: `${demoStore.workspace}\\app.py`,
+            status: 'running'
+          });
+          await sleep(480);
+          if (checkStop()) { stoppedNotice(); return; }
+          emit({ type: 'tool_result', id: 'demo-tool-1', status: 'ok', output: "Demo: the contents of the file were not read or transmitted." });
+          const permission = {
+            id: `demo-permission-${Date.now()}`,
+            kind: 'command',
+            category: "Run commands",
+            title: "Run tests in the sandbox?",
+            description: "Demo request. The command will not be executed on your computer.",
+            command: 'python -m pytest -q',
+            cwd: demoStore.workspace,
+            path: demoStore.workspace,
+            diff: null,
+            lane: 'a'
+          };
+          const decision = await requestPermission(permission);
+          if (checkStop() && !decision) { stoppedNotice(); return; }
+          emit({ type: 'permission_done', id: permission.id, decision });
+          if (decision === 'allow' || decision === 'always') {
+            emit({ type: 'tool_result', id: `demo-permission-${permission.id}`, status: 'ok', output: "Demo: check marked as allowed. The command was not executed." });
+            emit({ type: 'text', model: 'a', text: "\n\nPermission granted in demo. **The real command was not executed.** Permission bypass is not used." });
+          } else {
+            emit({ type: 'text', model: 'a', text: "\n\nAction denied. **The command was not run**, the working folder was not changed." });
+            emit({ type: 'notice', message: "Permission denied by the user in the demo scenario." });
+          }
+        }
+
+        if (modality === 'code') {
+          emit({ type: 'sandbox', id: 'demo-sandbox-1', status: 'ready', title: "Demo sandbox", note: "The local folder did not fully load." });
+          emit({ type: 'files_written', model: 'a', lane: 'a', files: [
+            { path: 'src/normalize.py', name: 'normalize.py', note: "simulated file" },
+            { path: 'tests/test_normalize.py', name: 'test_normalize.py', note: "simulated file" }
+          ] });
+          emit({ type: 'preview', model: 'a', lane: 'a', title: "Demonstration preview", url: 'https://example.com/demo/preview' });
+          emit({ type: 'sandbox_done', id: 'demo-sandbox-1', status: 'idle', message: "The demo sandbox completed the simulation." });
+        }
+
+        if (checkStop()) { stoppedNotice(); return; }
+        emit({ type: 'done', demo: true });
+
+        if (chat) {
+          demoStore.messages[chatId] = demoStore.messages[chatId] || [];
+          demoStore.messages[chatId].push({ role: 'user', content: body.message, attachments: Array.isArray(body.attachments) ? body.attachments : [], created_at: new Date().toISOString() });
+          const laneA = { role: 'assistant', lane: 'a', model_id: laneModels.a?.id, model_name: laneModels.a?.name || "Model A", content: textA, created_at: new Date().toISOString() };
+          demoStore.messages[chatId].push(laneA);
+          if (twoLanes) demoStore.messages[chatId].push({ role: 'assistant', lane: 'b', model_id: laneModels.b?.id, model_name: laneModels.b?.name || "Model B", content: textB, created_at: new Date().toISOString() });
+          if (chat.title === "New chat") chat.title = truncate(body.message, 48);
+          chat.updated_at = new Date().toISOString();
+        }
+      } catch (error) {
+        if (!checkStop()) {
+          emit({ type: 'error', message: errorMessage(error) });
+          emit({ type: 'done', demo: true });
+        }
+      } finally {
+        demoStore.streams.delete(controller);
+        demoStore.loading = demoStore.streams.size > 0;
+        if (demoStore.activeStream === controller) demoStore.activeStream = null;
+      }
+    }
+  };
+
+  /* ---------------------------------------------------------------------- */
+  /* Application state                                                     */
+  /* ---------------------------------------------------------------------- */
+  const MODES = [
+    { id: 'battle', label: 'Battle Mode', title: 'Battle Mode', desc: 'Battle 2 anonymous models', icon: 'swords' },
+    { id: 'agent', label: 'Agent Mode', title: 'Agent Mode', desc: 'Built for complex tasks', icon: 'spark' },
+    { id: 'side-by-side', label: 'Side by Side', title: 'Side by Side', desc: 'Compare 2 models of your choice', icon: 'columns' },
+    { id: 'direct', label: 'Direct', title: 'Direct', desc: 'Chat with 1 model at a time', icon: 'message' }
+  ];
+  const MODALITIES = [
+    { id: 'video', label: 'Video', icon: 'video', desc: 'Generate Videos' },
+    { id: 'image', label: 'Image', icon: 'image', desc: 'Generate Images' },
+    { id: 'search', label: 'Web Search', icon: 'globe', desc: 'Search the Web' },
+    { id: 'code', label: 'Code', icon: 'code', desc: 'Build Apps and Websites' },
+    { id: 'text', label: 'Text', icon: 'type', desc: 'Try Language and Vision models' },
+    { id: 'auto', label: 'Auto', icon: 'spark', desc: 'Automatically Detect Modality' }
+  ];
+  const PERMISSION_MODES = [
+    { id: 'default', label: 'Ask', short: 'Ask', icon: 'shield', desc: 'Ask before file changes and commands' },
+    { id: 'acceptEdits', label: 'Accept edits', short: 'Accept edits', icon: 'check', desc: 'File edits run automatically, commands still ask' },
+    { id: 'auto', label: 'Auto', short: 'Auto', icon: 'spark', desc: 'Safe actions run automatically' },
+    { id: 'plan', label: 'Plan only', short: 'Plan only', icon: 'file-text', desc: 'Read and plan — no changes' },
+    { id: 'bypassPermissions', label: 'Bypass permissions', short: 'Bypass', icon: 'shield-alert', desc: 'Everything runs without asking', danger: true }
+  ];
+  const VALID_MODES = MODES.map((item) => item.id);
+  const VALID_MODALITIES = MODALITIES.map((item) => item.id);
+  const VALID_PERMISSION_MODES = PERMISSION_MODES.map((item) => item.id);
+
+  const state = {
+    demo: DEMO,
+    booted: false,
+    phase: 'loading',
+    status: null,
+    serverError: null,
+    networkOffline: !navigator.onLine,
+    retrying: false,
+    authenticated: false,
+    email: '',
+    fullName: '',
+    avatarUrl: '',
+    backendReached: false,
+    mode: 'direct',
+    modality: 'text',
+    savedModality: 'auto',
+    layout: { sidebarWidth: 276, workspaceWidth: 332, connectorsShare: 38 },
+    selectionTouched: false,
+    // Agent has two honest backends: Arena's native Agent Mode (opens on the
+    // site, never a Direct chat) and the local folder-tools loop.
+    agentKind: (() => { try { return window.localStorage.getItem('ap-agent-kind') === 'local' ? 'local' : 'native'; } catch { return 'native'; } })(),
+    directTools: (() => { try { return window.localStorage.getItem('ap-direct-tools') !== '0'; } catch { return true; } })(),
+    appVersion: '',
+    workspaceChosen: false,
+    permissionMode: 'default',
+    workspace: '',
+    desktop: false,
+    engineOpen: false,
+    engineKnown: false,
+    nativeReady: false,
+    dockShare: 0.42,
+    sidebarCollapsed: false,
+    chats: [],
+    chatsLoading: true,
+    chatsError: null,
+    cloudChats: [],
+    cloudChatsLoading: false,
+    cloudChatsError: null,
+    chatFilter: '',
+    workspacePanelOpen: false,
+    workspacePanelRoot: '',
+    workspaceTree: [],
+    workspaceTreeLoaded: false,
+    workspaceTreeLoading: false,
+    workspaceTreeError: null,
+    workspaceTreeTruncated: false,
+    workspaceChildren: {},
+    workspaceLoadingPaths: new Set(),
+    workspaceExpanded: new Set(),
+    workspaceRequest: 0,
+    connectors: null,
+    connectorsLoading: false,
+    connectorsError: null,
+    connectorBusy: new Set(),
+    connectorRequest: 0,
+    arenaConnectors: null,
+    arenaConnectorsLoading: false,
+    arenaConnectorsError: null,
+    arenaConnectorBusy: new Set(),
+    arenaConnectorsOff: new Set(),
+    arenaConnectorRequest: 0,
+    arenaConnectorPoll: null,
+    activeChatId: null,
+    activeChatTitle: '',
+    messages: [],
+    historyLoading: false,
+    historyError: null,
+    view: 'welcome',
+    models: [],
+    modelsLoading: false,
+    modelsError: null,
+    modelsMode: null,
+    modelsModality: null,
+    modelsPromise: null,
+    modelsRequest: 0,
+    modelAId: null,
+    modelBId: null,
+    pendingChanges: 0,
+    transitionQueue: Promise.resolve(),
+    generating: false,
+    remoteBusy: false,
+    stopping: false,
+    stopRequested: false,
+    starting: false,
+    currentStream: null,
+    activeGeneration: null,
+    // Per-chat generation state: several chats can work at once.  The
+    // legacy Fields above mirror the OPEN chat only (kept in sync by
+    // syncGenerationState), while these hold every running chat.
+    generations: new Map(),
+    chatTurns: {},
+    unreadDone: new Set(),
+    accounts: [],
+    currentAccountId: null,
+    accountBusy: false,
+    pendingPermissions: [],
+    permissionCount: 0,
+    decidingPermissions: new Set(),
+    artifacts: [],
+    attachments: [],
+    challenge: null,
+    loginPending: false,
+    settingsTab: 'connection',
+    settingsRerender: null,
+    draft: '',
+    unread: false
+  };
+
+  const API = DEMO ? demoApi : liveApi;
+  const els = {};
+
+  const UNREAD_DONE_KEY = 'arenaDesktop.unreadDone.v1';
+  function loadUnreadDone() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(UNREAD_DONE_KEY) || '[]');
+      if (Array.isArray(raw)) state.unreadDone = new Set(raw.map(String));
+    } catch { /* storage unavailable */ }
+  }
+  function saveUnreadDone() {
+    try { localStorage.setItem(UNREAD_DONE_KEY, JSON.stringify([...state.unreadDone])); } catch { /* noop */ }
+  }
+  function chatIsGenerating(chatId) {
+    return chatId != null && state.generations.has(String(chatId));
+  }
+  function anyGenerationRunning() { return state.generations.size > 0; }
+  function syncGenerationState() {
+    const gen = state.activeChatId ? state.generations.get(String(state.activeChatId)) : null;
+    state.generating = Boolean(gen);
+    state.activeGeneration = gen || null;
+    state.currentStream = gen ? gen.controller : null;
+    state.stopRequested = Boolean(gen && gen.stopRequested);
+    if (!gen) state.stopping = false;
+    updateComposerState();
+    renderChats();
+  }
+  function stashActiveTurns() {
+    if (state.activeChatId && Array.isArray(state.messages) && state.messages.length) {
+      state.chatTurns[String(state.activeChatId)] = state.messages;
+    }
+  }
+  function markChatSeen(chatId) {
+    if (chatId == null) return;
+    if (state.unreadDone.delete(String(chatId))) saveUnreadDone();
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* State normalizers and common UI state                                 */
+  /* ---------------------------------------------------------------------- */
+  function validMode(value) { return VALID_MODES.includes(value) ? value : null; }
+  function validModality(value) {
+    // Older chats and the server's initial state use API aliases. Auto is a
+    // real Battle work type now, not an alias for Text.
+    const canonical = ({ chat: 'text', webdev: 'code' })[value] || value;
+    return VALID_MODALITIES.includes(canonical) ? canonical : null;
+  }
+  function validPermissionMode(value) { return VALID_PERMISSION_MODES.includes(value) ? value : null; }
+
+  function selectionIssue(mode, modality) {
+    // Agent never blocks on the work type: it runs as Text while its
+    // work-type selector is hidden, exactly like arena.ai.
+    if (mode === 'agent') return '';
+    if (modality === 'video' && mode !== 'battle') return 'Video is available only in Battle Mode; Arena selects both models.';
+    if (modality === 'auto' && mode !== 'battle') return 'Auto is available only in Battle Mode.';
+    return '';
+  }
+  function isValidSelection(mode, modality) { return !selectionIssue(mode, modality); }
+  function normalizeSelection(mode, modality) {
+    const nextMode = validMode(mode) || 'battle';
+    let nextModality = validModality(modality) || 'text';
+    if (nextMode === 'agent') nextModality = 'text';
+    else if ((nextModality === 'video' || nextModality === 'auto') && nextMode !== 'battle') nextModality = 'text';
+    return { mode: nextMode, modality: nextModality };
+  }
+  function modalityOptionsForMode(mode) {
+    if (mode === 'agent') return [];
+    if (mode === 'battle') return MODALITIES;
+    return MODALITIES.filter((item) => item.id !== 'video' && item.id !== 'auto');
+  }
+  function allowsManualModels(mode = state.mode, modality = state.modality) {
+    return (mode === 'direct' || mode === 'side-by-side') && modality !== 'video';
+  }
+  function chatLocked() {
+    // After the first message, a chat keeps its mode, modality and models
+    // (like arena.ai): the selection controls only apply to new chats.
+    return Boolean(state.activeChatId)
+      && (state.messages || []).some((turn) => turn && (turn.user || Object.keys(turn.lanes || {}).length));
+  }
+  function lockedNotice(what) {
+    toast(`${what} Recorded after the first message — like on arena.ai. Create a new chat to make changes.`,
+      'info', "Chat already started");
+  }
+  function modeMeta(value) { return MODES.find((item) => item.id === value) || MODES.find((item) => item.id === 'direct'); }
+  function modalityMeta(value) { return MODALITIES.find((item) => item.id === value) || MODALITIES.find((item) => item.id === 'text'); }
+  function permissionMeta(value) { return PERMISSION_MODES.find((item) => item.id === value) || PERMISSION_MODES[0]; }
+
+  function normalizeWorkspace(raw) {
+    if (!raw) return '';
+    if (typeof raw === 'string') return raw;
+    if (typeof raw === 'object') {
+      const value = raw.path ?? raw.workspace ?? raw.directory ?? raw.cwd;
+      return typeof value === 'string' ? value : '';
+    }
+    return '';
+  }
+
+  function normalizeEngine(raw) {
+    if (raw === null || raw === undefined) return { known: false, open: false, share: 0.42 };
+    if (typeof raw === 'boolean') return { known: true, open: raw, share: 0.42 };
+    if (typeof raw === 'string') return { known: true, open: ['open', 'shown', 'docked', 'visible', 'true'].includes(raw.toLowerCase()), share: 0.42 };
+    if (typeof raw === 'object') {
+      const open = Boolean(raw.open ?? raw.shown ?? raw.visible ?? raw.docked ?? raw.is_open);
+      const shareCandidate = Number(raw.share ?? raw.width_share ?? raw.split);
+      return { known: true, open, share: Number.isFinite(shareCandidate) && shareCandidate > 0 ? shareCandidate : 0.42 };
+    }
+    return { known: false, open: false, share: 0.42 };
+  }
+
+  function normalizeStatus(raw) {
+    const data = raw && typeof raw === 'object' ? raw : {};
+    return {
+      authenticated: Boolean(data.authenticated ?? data.logged_in ?? data.auth),
+      email: typeof data.email === 'string' ? data.email : '',
+      full_name: typeof (data.full_name ?? data.fullName ?? data.name) === 'string' ? (data.full_name ?? data.fullName ?? data.name) : '',
+      avatar_url: typeof (data.avatar_url ?? data.avatarUrl) === 'string' ? (data.avatar_url ?? data.avatarUrl) : '',
+      loading: Boolean(data.loading),
+      engine_loading: Boolean(data.engine_loading ?? data.loading),
+      generating: Boolean(data.generating ?? data.busy),
+      offline: Boolean(data.offline),
+      session_error: data.session_error ?? data.sessionError ?? null,
+      mode: validMode(data.mode),
+      modality: validModality(data.modality),
+      desktop: Boolean(data.desktop),
+      engine: data.engine,
+      permission_mode: validPermissionMode(data.permission_mode ?? data.permissionMode),
+      workspace: normalizeWorkspace(data.workspace),
+      workspace_chosen: Boolean(data.workspace_chosen),
+      app_version: typeof data.app_version === 'string' ? data.app_version : '',
+      pending_permissions: Number.isFinite(Number(data.pending_permissions ?? data.pendingPermissions)) ? Number(data.pending_permissions ?? data.pendingPermissions) : 0,
+      generating_chat_ids: Array.isArray(data.generating_chat_ids) ? data.generating_chat_ids : null,
+      accounts: Array.isArray(data.accounts) ? data.accounts : null,
+      current_account_id: data.current_account_id ?? null,
+      challenge: data.challenge ?? null
+    };
+  }
+
+  function normalizeChat(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id = raw.id ?? raw.chat_id ?? raw.uuid;
+    if (!id) return null;
+    return {
+      id: String(id),
+      title: String(raw.title ?? raw.name ?? "New chat"),
+      updated_at: raw.updated_at ?? raw.updatedAt ?? raw.modified_at ?? raw.created_at ?? null,
+      created_at: raw.created_at ?? raw.createdAt ?? null,
+      mode: validMode(raw.mode),
+      modality: validModality(raw.modality),
+      agent_backend: raw.agent_backend === 'arena' ? 'arena' : raw.agent_backend === 'local' ? 'local' : null,
+      pinned: Boolean(raw.pinned ?? raw.starred),
+      source: raw.source === 'arena' ? 'arena' : 'local',
+      eval_id: typeof raw.eval_id === 'string' ? raw.eval_id : null,
+      raw
+    };
+  }
+
+  function normalizeModel(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id = raw.id ?? raw.model_id ?? raw.slug ?? raw.model;
+    if (id === null || id === undefined || id === '') return null;
+    const orgValue = raw.org_display ?? raw.org ?? raw.organization ?? raw.provider;
+    const org = typeof orgValue === 'string' ? orgValue : textValue(orgValue?.display_name ?? orgValue?.name ?? '');
+    let capabilities = raw.capabilities ?? raw.tags ?? [];
+    if (typeof capabilities === 'string') capabilities = capabilities.split(/[,;]/).map((item) => item.trim()).filter(Boolean);
+    if (!Array.isArray(capabilities)) capabilities = [];
+    return {
+      id: String(id),
+      name: String(raw.name ?? raw.display_name ?? raw.label ?? id),
+      org,
+      org_display: org,
+      color: safeColor(raw.color),
+      capabilities,
+      provider: String(raw.provider ?? ''),
+      user_selectable: raw.user_selectable !== false,
+      is_router: Boolean(raw.is_router),
+      icon_url: typeof (raw.icon_url ?? raw.iconUrl ?? raw.logo_url) === 'string' ? (raw.icon_url ?? raw.iconUrl ?? raw.logo_url) : '',
+      fixed: Boolean(raw.fixed),
+      rank: Number.isFinite(Number(raw.rank)) ? Number(raw.rank) : null,
+      arena_score: Number.isFinite(Number(raw.arena_score ?? raw.score)) ? Number(raw.arena_score ?? raw.score) : null,
+      raw
+    };
+  }
+
+  function modelArray(payload) {
+    const list = Array.isArray(payload) ? payload : (Array.isArray(payload?.models) ? payload.models : []);
+    return list.map(normalizeModel).filter(Boolean);
+  }
+
+  function getModel(id) {
+    if (id === null || id === undefined) return null;
+    return state.models.find((model) => String(model.id) === String(id)) || null;
+  }
+  function currentModelA() { return getModel(state.modelAId); }
+  function currentModelB() { return getModel(state.modelBId); }
+
+  function modelName(id, fallback = "Model") {
+    return getModel(id)?.name || fallback;
+  }
+
+  function ensureModelSelections() {
+    const validIds = new Set(state.models.map((model) => String(model.id)));
+    if (state.modelAId !== null && !validIds.has(String(state.modelAId))) state.modelAId = null;
+    if (state.modelBId !== null && !validIds.has(String(state.modelBId))) state.modelBId = null;
+    if (state.mode === 'battle') {
+      state.modelAId = null;
+      state.modelBId = null;
       return;
     }
-    isUploading = false;
-    updateSendBtn();
+    if (state.mode === 'agent') {
+      state.modelAId = null;
+      state.modelBId = null;
+      return;
+    }
+    if (!allowsManualModels() || !state.models.length) return;
+    if (!state.modelAId) state.modelAId = state.models[0].id;
+    if (state.mode === 'side-by-side') {
+      if (!state.modelBId || String(state.modelBId) === String(state.modelAId)) {
+        const candidate = state.models.find((model) => String(model.id) !== String(state.modelAId));
+        state.modelBId = candidate ? candidate.id : null;
+      }
+    } else {
+      state.modelBId = null;
+    }
   }
 
-  appendMsg('user', msg + (sentFiles.length ? `\n\n[Attached: ${sentFiles.map(f => f.name).join(', ')}]` : ''));
-  if (!isRetry) addToHistory(msg || sentFiles[0]?.name || 'File upload');
-  uploadedFiles = [];
-  renderUploadPreviews();
-  lastSent = content;
-  lastSentAttachments = attachments;
+  function requiredModelsReady() {
+    if (!isValidSelection(state.mode, state.modality)) return false;
+    if (state.mode === 'battle' || state.mode === 'agent') return true;
+    if (state.modelsLoading || state.modelsError) return false;
+    if (!state.models.length) return false;
+    if (!getModel(state.modelAId)) return false;
+    if (state.mode === 'side-by-side' && (!getModel(state.modelBId) || String(state.modelAId) === String(state.modelBId))) return false;
+    return true;
+  }
 
-  isStreaming = true;
-  updateSendBtn();
-  const view = new ReplyView(appendMsg('assistant', ''));
-  try {
-    const body = { message: content, chat_id: currentChatId };
-    if (attachments.length) body.attachments = attachments;
-    if (selectedModel && currentMode !== 'battle') body.model_id = selectedModel.id;
-    if (selectedModelB && currentMode === 'side-by-side') body.model_id_b = selectedModelB.id;
-    streamAbort = new AbortController();
-    const resp = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: streamAbort.signal });
-    if (!resp.ok) {
-      let e = {};
-      try { e = await resp.json(); } catch (_) {}
-      view.handle({ type: 'error', message: e.error || `Request failed (HTTP ${resp.status})`, code: e.code || (resp.status === 401 ? 'auth' : 'http'), retry: resp.status >= 500 });
-    } else {
-      const reader = resp.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const parts = buf.split('\n\n');
-        buf = parts.pop();
-        for (const part of parts) {
-          const line = part.trim();
-          if (!line.startsWith('data: ')) continue;
-          let ev;
-          try { ev = JSON.parse(line.slice(6)); } catch (_) { continue; }
-          try { view.handle(ev); } catch (err) { console.error(err); }
+  function workspaceName() {
+    return state.workspace ? baseName(state.workspace) : "Choose folder";
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Markdown: a safe DOM renderer. Source text is never assigned to HTML. */
+  /* ---------------------------------------------------------------------- */
+  function appendInline(parent, source, depth = 0) {
+    const text = String(source ?? '');
+    if (depth > 6) {
+      append(parent, text);
+      return;
+    }
+    const pattern = /(`[^`\n]+`|\*\*[^\n]+?\*\*|__[^\n]+?__|~~[^\n]+?~~|\[[^\]\n]+\]\([^)\s]+\)|\*[^*\n]+?\*|_[^_\n]+?_)/g;
+    let last = 0;
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      if (match.index > last) append(parent, text.slice(last, match.index));
+      const token = match[0];
+      if (token.startsWith('`')) {
+        parent.appendChild(el('code', { class: 'inline-code', text: token.slice(1, -1) }));
+      } else if (token.startsWith('**') || token.startsWith('__')) {
+        const strong = el('strong');
+        appendInline(strong, token.slice(2, -2), depth + 1);
+        parent.appendChild(strong);
+      } else if (token.startsWith('~~')) {
+        parent.appendChild(el('del', { text: token.slice(2, -2) }));
+      } else if (token.startsWith('*') || token.startsWith('_')) {
+        const emphasis = el('em');
+        appendInline(emphasis, token.slice(1, -1), depth + 1);
+        parent.appendChild(emphasis);
+      } else {
+        const linkMatch = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+        if (linkMatch) {
+          const label = linkMatch[1];
+          const url = safeUrl(linkMatch[2]);
+          if (url) {
+            parent.appendChild(el('a', {
+              href: url,
+              target: url.startsWith('/') ? '_self' : '_blank',
+              rel: 'noopener noreferrer',
+              title: url,
+              text: label
+            }));
+          } else {
+            append(parent, label);
+          }
+        } else {
+          append(parent, token);
         }
       }
+      last = pattern.lastIndex;
     }
-  } catch (err) {
-    if (err.name === 'AbortError') view.handle({ type: 'notice', text: 'Stopped.' });
-    else view.handle({ type: 'error', code: 'network', retry: true, message: 'Lost the connection to the app: ' + err.message });
+    if (last < text.length) append(parent, text.slice(last));
   }
-  streamAbort = null;
-  view.finish();
-  isStreaming = false;
-  updateSendBtn();
-  input.focus();
-  loadChatHistory();
-}
 
-function appendMsg(role, text, streaming = false) {
-  const el = document.createElement('div');
-  el.className = 'message from-' + role;
-  el.innerHTML = `
-    <div class="msg-header">
-      <span class="msg-role ${role}">${role === 'user' ? 'You' : 'Arena AI'}</span>
-    </div>
-    <div class="msg-content">${text ? renderMd(text) : ''}</div>
-    ${streaming ? '<div class="typing-dots"><span></span><span></span><span></span></div>' : ''}
-  `;
-  document.getElementById('messages').appendChild(el);
-  scrollBottom();
-  return el;
-}
-
-function scrollBottom() {
-  const el = document.getElementById('messages');
-  el.scrollTop = el.scrollHeight;
-}
-
-/* ── Chat history sidebar ── */
-async function loadChatHistory() {
-  try {
-    const chats = await api('/api/chats');
-    if (Array.isArray(chats)) renderChatHistory(chats);
-  } catch (_) {}
-}
-
-function renderChatHistory(chats) {
-  const hist = document.getElementById('chatHistory');
-  const starred = document.getElementById('starredChats');
-  hist.innerHTML = '';
-  if (starred) starred.innerHTML = '';
-  if (!chats.length) return;
-
-  // Pinned chats live in the Starred folder; the rest are grouped by recency.
-  const pinned = chats.filter(c => c.pinned);
-  const rest = chats.filter(c => !c.pinned);
-  if (starred) pinned.forEach(c => starred.appendChild(_chatHistoryItem(c, true)));
-
-  const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const DAY = 86400000;
-  const groups = [
-    ['Today', c => _chatDate(c) >= startOfToday],
-    ['Yesterday', c => _chatDate(c) >= startOfToday - DAY && _chatDate(c) < startOfToday],
-    ['Previous 7 Days', c => _chatDate(c) >= startOfToday - 7 * DAY && _chatDate(c) < startOfToday - DAY],
-    ['Older', c => _chatDate(c) < startOfToday - 7 * DAY],
-  ];
-  const seen = new Set();
-  groups.forEach(([label, test]) => {
-    const items = rest.filter(c => !seen.has(c.id) && test(c));
-    if (!items.length) return;
-    items.forEach(c => seen.add(c.id));
-    const head = document.createElement('div');
-    head.className = 'history-label';
-    head.textContent = label;
-    hist.appendChild(head);
-    items.forEach(c => hist.appendChild(_chatHistoryItem(c, false)));
-  });
-}
-
-function _chatDate(c) {
-  const t = new Date(c.updated_at || 0).getTime();
-  return Number.isFinite(t) ? t : 0;
-}
-
-function _chatHistoryItem(c, isStarred) {
-  const item = document.createElement('div');
-  item.className = 'history-item' + (c.id === currentChatId ? ' active' : '') + (c.pinned ? ' pinned' : '');
-  const title = c.title || 'Untitled';
-  const preview = title.length > 30 ? title.substring(0, 30) + '...' : title;
-  const pinIcon = '<svg class="h-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.8V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v4.8l2 2.2v2H7v-2z"/></svg>';
-  item.innerHTML = `${pinIcon}<span class="h-text">${esc(preview)}</span>
-    <button class="h-more" title="More options" onclick="event.stopPropagation(); openChatMenu(event, '${c.id}')">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>
-    </button>`;
-  item.dataset.chatId = c.id;
-  item.dataset.pinned = c.pinned ? '1' : '';
-  item.dataset.title = title;
-  item.onclick = () => loadChat(c.id);
-  return item;
-}
-
-/* ── Chat more-options menu (rename / pin / delete) ── */
-function openChatMenu(e, chatId) {
-  e.stopPropagation();
-  const menu = document.getElementById('chatMenu');
-  const row = e.currentTarget.closest('.history-item');
-  if (!menu || !row) return;
-  const pinned = !!row.dataset.pinned;
-  menu.dataset.chatId = chatId;
-  menu.querySelector('[data-act="pin"] span').textContent = pinned ? 'Unpin' : 'Pin';
-  const r = e.currentTarget.getBoundingClientRect();
-  menu.classList.add('open');
-  const mw = menu.offsetWidth, mh = menu.offsetHeight;
-  menu.style.left = Math.max(8, Math.min(r.right - mw, window.innerWidth - mw - 8)) + 'px';
-  menu.style.top = (r.bottom + mh > window.innerHeight - 8 ? r.top - mh - 4 : r.bottom + 4) + 'px';
-}
-
-function closeChatMenu() { document.getElementById('chatMenu')?.classList.remove('open'); }
-
-async function chatMenuAction(act) {
-  const menu = document.getElementById('chatMenu');
-  const chatId = menu?.dataset.chatId;
-  closeChatMenu();
-  if (!chatId) return;
-  if (act === 'rename') return renameChat(chatId);
-  if (act === 'delete') return deleteChat(chatId);
-  if (act === 'pin') return togglePinChat(chatId);
-}
-
-async function renameChat(chatId) {
-  const row = document.querySelector(`.history-item[data-chat-id="${chatId}"]`);
-  const current = row?.dataset.title || 'Untitled';
-  const title = prompt('Rename chat:', current);
-  if (title === null) return;
-  const trimmed = title.trim();
-  if (!trimmed) return notice('A chat needs a name.', 'warn');
-  const r = await api('/api/chats/' + chatId + '/update', { method: 'POST', body: JSON.stringify({ title: trimmed }) });
-  if (!r.ok) return notice(r.error || 'Could not rename the chat.', 'err');
-  loadChatHistory();
-}
-
-async function togglePinChat(chatId) {
-  const row = document.querySelector(`.history-item[data-chat-id="${chatId}"]`);
-  const pinned = !!row?.dataset.pinned;
-  const r = await api('/api/chats/' + chatId + '/update', { method: 'POST', body: JSON.stringify({ pinned: !pinned }) });
-  if (!r.ok) return notice(r.error || 'Could not update the chat.', 'err');
-  loadChatHistory();
-}
-
-async function loadChat(chatId) {
-  if (isStreaming) {
-    await stopStreaming();
-    notice('Stopped the running reply to open this chat.', 'warn');
+  function codeBlock(language, code) {
+    const wrapper = el('div', { class: 'code-block' });
+    const copyButton = el('button', {
+      class: 'code-copy', type: 'button', 'data-copy-code': '1',
+      'aria-label': "Copy code"
+    }, iconEl('copy'), el('span', { text: "Copy" }));
+    const head = el('div', { class: 'code-block-head' },
+      el('span', { text: language || 'code' }),
+      copyButton
+    );
+    const pre = el('pre');
+    pre.appendChild(el('code', { text: code }));
+    wrapper.append(head, pre);
+    return wrapper;
   }
-  try {
-    const data = await api('/api/chats/' + chatId);
-    if (data.error) return;
-    currentChatId = chatId;
-    document.getElementById('welcome').style.display = 'none';
-    document.getElementById('settingsPanel').style.display = 'none';
-    const msgsEl = document.getElementById('messages');
-    msgsEl.innerHTML = '';
-    msgsEl.style.display = '';
-    msgsEl.classList.add('active');
-    (data.messages || []).forEach(m => {
-      if (m.role === 'user') {
-        appendMsg('user', m.text);
-      } else {
-        if (m.text_b || m.tools?.some(t => t.lane === 'b') || m.sandbox?.some(r => r.model === 'b')) {
-          const lt = l => (m.tools || []).filter(t => (t.lane || 'a') === l).map(toolCardHtml).join('')
-            + (m.sandbox || []).filter(r => (r.model || 'a') === l).map(sandboxRow).join('');
-          const el = appendMsg('assistant', '');
-          el.innerHTML = `
-            <div class="msg-header"><span class="msg-role assistant">Arena AI</span></div>
-            <div class="sbs-container">
-              <div class="sbs-column"><div class="sbs-header"><span class="sbs-badge a">A</span> ${esc(m.names?.a || 'Model A')}</div><div class="msg-content sbs-content">${lt('a')}${renderMd(m.text)}</div></div>
-              <div class="sbs-column"><div class="sbs-header"><span class="sbs-badge b">B</span> ${esc(m.names?.b || 'Model B')}</div><div class="msg-content sbs-content">${lt('b')}${renderMd(m.text_b)}</div></div>
-            </div>`;
-          el.querySelectorAll('.sbs-content').forEach(c => { hlAll(c); addCopyBtns(c); });
-        } else {
-          const el = appendMsg('assistant', m.text || '');
-          const content = el.querySelector('.msg-content');
-          const role = el.querySelector('.msg-role');
-          if (role && m.names?.a) role.textContent = m.names.a;
-          if (m.tools?.length) content.insertAdjacentHTML('afterbegin', m.tools.map(toolCardHtml).join(''));
-          if (m.sandbox?.length) content.insertAdjacentHTML('afterbegin', m.sandbox.map(sandboxRow).join(''));
-          if (!m.text && m.error) content.insertAdjacentHTML('beforeend', `<div class="notice-line err">Not sent: ${esc(m.error)}</div>`);
-          else if (!m.text && !m.tools?.length) content.insertAdjacentHTML('beforeend', '<div class="notice-line">No reply was received.</div>');
-          hlAll(content); addCopyBtns(content);
+
+  function isTableDivider(line) {
+    return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(String(line));
+  }
+
+  function tableCells(line) {
+    let value = String(line).trim();
+    if (value.startsWith('|')) value = value.slice(1);
+    if (value.endsWith('|')) value = value.slice(0, -1);
+    return value.split('|').map((cell) => cell.trim());
+  }
+
+  function renderMarkdown(source) {
+    const fragment = document.createDocumentFragment();
+    const lines = String(source ?? '').replace(/\r\n?/g, '\n').split('\n');
+    let index = 0;
+    let paragraph = [];
+
+    const flushParagraph = () => {
+      if (!paragraph.length) return;
+      const p = el('p');
+      appendInline(p, paragraph.join('\n'));
+      fragment.appendChild(p);
+      paragraph = [];
+    };
+
+    while (index < lines.length) {
+      const line = lines[index];
+      const trimmed = line.trim();
+
+      if (!trimmed) {
+        flushParagraph();
+        index += 1;
+        continue;
+      }
+
+      const fence = line.match(/^\s{0,3}(```|~~~)\s*([^\s`]*)\s*$/);
+      if (fence) {
+        flushParagraph();
+        const marker = fence[1];
+        const language = fence[2] || '';
+        const codeLines = [];
+        index += 1;
+        while (index < lines.length && !new RegExp(`^\\s{0,3}${marker === '```' ? '```' : '~~~'}\\s*$`).test(lines[index])) {
+          codeLines.push(lines[index]);
+          index += 1;
         }
+        if (index < lines.length) index += 1;
+        fragment.appendChild(codeBlock(language, codeLines.join('\n')));
+        continue;
+      }
+
+      if (isTableDivider(lines[index + 1] || '') && line.includes('|')) {
+        flushParagraph();
+        const headers = tableCells(line);
+        const table = el('table');
+        const thead = el('thead');
+        const headerRow = el('tr');
+        headers.forEach((cell) => {
+          const th = el('th');
+          appendInline(th, cell);
+          headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        const tbody = el('tbody');
+        table.append(thead, tbody);
+        index += 2;
+        while (index < lines.length && lines[index].includes('|') && lines[index].trim()) {
+          const cells = tableCells(lines[index]);
+          if (!cells.some(Boolean)) break;
+          const row = el('tr');
+          headers.forEach((_, cellIndex) => {
+            const td = el('td');
+            appendInline(td, cells[cellIndex] || '');
+            row.appendChild(td);
+          });
+          tbody.appendChild(row);
+          index += 1;
+        }
+        fragment.appendChild(table);
+        continue;
+      }
+
+      const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+      if (heading) {
+        flushParagraph();
+        const headingNode = el(`h${Math.min(6, heading[1].length)}`);
+        appendInline(headingNode, heading[2]);
+        fragment.appendChild(headingNode);
+        index += 1;
+        continue;
+      }
+
+      if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
+        flushParagraph();
+        fragment.appendChild(el('hr'));
+        index += 1;
+        continue;
+      }
+
+      if (/^\s*>\s?/.test(line)) {
+        flushParagraph();
+        const quote = el('blockquote');
+        const quoteLines = [];
+        while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+          quoteLines.push(lines[index].replace(/^\s*>\s?/, ''));
+          index += 1;
+        }
+        const p = el('p');
+        appendInline(p, quoteLines.join('\n'));
+        quote.appendChild(p);
+        fragment.appendChild(quote);
+        continue;
+      }
+
+      const unorderedMatch = line.match(/^\s*[-*+]\s+(.+)$/);
+      const orderedMatch = line.match(/^\s*\d+[.)]\s+(.+)$/);
+      if (unorderedMatch || orderedMatch) {
+        flushParagraph();
+        const list = el(orderedMatch ? 'ol' : 'ul');
+        const matcher = orderedMatch ? /^\s*\d+[.)]\s+(.+)$/ : /^\s*[-*+]\s+(.+)$/;
+        while (index < lines.length) {
+          const itemMatch = lines[index].match(matcher);
+          if (!itemMatch) break;
+          const item = el('li');
+          appendInline(item, itemMatch[1]);
+          list.appendChild(item);
+          index += 1;
+        }
+        fragment.appendChild(list);
+        continue;
+      }
+
+      if (/^\s*\|/.test(line) && line.trim().endsWith('|')) {
+        flushParagraph();
+        const pre = el('pre', { class: 'plain-pre', text: line });
+        fragment.appendChild(pre);
+        index += 1;
+        continue;
+      }
+
+      paragraph.push(line);
+      index += 1;
+    }
+    flushParagraph();
+    return fragment;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Source / media / activity normalizers                                 */
+  /* ---------------------------------------------------------------------- */
+  function normalizeSource(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const url = safeUrl(raw.url ?? raw.link ?? raw.href ?? '');
+    const title = String(raw.title ?? raw.name ?? raw.label ?? hostOf(url) ?? "Source");
+    if (!title && !url) return null;
+    return {
+      title: title || "Source",
+      url: url || '',
+      snippet: String(raw.snippet ?? raw.description ?? raw.text ?? ''),
+      domain: hostOf(url)
+    };
+  }
+
+  function normalizeMedia(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const kindRaw = String(raw.kind ?? raw.type ?? raw.media_type ?? '').toLowerCase();
+    const kind = kindRaw.includes('video') ? 'video' : 'image';
+    const url = safeUrl(raw.url ?? raw.src ?? raw.media_url ?? raw.file ?? '', { image: true });
+    const poster = safeUrl(raw.poster ?? raw.thumbnail ?? raw.preview ?? '', { image: true });
+    if (!url && !poster) return null;
+    return {
+      kind,
+      url: url || '',
+      poster: poster || '',
+      title: String(raw.title ?? raw.alt ?? raw.name ?? (kind === 'video' ? "Video" : "Image")),
+      alt: String(raw.alt ?? raw.title ?? "Media from server response"),
+      demo: Boolean(raw.demo)
+    };
+  }
+
+  function normalizeActivity(raw, type = 'tool') {
+    if (!raw || typeof raw !== 'object') return null;
+    const input = raw.input && typeof raw.input === 'object' ? raw.input : {};
+    const command = String(raw.command ?? input.command ?? raw.cmd ?? '');
+    const path = String(raw.path ?? input.path ?? input.file_path ?? input.file ?? '');
+    const name = String(raw.name ?? raw.tool ?? raw.title ?? (type === 'sandbox' ? "Sandbox" : "Tool"));
+    const detail = String(raw.detail ?? raw.description ?? raw.message ?? raw.note ?? raw.output ?? '');
+    return {
+      id: raw.id ? String(raw.id) : `activity-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      kind: type,
+      name,
+      command,
+      path,
+      detail,
+      status: String(raw.status ?? 'running'),
+      url: safeUrl(raw.url ?? ''),
+      raw
+    };
+  }
+
+  function normalizeArtifact(raw, kind = 'file') {
+    if (typeof raw === 'string') {
+      return { path: raw, name: baseName(raw), url: '', kind, demo: false };
+    }
+    if (!raw || typeof raw !== 'object') return null;
+    const path = String(raw.path ?? raw.file ?? raw.name ?? raw.filename ?? '');
+    const url = safeUrl(raw.url ?? raw.preview ?? raw.href ?? '');
+    if (!path && !url) return null;
+    return {
+      path,
+      name: String(raw.name ?? baseName(path) ?? "File"),
+      url,
+      title: String(raw.title ?? raw.name ?? path ?? "Artifact"),
+      kind,
+      note: String(raw.note ?? raw.description ?? ''),
+      demo: Boolean(raw.demo)
+    };
+  }
+
+  function normalizePermission(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const source = raw.permission && typeof raw.permission === 'object' ? { ...raw, ...raw.permission } : raw;
+    const input = source.input && typeof source.input === 'object' ? source.input : {};
+    const diff = typeof source.diff === 'string' ? source.diff : (source.diff ? textValue(source.diff) : '');
+    return {
+      id: source.id ?? source.permission_id ?? source.request_id ?? null,
+      title: String(source.title ?? source.name ?? (source.command ? "Execute the command?" : "Allow action?")),
+      description: String(source.description ?? source.summary ?? source.reason ?? source.message ?? ''),
+      command: String(source.command ?? input.command ?? source.cmd ?? ''),
+      path: String(source.path ?? input.path ?? input.file_path ?? source.file ?? ''),
+      cwd: String(source.cwd ?? source.workspace ?? ''),
+      category: String(source.category ?? source.permission_type ?? source.scope ?? "actions"),
+      diff,
+      lane: source.model === 'b' || source.lane === 'b' ? 'b' : 'a',
+      chatId: source.chat_id ?? source.chatId ?? null,
+      status: 'pending',
+      demo: Boolean(source.demo),
+      raw: source
+    };
+  }
+
+  function permissionDetail(permission) {
+    const value = permission.command || permission.path || permission.cwd;
+    if (value) return value;
+    if (permission.raw && typeof permission.raw === 'object') {
+      try { return JSON.stringify(permission.raw, null, 2); } catch { return "Details not provided."; }
+    }
+    return "Details not provided by the server.";
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* API-driven loading                                                    */
+  /* ---------------------------------------------------------------------- */
+  function setServerError(error) {
+    state.serverError = errorMessage(error);
+    state.backendReached = false;
+    state.phase = 'offline';
+    updateConnectionUI();
+    updateComposerState();
+    if (state.view === 'welcome') renderWelcomeState();
+    renderChats();
+  }
+
+  function clearServerError() {
+    state.serverError = null;
+    state.backendReached = true;
+    state.phase = 'ready';
+  }
+
+  async function loadStatus({ initial = false, quiet = false } = {}) {
+    if (!quiet) {
+      if (!state.backendReached) state.phase = 'loading';
+      updateConnectionUI();
+    }
+    try {
+      const raw = await API.getStatus();
+      const status = normalizeStatus(raw);
+      const oldMode = state.mode;
+      const oldModality = state.modality;
+      state.status = status;
+      state.backendReached = true;
+      state.serverError = null;
+      state.phase = 'ready';
+      state.authenticated = status.authenticated;
+      state.email = status.email;
+      state.fullName = status.full_name || '';
+      state.avatarUrl = status.avatar_url || '';
+      state.desktop = status.desktop;
+      // status.loading only means the Arena engine/session is loading.
+      // remoteBusy now means "a generation this window does not track"
+      // (e.g. started in another window); chats tracked locally never
+      // block work in other chats.
+      const serverBusyIds = Array.isArray(status.generating_chat_ids)
+        ? status.generating_chat_ids.map(String) : null;
+      state.remoteBusy = serverBusyIds
+        ? serverBusyIds.some((id) => !state.generations.has(id))
+        : Boolean(status.generating && !anyGenerationRunning());
+      if (Array.isArray(status.accounts)) {
+        state.accounts = status.accounts;
+        state.currentAccountId = status.current_account_id
+          || (status.accounts.find((a) => a.current) || {}).id || null;
+      }
+      state.permissionCount = status.pending_permissions;
+      if (status.workspace) state.workspace = status.workspace;
+      state.workspaceChosen = Boolean(status.workspace_chosen);
+      if (status.app_version) {
+        state.appVersion = status.app_version;
+        const versionNode = document.querySelector('.status-desktop');
+        if (versionNode) versionNode.textContent = `Arena Desktop · v${status.app_version}`;
+      }
+      // Adopt the server's mode only until the user (or an opened chat) makes
+      // a selection.  After that the composer is authoritative: a slow status
+      // answer must not silently flip Agent back to Direct/Battle.
+      if (!state.selectionTouched && !state.generating && state.pendingChanges === 0) {
+        const selection = normalizeSelection(status.mode || state.mode, status.modality || state.modality);
+        state.mode = selection.mode;
+        state.modality = selection.modality;
+      }
+      if (status.permission_mode) state.permissionMode = status.permission_mode;
+      const engine = normalizeEngine(status.engine);
+      state.engineKnown = engine.known;
+      if (engine.known) {
+        state.dockShare = clamp(engine.share, 0.24, 0.7);
+        state.engineOpen = engine.open;
+        syncDock(false);
+      }
+      if (status.challenge) {
+        state.challenge = typeof status.challenge === 'object' ? status.challenge : { message: textValue(status.challenge) };
+      }
+      if (!status.authenticated) {
+        state.modelAId = null;
+        state.modelBId = null;
+      }
+      updateAllUI();
+      if (!initial && (oldMode !== state.mode || oldModality !== state.modality)) loadModels(state.modality, { quiet: true });
+      return status;
+    } catch (error) {
+      state.backendReached = false;
+      state.phase = 'offline';
+      state.serverError = errorMessage(error);
+      state.status = null;
+      updateAllUI();
+      return null;
+    }
+  }
+
+  async function retryConnection() {
+    if (state.retrying) return;
+    state.retrying = true;
+    state.phase = 'loading';
+    updateConnectionUI();
+    updateComposerState();
+    renderChats();
+    try {
+      const status = await loadStatus();
+      if (status) {
+        await Promise.allSettled([
+          loadChats(),
+          state.authenticated ? loadModels(state.modality) : Promise.resolve(),
+          loadPermissions({ quiet: true }),
+          refreshWorkspacePanel({ force: true })
+        ]);
+        tabNotice("Connection restored.", 'success');
+        announce("Connection to the local server restored.");
+      }
+    } finally {
+      state.retrying = false;
+      updateAllUI();
+    }
+  }
+
+  async function loadPermissions({ quiet = false } = {}) {
+    if (state.serverError || state.networkOffline) return;
+    try {
+      const raw = await API.getPermissions();
+      const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.permissions) ? raw.permissions : []);
+      const normalized = list.map(normalizePermission).filter(Boolean);
+      const seen = new Set();
+      state.pendingPermissions = normalized.filter((item) => {
+        const key = item.id ? String(item.id) : `${item.title}:${item.command}:${item.path}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      state.permissionCount = state.pendingPermissions.length;
+      renderPendingPermissionsUI();
+      if (!quiet && normalized.length) toast(`Awaiting permissions: ${normalized.length}`, 'warning', "Your decision is needed");
+    } catch (error) {
+      if (!quiet) toast(errorMessage(error), 'error', "Failed to obtain permission");
+    }
+  }
+
+  async function refreshStatusSilently() {
+    if (state.demo) return loadStatus({ quiet: true });
+    return loadStatus({ quiet: true });
+  }
+
+  async function loadChats({ silent = false } = {}) {
+    if (!silent) {
+      state.chatsLoading = true;
+      state.chatsError = null;
+      renderChats();
+    }
+    if (state.serverError) {
+      state.chatsLoading = false;
+      state.chatsError = state.serverError;
+      renderChats();
+      return;
+    }
+    try {
+      const raw = await API.getChats();
+      const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.chats) ? raw.chats : []);
+      const serverChats = list.map(normalizeChat).filter(Boolean);
+      const serverIds = new Set(serverChats.map((chat) => chat.id));
+      const keptLocal = (state.chats || []).filter((chat) =>
+        !serverIds.has(chat.id)
+        && (state.generations.has(chat.id) || chat.id === String(state.activeChatId)));
+      state.chats = [...keptLocal, ...serverChats].sort((a, b) => {
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        const left = new Date(a.updated_at || a.created_at || 0).getTime();
+        const right = new Date(b.updated_at || b.created_at || 0).getTime();
+        return right - left;
+      });
+      state.chatsLoading = false;
+      state.chatsError = null;
+      if (state.activeChatId) {
+        const active = state.chats.find((chat) => chat.id === String(state.activeChatId));
+        if (active) state.activeChatTitle = active.title;
+      }
+      renderChats();
+      updateTopbarTitle();
+      if (state.authenticated) await loadArenaChats({ silent: true });
+      else { state.cloudChats = []; state.cloudChatsError = null; renderChats(); }
+      return state.chats;
+    } catch (error) {
+      state.chatsLoading = false;
+      state.chatsError = errorMessage(error);
+      renderChats();
+      if (!silent) toast(state.chatsError, 'error', "Chat list unavailable");
+      return [];
+    }
+  }
+
+  function normalizeArenaChat(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id = raw.eval_id ?? raw.id;
+    if (!id) return null;
+    const apiMode = ({ 'direct-battle': 'direct' })[raw.mode] || raw.mode;
+    return {
+      id: String(id),
+      eval_id: String(id),
+      type: raw.type === 'agentic' ? 'agentic' : 'evaluation',
+      title: String(raw.title ?? raw.name ?? "arena.ai Chat"),
+      updated_at: raw.updated_at ?? raw.modified_at ?? raw.created_at ?? null,
+      created_at: raw.created_at ?? null,
+      mode: raw.type === 'agentic' ? 'agent' : validMode(apiMode),
+      modality: validModality(raw.modality),
+      local_chat_id: raw.local_chat_id ? String(raw.local_chat_id) : null,
+      local_mode: validMode(raw.local_mode) || null,
+      message_count: Number.isFinite(Number(raw.message_count)) ? Number(raw.message_count) : null,
+      raw
+    };
+  }
+
+  async function loadArenaChats({ silent = false } = {}) {
+    if (!state.authenticated) {
+      state.cloudChats = [];
+      state.cloudChatsError = null;
+      state.cloudChatsLoading = false;
+      renderChats();
+      return [];
+    }
+    state.cloudChatsLoading = true;
+    if (!silent) { state.cloudChatsError = null; renderChats(); }
+    try {
+      const raw = await API.getArenaChats();
+      const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.entries) ? raw.entries : []);
+      state.cloudChats = list.map(normalizeArenaChat).filter(Boolean);
+      state.cloudChatsError = raw?.ok === false ? errorMessage(new ApiError(raw.error || "arena.ai history is unavailable", 0, raw)) : null;
+      return state.cloudChats;
+    } catch (error) {
+      state.cloudChatsError = errorMessage(error);
+      if (!silent) toast(state.cloudChatsError, 'error', "arena.ai chats are unavailable");
+      return [];
+    } finally {
+      state.cloudChatsLoading = false;
+      renderChats();
+    }
+  }
+
+  async function openArenaChat(entry) {
+    if (!entry) return;
+    if (entry.local_chat_id) { await openChat(entry.local_chat_id); return; }
+    try {
+      const result = await API.openArenaChat(entry.eval_id || entry.id, entry.type || 'evaluation', entry.title || '');
+      if (result?.external) {
+        toast('Arena Agent chat imported.', 'info');
+        return;
+      }
+      const chatId = result?.chat_id || result?.id;
+      if (!chatId) throw new ApiError("The server did not return the ID of the imported chat.", 0, result);
+      await loadChats({ silent: true });
+      await openChat(chatId);
+      if (result.imported) toast("Chat imported from arena.ai into local history.", 'success');
+    } catch (error) {
+      const url = error?.details?.url;
+      toast(errorMessage(error), 'error', "Failed to open arena.ai chat");
+      if (url && state.demo) window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  }
+
+  async function loadModels(modality = state.modality, { quiet = false, mode = state.mode } = {}) {
+    const requestId = ++state.modelsRequest;
+    const selectionProblem = selectionIssue(mode, modality);
+    if (selectionProblem || mode === 'battle' || mode === 'agent' || modality === 'video') {
+      state.models = [];
+      state.modelsMode = mode;
+      state.modelsModality = modality;
+      state.modelsLoading = false;
+      state.modelsError = selectionProblem || null;
+      state.modelsPromise = null;
+      ensureModelSelections();
+      renderModelStrip();
+      renderModelsNavCount();
+      updateComposerState();
+      return [];
+    }
+    state.modelsLoading = true;
+    if (!quiet) state.modelsError = null;
+    renderModelStrip();
+    updateComposerState();
+    const promise = (async () => {
+      try {
+        const raw = await API.getModels(modality, mode);
+        if (requestId !== state.modelsRequest) return;
+        state.models = modelArray(raw);
+        state.modelsMode = mode;
+        state.modelsModality = modality;
+        state.modelsError = null;
+        ensureModelSelections();
+        renderModelStrip();
+        renderModelsNavCount();
+        return state.models;
+      } catch (error) {
+        if (requestId !== state.modelsRequest) return;
+        state.models = [];
+        state.modelsMode = mode;
+        state.modelsModality = modality;
+        state.modelsError = errorMessage(error);
+        state.modelAId = null;
+        state.modelBId = null;
+        renderModelStrip();
+        renderModelsNavCount();
+        if (!quiet) toast(state.modelsError, 'error', "Models unavailable");
+        return [];
+      } finally {
+        if (requestId === state.modelsRequest) {
+          state.modelsLoading = false;
+          if (state.modelsPromise === promise) state.modelsPromise = null;
+          renderModelStrip();
+          updateComposerState();
+        }
+      }
+    })();
+    state.modelsPromise = promise;
+    return promise;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Chat list                                                             */
+  /* ---------------------------------------------------------------------- */
+  function chatMatchesFilter(chat) {
+    const query = state.chatFilter.trim().toLocaleLowerCase('en');
+    return !query || String(chat.title || '').toLocaleLowerCase('en').includes(query);
+  }
+
+  function filteredChats() {
+    return state.chats.filter(chatMatchesFilter);
+  }
+
+  function dedupedArenaChats() {
+    const localIds = new Set(state.chats.map((chat) => String(chat.id)));
+    const localEvalIds = new Set(state.chats.map((chat) => String(chat.eval_id || '')).filter(Boolean));
+    return state.cloudChats.filter((entry) => {
+      if (entry.local_chat_id && localIds.has(String(entry.local_chat_id))) return false;
+      if (entry.eval_id && (localIds.has(String(entry.eval_id)) || localEvalIds.has(String(entry.eval_id)))) return false;
+      return true;
+    });
+  }
+
+  function filteredArenaChats() {
+    return dedupedArenaChats().filter(chatMatchesFilter);
+  }
+
+  function chatGroupTitle(icon, text) {
+    return el('div', { class: 'chat-group-title', role: 'presentation' }, iconEl(icon), el('span', { text }));
+  }
+
+  function chatStatusEl(chatId) {
+    // Fixed-width status slot: a spinning half-moon while the chat works,
+    // a green check when it finished and has not been opened since.
+    const slot = el('span', { class: 'chat-row-status', 'aria-hidden': 'true' });
+    if (chatIsGenerating(chatId)) {
+      slot.appendChild(el('span', { class: 'run-dot', title: 'Working…' }));
+      slot.removeAttribute('aria-hidden');
+      slot.setAttribute('role', 'status');
+      slot.setAttribute('aria-label', 'Working');
+    } else if (state.unreadDone.has(String(chatId))) {
+      slot.appendChild(el('span', { class: 'done-dot', title: 'Finished — not opened yet' }, iconEl('check')));
+      slot.removeAttribute('aria-hidden');
+      slot.setAttribute('role', 'status');
+      slot.setAttribute('aria-label', 'Finished, not opened yet');
+    }
+    return slot;
+  }
+
+  function localChatRow(chat) {
+    const active = String(state.activeChatId) === String(chat.id);
+    const running = chatIsGenerating(chat.id);
+    const unread = !running && state.unreadDone.has(String(chat.id));
+    const row = el('div', { class: `chat-row${active ? ' is-active' : ''}${running ? ' is-running' : ''}${unread ? ' is-unread' : ''}`, role: 'listitem' });
+    const metaBits = [];
+    if (chat.mode) metaBits.push(modeMeta(chat.mode).label);
+    metaBits.push(relativeTime(chat.updated_at || chat.created_at));
+    const openButton = el('button', {
+      class: 'chat-row-main chat-row-open',
+      type: 'button',
+      'data-chat-open': chat.id,
+      'aria-label': `Open chat: ${chat.title}${running ? ' (working)' : unread ? ' (finished, not opened yet)' : ''}`,
+      'aria-current': active ? 'page' : false
+    },
+      el('span', { class: 'chat-row-title', text: chat.title }),
+      el('span', { class: 'chat-row-meta', text: metaBits.filter(Boolean).join(' · ') })
+    );
+    const deleteButton = el('button', {
+      class: 'chat-row-delete', type: 'button', 'data-chat-delete': chat.id,
+      'aria-label': `Delete chat: ${chat.title}`, title: "Delete chat"
+    }, iconEl('trash'));
+    row.append(chatStatusEl(chat.id), openButton, deleteButton);
+    return row;
+  }
+
+  function arenaChatRow(entry) {
+    const localId = entry.local_chat_id || null;
+    const active = localId && String(state.activeChatId) === String(localId);
+    const row = el('div', { class: `chat-row${active ? ' is-active' : ''}`, role: 'listitem' });
+    const metaBits = [relativeTime(entry.updated_at || entry.created_at)];
+    if (entry.type === 'agentic') metaBits.push('Agent');
+    else if (entry.local_mode) metaBits.push(modeMeta(entry.local_mode).label);
+    else if (entry.mode) metaBits.push(modeMeta(entry.mode).label);
+    const attrs = {
+      class: 'chat-row-main chat-row-open',
+      type: 'button',
+      'aria-label': `${entry.type === 'agentic' ? 'Open Agent chat' : 'Import and open chat'}: ${entry.title}`,
+      'aria-current': active ? 'page' : false
+    };
+    if (localId) attrs['data-chat-open'] = localId;
+    else {
+      attrs['data-cloud-chat-open'] = entry.eval_id || entry.id;
+      attrs['data-cloud-chat-type'] = entry.type || 'evaluation';
+    }
+    metaBits.push('arena.ai');
+    const openButton = el('button', attrs,
+      el('span', { class: 'chat-row-title', text: entry.title }),
+      el('span', { class: 'chat-row-meta', text: metaBits.filter(Boolean).join(' · ') }));
+    const deleteButton = el('button', {
+      class: 'chat-row-delete', type: 'button',
+      'data-cloud-chat-delete': entry.eval_id || entry.id || '',
+      'aria-label': `Delete chat on Arena: ${entry.title}`, title: "Delete (archive on Arena)"
+    }, iconEl('trash'));
+    row.append(chatStatusEl(localId), openButton, deleteButton);
+    return row;
+  }
+
+  function renderChats() {
+    const listNode = els.chatList;
+    if (!listNode) return;
+    const filtered = filteredChats();
+    const cloudFiltered = filteredArenaChats();
+    const totalVisibleKinds = state.chats.length + dedupedArenaChats().length;
+    if (els.chatCount) els.chatCount.textContent = totalVisibleKinds ? String(totalVisibleKinds) : '';
+    listNode.setAttribute('aria-busy', String(state.chatsLoading || state.cloudChatsLoading));
+    clear(listNode);
+
+    listNode.appendChild(chatGroupTitle('clock', "Recent"));
+    if (state.chatsLoading && !state.chats.length) {
+      const skeleton = el('div', { class: 'sidebar-skeleton', 'aria-label': "Loading local chats" });
+      for (let index = 0; index < 3; index += 1) skeleton.appendChild(el('span', { class: `skeleton-line${index === 1 ? ' short' : ''}` }));
+      listNode.appendChild(skeleton);
+    } else if (state.chatsError) {
+      listNode.appendChild(el('div', { class: 'sidebar-empty sidebar-error' },
+        el('strong', { text: state.serverError ? "Server unavailable" : "Failed to load local chats" }),
+        el('span', { class: 'inline-error', text: state.chatsError }),
+        el('button', { class: 'button button-small button-quiet', type: 'button', 'data-action': state.serverError ? 'retry-connection' : 'retry-chats' },
+          iconEl('refresh'), el('span', { text: "Retry" }))
+      ));
+    } else if (!filtered.length) {
+      listNode.appendChild(el('div', { class: 'chat-group-note', text: state.chatFilter
+        ? "There is nothing in the local history for this request."
+        : "No local chats yet. Create the first dialogue — it will appear here." }));
+    } else {
+      filtered.forEach((chat) => listNode.appendChild(localChatRow(chat)));
+    }
+
+    listNode.appendChild(chatGroupTitle('cloud', "Only on arena.ai"));
+    if (!state.authenticated) {
+      listNode.appendChild(el('div', { class: 'chat-group-note', text: "Log in to Arena to see the account chats from the website. Local dialogues above are available without logging in." }));
+    } else if (state.cloudChatsLoading) {
+      listNode.appendChild(el('div', { class: 'chat-group-note' },
+        el('span', { class: 'mini-spinner', 'aria-hidden': 'true' }),
+        el('span', { text: " Loading arena.ai history…" })));
+    } else if (state.cloudChatsError) {
+      listNode.appendChild(el('div', { class: 'sidebar-empty sidebar-error' },
+        el('strong', { text: "arena.ai history is unavailable" }),
+        el('span', { class: 'inline-error', text: state.cloudChatsError }),
+        el('button', { class: 'button button-small button-quiet', type: 'button', 'data-action': 'retry-arena-chats' },
+          iconEl('refresh'), el('span', { text: "Retry" }))
+      ));
+    } else if (!cloudFiltered.length) {
+      listNode.appendChild(el('div', { class: 'chat-group-note', text: state.chatFilter
+        ? "Nothing found on arena.ai for this request in the last 50 chats."
+        : "There are no new chats only on arena.ai. Already imported ones are shown in the local list above." }));
+    } else {
+      cloudFiltered.forEach((entry) => listNode.appendChild(arenaChatRow(entry)));
+    }
+  }
+
+  function setChatSearchVisible(visible) {
+    if (!els.chatSearchWrap) return;
+    if (!visible) {
+      state.chatFilter = '';
+      if (els.chatSearch) els.chatSearch.value = '';
+      els.chatSearchWrap.hidden = true;
+      els.clearChatSearch.hidden = true;
+      renderChats();
+      return;
+    }
+    els.chatSearchWrap.hidden = false;
+    if (state.sidebarCollapsed) setSidebarCollapsed(false);
+    if (window.matchMedia('(max-width: 900px)').matches) openMobileSidebar();
+    const body = $('#recentsBody');
+    if (body) body.hidden = false;
+    els.recentsToggle?.setAttribute('aria-expanded', 'true');
+    window.setTimeout(() => els.chatSearch?.focus(), 20);
+    els.clearChatSearch.hidden = !state.chatFilter;
+  }
+
+  function openMobileSidebar() {
+    document.body.classList.add('mobile-sidebar-open');
+    els.app?.classList.add('mobile-sidebar-open');
+    if (els.sidebarScrim) els.sidebarScrim.hidden = false;
+    els.mobileMenuBtn?.setAttribute('aria-expanded', 'true');
+  }
+
+  function closeMobileSidebar() {
+    document.body.classList.remove('mobile-sidebar-open');
+    els.app?.classList.remove('mobile-sidebar-open');
+    if (els.sidebarScrim) els.sidebarScrim.hidden = true;
+    els.mobileMenuBtn?.setAttribute('aria-expanded', 'false');
+  }
+
+  function setSidebarCollapsed(collapsed) {
+    state.sidebarCollapsed = Boolean(collapsed);
+    els.app?.classList.toggle('sidebar-collapsed', state.sidebarCollapsed);
+    els.collapseSidebar?.setAttribute('aria-expanded', String(!state.sidebarCollapsed));
+    els.collapseSidebar?.setAttribute('aria-label', state.sidebarCollapsed ? "Expand the sidebar" : "Collapse the sidebar");
+    if (els.collapseSidebar) els.collapseSidebar.title = state.sidebarCollapsed ? "Expand the panel" : "Collapse the panel";
+    try { localStorage.setItem('arenaPersonal.sidebarCollapsed.v4', state.sidebarCollapsed ? '1' : '0'); } catch { /* storage unavailable */ }
+  }
+
+  function focusComposer() {
+    if (!els.prompt) return;
+    els.prompt.focus();
+    try { els.prompt.setSelectionRange(els.prompt.value.length, els.prompt.value.length); } catch { /* noop */ }
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Chat rendering                                                        */
+  /* ---------------------------------------------------------------------- */
+  function currentViewTitle() {
+    if (state.view === 'chat') return state.activeChatTitle || "Conversation";
+    return "Home";
+  }
+
+  function updateTopbarTitle() {
+    if (els.topbarTitle) els.topbarTitle.textContent = currentViewTitle();
+    if (els.crumbTitle) els.crumbTitle.textContent = currentViewTitle();
+    document.title = `${state.demo ? "Demo · " : ''}${state.view === 'chat' ? `${truncate(state.activeChatTitle || "Conversation", 32)} — ` : ''}Arena Desktop`;
+  }
+
+  function setView(view, { focus = false } = {}) {
+    state.view = view === 'chat' ? 'chat' : 'welcome';
+    if (els.welcomeView) els.welcomeView.hidden = state.view !== 'welcome';
+    if (els.chatView) els.chatView.hidden = state.view !== 'chat';
+    const mainArea = els.mainArea || document.querySelector('.main-area');
+    if (mainArea) mainArea.classList.toggle('is-welcome', state.view === 'welcome');
+    // One composer, two homes: centered on the welcome screen (like
+    // arena.ai's home page), docked at the bottom inside a chat.
+    const shell = els.composerShell || document.querySelector('.composer-shell');
+    if (shell) {
+      if (state.view === 'welcome' && els.welcomeComposerSlot && shell.parentNode !== els.welcomeComposerSlot) {
+        els.welcomeComposerSlot.appendChild(shell);
+      } else if (state.view === 'chat' && mainArea && shell.parentNode !== mainArea) {
+        mainArea.appendChild(shell);
+      }
+    }
+    updateTopbarTitle();
+    if (focus) {
+      window.setTimeout(() => {
+        if (els.content) els.content.scrollTop = 0;
+      }, 0);
+    }
+  }
+
+  function renderChatHead() {
+    if (!els.chatTitle) return;
+    const meta = modeMeta(state.mode);
+    const modality = modalityMeta(state.modality);
+    els.chatTitle.textContent = state.activeChatTitle || "Conversation";
+    if (els.chatEyebrow) els.chatEyebrow.textContent = `Active dialogue · ${meta.label}`;
+    clear(els.chatMeta);
+    els.chatMeta.append(
+      el('span', { class: 'meta-chip' }, iconEl('git-branch'), el('span', { text: meta.label })),
+      el('span', { class: 'meta-chip' }, iconEl(modality.icon), el('span', { text: modality.label }))
+    );
+    if (state.mode === 'agent') {
+      els.chatMeta.append(el('span', { class: 'meta-chip' }, iconEl('spark'), el('span', { text: "Automatic model selection" })));
+    } else if (state.mode !== 'battle') {
+      const name = currentModelA()?.name || "No model selected";
+      els.chatMeta.append(el('span', { class: 'meta-chip' }, iconEl('spark'), el('span', { text: name })));
+      if (state.mode === 'side-by-side') {
+        els.chatMeta.append(el('span', { class: 'meta-chip' }, iconEl('spark'), el('span', { text: currentModelB()?.name || "Model B not selected" })));
+      }
+    } else {
+      els.chatMeta.append(el('span', { class: 'meta-chip' }, iconEl('spark'), el('span', { text: "Opponents are selected by the server" })));
+    }
+    if (state.workspace) {
+      els.chatMeta.append(el('span', { class: 'meta-chip' }, iconEl('folder'), el('span', { text: workspaceName() })));
+    }
+  }
+
+  function renderChallenge() {
+    if (!els.challengeSlot) return;
+    clear(els.challengeSlot);
+    if (!state.challenge) {
+      els.challengeSlot.hidden = true;
+      return;
+    }
+    const raw = state.challenge;
+    const message = typeof raw === 'string' ? raw : String(raw.message ?? raw.title ?? "The server reports a manual login check.");
+    const card = el('div', { class: 'challenge-card', role: 'status' },
+      el('h3', {}, iconEl('shield-alert'), el('span', { text: "Login verification required" })),
+      el('p', { text: `${message} Open a separate arena.ai window and complete the check manually. Automatic bypass is not performed.` }),
+      el('button', { class: 'button button-small', type: 'button', 'data-action': 'engine-show' }, iconEl('panel-right'), el('span', { text: "Open window" })),
+      el('button', { class: 'button button-small button-quiet', type: 'button', 'data-action': 'settings-connection' }, el('span', { text: "Login status" }))
+    );
+    els.challengeSlot.appendChild(card);
+    els.challengeSlot.hidden = false;
+  }
+
+  function userAttachmentsNode(message) {
+    const items = normalizeUserAttachments(message?.attachments || message?.experimental_attachments);
+    // Live turns carry local previews for freshly attached images.
+    const live = Array.isArray(message?.attachments) ? message.attachments : [];
+    if (!items.length && !live.length) return null;
+    const wrap = el('div', { class: 'user-attachments' });
+    const shown = live.length ? live : items;
+    shown.forEach((item) => {
+      const name = String(item.name || item.filename || 'File');
+      const media = String(item.contentType || item.mediaType || '');
+      const src = item.previewUrl || (media.startsWith('image/') ? safeUrl(item.url, { image: true }) : null);
+      if (src) {
+        wrap.appendChild(el('img', { class: 'user-attachment-image', src, alt: name, title: name, loading: 'lazy' }));
+        return;
+      }
+      const href = item.url && /^https?:\/\//.test(item.url) ? safeUrl(item.url) : null;
+      const chip = el(href ? 'a' : 'span', {
+        class: 'user-attachment-chip',
+        ...(href ? { href, target: '_blank', rel: 'noopener noreferrer' } : {})
+      }, iconEl(media === 'application/pdf' ? 'file-text' : 'file'),
+        el('span', { text: name }),
+        item.size ? el('span', { class: 'user-attachment-size', text: formatBytes(item.size) }) : null);
+      wrap.appendChild(chip);
+    });
+    return wrap;
+  }
+
+  function userMessageNode(message) {
+    const createdAt = message?.created_at || message?.createdAt || message?.timestamp;
+    return el('article', { class: 'message message-user' },
+      el('div', { class: 'user-bubble' },
+        el('div', { class: 'user-meta' },
+          el('span', { text: "You" }),
+          createdAt ? el('time', { text: formatClock(createdAt), datetime: String(createdAt) }) : null
+        ),
+        userAttachmentsNode(message),
+        el('div', { class: 'user-text', text: textValue(message?.content ?? message?.text ?? message?.message ?? '') })
+      )
+    );
+  }
+
+  function renderSources(lane) {
+    if (!Array.isArray(lane.sources) || !lane.sources.length) return null;
+    const sourceNodes = lane.sources.map((source, index) => {
+      const content = el('span', { class: 'source-copy' },
+        el('span', { class: 'source-title', text: source.title || source.domain || "Source" }),
+        source.url ? el('span', { class: 'source-url', text: source.domain || source.url }) : null
+      );
+      const indexEl = el('span', { class: 'source-index', text: String(index + 1) });
+      if (source.url) {
+        return el('a', {
+          class: 'source-card', href: source.url, target: '_blank', rel: 'noopener noreferrer',
+          title: source.url
+        }, indexEl, content, iconEl('external'));
+      }
+      return el('div', { class: 'source-card' }, indexEl, content);
+    });
+    return el('div', { class: 'sources' },
+      el('div', { class: 'sources-title' }, iconEl('search'), el('span', { text: lane.demo ? "Sources · demo" : "Sources" })),
+      el('div', { class: 'source-list' }, sourceNodes)
+    );
+  }
+
+  function renderMedia(lane) {
+    if (!Array.isArray(lane.media) || !lane.media.length) return null;
+    const cards = lane.media.map((media) => {
+      const caption = el('div', { class: 'media-caption' },
+        el('span', { class: 'media-title', title: media.title, text: media.title }),
+        el('button', {
+          class: 'media-save', type: 'button', 'data-save-media': media.url || media.poster || '',
+          'aria-label': `Save media: ${media.title}`, title: "Save via API"
+        }, iconEl('download'))
+      );
+      let frame;
+      if (media.kind === 'video' && media.url) {
+        const video = el('video', {
+          controls: true, preload: 'metadata', poster: media.poster || false,
+          'aria-label': media.alt
+        }, el('source', { src: media.url }));
+        frame = el('div', { class: 'media-frame' }, video);
+      } else if (media.kind === 'video') {
+        frame = el('div', { class: 'media-frame is-placeholder' }, iconEl('video'), el('span', { class: 'media-video-badge' }, iconEl('play'), el('span', { text: "Video · event" })));
+      } else if (media.url) {
+        frame = el('div', { class: 'media-frame' }, el('img', { src: media.url, alt: media.alt, loading: 'lazy', referrerpolicy: 'no-referrer' }));
+      } else {
+        frame = el('div', { class: 'media-frame is-placeholder' }, iconEl('image'));
+      }
+      return el('figure', { class: 'media-card' }, frame, caption);
+    });
+    return el('div', { class: 'media-grid' }, cards);
+  }
+
+  function activityStatus(status) {
+    const value = String(status || '').toLowerCase();
+    if (['ok', 'done', 'success', 'complete', 'completed', 'ready', 'idle'].includes(value)) return { label: "Done", cls: 'is-ok' };
+    if (['error', 'failed', 'denied', 'cancelled'].includes(value)) return { label: "Error", cls: 'is-err' };
+    if (['pending', 'waiting', 'permission'].includes(value)) return { label: "Waiting", cls: 'is-wait' };
+    return { label: status || "In progress", cls: '' };
+  }
+
+  function renderActivities(lane) {
+    if (!Array.isArray(lane.activities) || !lane.activities.length) return null;
+    const cards = lane.activities.map((activity) => {
+      const status = activityStatus(activity.status);
+      const detail = activity.command || activity.path || activity.detail;
+      const iconName = activity.kind === 'sandbox' ? 'package' : activity.kind === 'webdev' ? 'layout' : activity.kind === 'agent' ? 'spark' : 'terminal';
+      const head = el('div', { class: 'activity-head' },
+        el('span', { class: 'activity-icon' }, iconEl(iconName)),
+        el('span', { class: 'activity-title', text: activity.name || "Action" }),
+        el('span', { class: `activity-status ${status.cls}`, text: status.label })
+      );
+      const card = el('div', { class: `activity-card${status.cls === 'is-err' ? ' is-danger' : ''}` }, head);
+      if (detail) {
+        const isLong = detail.length > 180 || String(activity.status).toLowerCase() === 'running';
+        if (isLong) {
+          const details = el('details', { class: 'activity-detail' },
+            el('summary', { text: "Show details" }),
+            el('div', { class: 'activity-body' }, el('pre', { text: detail }))
+          );
+          card.appendChild(details);
+        } else {
+          card.appendChild(el('div', { class: 'activity-body' }, el('pre', { text: detail })));
+        }
+      }
+      if (activity.url) {
+        card.appendChild(el('a', { class: 'preview-link', href: activity.url, target: '_blank', rel: 'noopener noreferrer', title: activity.url },
+          iconEl('external'), el('span', { text: activity.url })));
+      }
+      return card;
+    });
+    return el('div', { class: 'activity-list' }, cards);
+  }
+
+  function renderArtifactsInline(lane) {
+    if (!Array.isArray(lane.artifacts) || !lane.artifacts.length) return null;
+    const items = lane.artifacts.map((artifact) => {
+      const copy = el('div', { class: 'artifact-copy' },
+        el('div', { class: 'artifact-name', text: artifact.path || artifact.name }),
+        el('div', { class: 'artifact-desc', text: artifact.note || (artifact.url ? "Preview link from server event" : "File from files_written event") })
+      );
+      const actions = el('div', { class: 'artifact-actions' });
+      if (artifact.url) {
+        actions.appendChild(el('a', {
+          class: 'icon-button', href: artifact.url, target: '_blank', rel: 'noopener noreferrer',
+          'aria-label': "Open preview", title: "Open preview"
+        }, iconEl('external')));
+      }
+      return el('div', { class: 'artifact-item' }, iconEl(artifact.url ? 'panel-right' : 'file'), copy, actions);
+    });
+    return el('div', { class: 'activity-list' },
+      el('div', { class: 'sources-title' }, iconEl('package'), el('span', { text: lane.demo ? "Artifacts · demo" : "Artifacts" })),
+      items
+    );
+  }
+
+  function renderPermissionCard(permission) {
+    const isDone = permission.status && permission.status !== 'pending';
+    const card = el('div', { class: `permission-card${isDone ? ' is-done' : ''}`, 'data-permission-card': permission.id || '' });
+    const head = el('div', { class: 'permission-head' },
+      el('span', { class: 'permission-icon' }, iconEl('shield-alert')),
+      el('div', { class: 'permission-heading' },
+        el('p', { class: 'permission-title', text: permission.title }),
+        el('p', { class: 'permission-subtitle', text: `${permission.category || "Action"} · request from backend` })
+      )
+    );
+    const body = el('div', { class: 'permission-body' });
+    if (permission.description) body.appendChild(el('p', { class: 'permission-note', text: permission.description }));
+    if (permission.command) {
+      body.appendChild(el('div', { class: 'permission-detail-label', text: "Team" }));
+      body.appendChild(el('pre', { class: 'permission-detail', text: permission.command }));
+    }
+    if (permission.path) {
+      body.appendChild(el('div', { class: 'permission-detail-label', text: "Full path" }));
+      body.appendChild(el('pre', { class: 'permission-detail', text: permission.path }));
+    }
+    if (permission.cwd && permission.cwd !== permission.path) {
+      body.appendChild(el('div', { class: 'permission-detail-label', text: "Working folder" }));
+      body.appendChild(el('pre', { class: 'permission-detail', text: permission.cwd }));
+    }
+    if (!permission.command && !permission.path && !permission.cwd) {
+      body.appendChild(el('div', { class: 'permission-detail-label', text: "Request details" }));
+      body.appendChild(el('pre', { class: 'permission-detail', text: permissionDetail(permission) }));
+    }
+    if (permission.diff) {
+      body.appendChild(el('div', { class: 'permission-detail-label', text: 'Diff' }));
+      const diff = el('div', { class: 'diff-block' });
+      String(permission.diff).split('\n').forEach((line) => {
+        const type = line.startsWith('+') && !line.startsWith('+++') ? ' is-add' : line.startsWith('-') && !line.startsWith('---') ? ' is-del' : '';
+        diff.appendChild(el('div', { class: `diff-line${type}` },
+          el('span', { class: 'diff-marker', text: line[0] || ' ' }),
+          el('span', { text: line })
+        ));
+      });
+      body.appendChild(diff);
+    }
+
+    if (isDone) {
+      const allowed = permission.status === 'allow' || permission.status === 'always' || permission.status === 'allowed';
+      card.append(head, body, el('div', { class: `permission-result${allowed ? '' : ' is-deny'}` },
+        iconEl(allowed ? 'check' : 'x'),
+        el('span', { text: allowed ? "Allowed by user" : "Declined by user" })
+      ));
+      return card;
+    }
+
+    const id = permission.id ? String(permission.id) : '';
+    const disabled = state.decidingPermissions.has(String(permission.id)) || !id;
+    const allow = el('button', {
+      class: 'button button-allow permission-decision', type: 'button',
+      'data-permission-decision': 'allow', 'data-permission-id': id, disabled
+    }, el('span', { text: "Allow once" }));
+    const always = el('button', {
+      class: 'button button-always permission-decision', type: 'button',
+      'data-permission-decision': 'always', 'data-permission-id': id, disabled
+    }, el('span', { text: "Allow such actions in this session" }));
+    const deny = el('button', {
+      class: 'button button-deny permission-decision', type: 'button',
+      'data-permission-decision': 'deny', 'data-permission-id': id, disabled
+    }, el('span', { text: "Deny" }));
+    const actions = el('div', { class: 'permission-actions' }, allow, always, deny,
+      el('span', { class: 'permission-scope', text: "\"In this session\" allows the entire category of actions for the current session, not just this file or command. Deny can be selected at any time; there is no automatic choice." })
+    );
+    if (!id) {
+      actions.prepend(el('div', { class: 'note-box is-warning' }, iconEl('alert'), el('span', { text: "The server did not provide a permission ID — actions are unavailable." })));
+    }
+    if (permission.demo) {
+      actions.appendChild(el('span', { class: 'permission-scope', text: "Demo: the decision is processed locally, commands are not executed." }));
+    }
+    card.append(head, body, actions);
+    return card;
+  }
+
+  function visibleLaneText(lane) {
+    // With folder tools, the model's raw reply contains <tool> call blocks.
+    // Those are rendered as tool cards; the answer text must not show the
+    // markup itself (nor a half-streamed tag at the end).
+    const raw = lane.text || '';
+    const hadTools = (lane.activities || []).some((item) => item.kind === 'tool')
+      || (lane.permissions || []).length > 0;
+    if (!hadTools || !raw.includes('<')) return raw;
+    let text = raw
+      .replace(/<function_calls>[\s\S]*?<\/function_calls\s*>/gi, '')
+      .replace(/<tool\s+name[^>]*>[\s\S]*?<\/tool\s*>/gi, '')
+      .replace(/<invoke\s+name[^>]*>[\s\S]*?<\/invoke\s*>/gi, '');
+    const partial = text.search(/<(tool\s+name|invoke\s+name|function_calls)[\s\S]*$/i);
+    if (partial >= 0) text = text.slice(0, partial);
+    return text.replace(/\n{3,}/g, '\n\n');
+  }
+
+  function answerFootNote(lane) {
+    if (lane.streaming) return null;
+    if (!lane.done && !lane.error) return null;
+    const bits = [];
+    if (lane.stopped) bits.push("Stopped");
+    else if (lane.error) bits.push("Completed with errors");
+    else bits.push(lane.demo ? "Demo response" : "Response received");
+    const visibleLength = visibleLaneText(lane).trim().length;
+    if (visibleLength) bits.push(`${visibleLength.toLocaleString('en-US')} symb.`);
+    return el('div', { class: 'answer-footnote' }, el('span', { class: 'status-dot is-online' }), el('span', { text: bits.join(' · ') }));
+  }
+
+  function renderAssistantLane(lane, turn, key, totalLanes) {
+    const card = el('article', {
+      class: `message-assistant assistant-lane${lane.streaming ? ' is-streaming' : ''}`,
+      'aria-label': `${lane.modelName || (key === 'b' ? "Model B" : "Model A")}, response`
+    });
+    const avatarColor = safeColor(lane.modelColor) || '#bdd3c1';
+    const laneLogo = modelIconNode({
+      name: lane.modelName, org: lane.modelOrg, color: lane.modelColor,
+      icon_url: getModel(lane.modelId)?.icon_url || ''
+    });
+    const avatar = laneLogo
+      ? el('span', { class: 'model-avatar has-logo', 'aria-hidden': 'true' }, laneLogo)
+      : el('span', {
+        class: 'model-avatar',
+        style: { background: avatarColor, color: '#1d221e' },
+        'aria-hidden': 'true',
+        text: initialLetters(lane.modelName || (key === 'b' ? 'Model B' : 'Model A'))
+      });
+    const label = lane.modelOrg || (lane.modelName ? '' : (key === 'b' ? "Model B" : "Model A"));
+    const head = el('div', { class: 'assistant-head' },
+      avatar,
+      el('div', { class: 'assistant-id' },
+        el('span', { class: 'model-name', title: lane.modelName || '', text: lane.modelName || (key === 'b' ? "Model B" : "Model A") }),
+        el('span', { class: 'lane-badge', text: key.toUpperCase() }),
+        turn.vote === (key === 'a' ? 'model_a' : 'model_b')
+          ? el('span', { class: 'lane-winner', title: "Your choice in this battle" }, iconEl('trophy'), el('span', { text: "best" }))
+          : null,
+        label ? el('span', { class: 'option-desc', text: label }) : null
+      ),
+      lane.streaming ? el('span', { class: 'generating-label', role: 'status' },
+        el('span', { class: 'generating-dots' }, el('i'), el('i'), el('i')),
+        el('span', { text: "Generates…" })
+      ) : el('span', { class: 'assistant-spacer' }),
+      visibleLaneText(lane) ? el('button', {
+        class: 'icon-button answer-copy-button', type: 'button', 'data-copy-answer': key,
+        title: "Copy answer", 'aria-label': `Copy model response ${lane.modelName || key.toUpperCase()}`
+      }, iconEl('copy')) : null
+    );
+    card.appendChild(head);
+
+    if (lane.reasoning) {
+      const details = el('details', { class: 'reasoning' },
+        el('summary', { text: lane.demo ? "Reflections · demo" : "Reflections" }),
+        el('div', { class: 'reasoning-content', text: lane.reasoning })
+      );
+      card.appendChild(details);
+    }
+
+    const markdown = el('div', { class: 'markdown' });
+    const visibleText = visibleLaneText(lane);
+    if (visibleText) markdown.appendChild(renderMarkdown(visibleText));
+    if (lane.streaming && !visibleText) {
+      markdown.appendChild(el('span', { class: 'loading-block' }, el('span', { class: 'loading-spinner' }), el('span', { text: "Waiting for response text…" })));
+    }
+    if (lane.streaming && visibleText) markdown.appendChild(el('span', { class: 'stream-cursor', 'aria-hidden': 'true' }));
+    card.appendChild(markdown);
+
+    if (turn.round && turn.round > 1) {
+      card.appendChild(el('div', { class: 'agent-steps' }, el('span', { class: 'agent-step' }, el('span', { class: 'status-dot is-online' }), el('span', { text: `Round ${turn.round}` }))));
+    }
+    if (Array.isArray(lane.agentStages) && lane.agentStages.length) {
+      card.appendChild(el('div', { class: 'agent-steps' }, lane.agentStages.slice(-5).map((stage) => el('span', { class: 'agent-step' }, iconEl('spark'), el('span', { text: stage })))));
+    }
+    const sources = renderSources(lane);
+    if (sources) card.appendChild(sources);
+    const media = renderMedia(lane);
+    if (media) card.appendChild(media);
+    const activities = renderActivities(lane);
+    if (activities) card.appendChild(activities);
+    const artifacts = renderArtifactsInline(lane);
+    if (artifacts) card.appendChild(artifacts);
+
+    if (Array.isArray(lane.permissions)) {
+      lane.permissions.forEach((permission) => card.appendChild(renderPermissionCard(permission)));
+    }
+
+    if (Array.isArray(lane.notices)) {
+      lane.notices.forEach((notice) => card.appendChild(el('div', { class: 'message-notice' }, iconEl('info'), el('span', { text: notice }))));
+    }
+    if (Array.isArray(lane.errors)) {
+      lane.errors.forEach((error) => card.appendChild(el('div', { class: 'message-error', role: 'alert' }, iconEl('alert'), el('span', { text: error }))));
+    }
+    const note = answerFootNote(lane);
+    if (note) card.appendChild(note);
+    return card;
+  }
+
+  const VOTE_OPTIONS = [
+    { id: 'model_a', label: "A is better", icon: 'thumbs-up' },
+    { id: 'tie', label: "Both are good", icon: 'scale' },
+    { id: 'both_bad', label: "Both are bad", icon: 'thumbs-down' },
+    { id: 'model_b', label: "B is better", icon: 'thumbs-up' }
+  ];
+
+  function renderVoteBar(turn, pairIndex) {
+    if (state.mode !== 'battle') return null;
+    const laneA = turn.lanes?.a;
+    const laneB = turn.lanes?.b;
+    if (!laneA || !laneB || laneA.streaming || laneB.streaming || state.generating) return null;
+    const hasAnswer = (lane) => Boolean(lane.text || (Array.isArray(lane.media) && lane.media.length));
+    if (!hasAnswer(laneA) || !hasAnswer(laneB)) return null;
+    if (turn.vote) {
+      const chosen = VOTE_OPTIONS.find((option) => option.id === turn.vote);
+      return el('div', { class: 'vote-bar is-done' }, iconEl('check'),
+        el('span', { text: `Your vote: ${chosen?.label || turn.vote}` }),
+        turn.revealed ? el('span', { class: 'vote-revealed-note', text: "· models are revealed in the headings" }) : null);
+    }
+    if (turn.revealed) return null;
+    const bar = el('div', { class: 'vote-bar', role: 'group', 'aria-label': "Voting for the best answer" },
+      el('span', { class: 'vote-title', text: "Which answer is better?" }));
+    VOTE_OPTIONS.forEach((option) => {
+      bar.appendChild(el('button', {
+        class: `vote-btn vote-${option.id}`, type: 'button',
+        disabled: Boolean(turn.voteBusy),
+        title: option.id === 'model_a' ? "The answer on the left (A) is better"
+          : option.id === 'model_b' ? "The answer on the right (B) is better" : option.label,
+        onclick: () => { void submitVote(turn, pairIndex, option.id); }
+      }, iconEl(option.icon), el('span', { text: option.label })));
+    });
+    bar.appendChild(el('span', { class: 'vote-hint', text: "After voting, the models will be revealed" }));
+    return bar;
+  }
+
+  async function submitVote(turn, pairIndex, value) {
+    if (!state.activeChatId || !turn || turn.vote || turn.voteBusy) return;
+    turn.voteBusy = true;
+    renderMessages();
+    try {
+      const result = await API.vote(state.activeChatId, {
+        value,
+        pair_index: pairIndex >= 0 ? pairIndex : null,
+        message_a_id: turn.arenaIds?.a || null,
+        message_b_id: turn.arenaIds?.b || null
+      });
+      turn.vote = result?.vote || value;
+      const names = result?.names || {};
+      if (names.a || names.b) {
+        state.messages.forEach((item) => {
+          if (!item || typeof item !== 'object') return;
+          if (item.lanes?.a && names.a) item.lanes.a.modelName = names.a;
+          if (item.lanes?.b && names.b) item.lanes.b.modelName = names.b;
+          if (item.lanes?.a || item.lanes?.b) item.revealed = true;
+        });
+        turn.revealed = true;
+      }
+      toast("Vote counted on arena.ai. Models are revealed.", 'success', 'Battle');
+      void loadChats({ silent: true });
+    } catch (error) {
+      toast(errorMessage(error), 'error', "Vote not sent");
+    } finally {
+      turn.voteBusy = false;
+      renderMessages();
+    }
+  }
+
+  function renderTurn(turn, pairIndex = -1) {
+    const wrapper = el('section', { class: 'message-turn', 'aria-label': "Dialogue turn" });
+    if (turn.user) wrapper.appendChild(userMessageNode(turn.user));
+    const lanes = turn.lanes || {};
+    const order = Object.keys(lanes).filter((key) => lanes[key]);
+    if (order.length) {
+      const grid = el('div', { class: `lane-grid ${order.length > 1 ? 'lanes-2' : 'lanes-1'}` });
+      order.forEach((key) => grid.appendChild(renderAssistantLane(lanes[key], turn, key, order.length)));
+      wrapper.appendChild(grid);
+      const voteBar = renderVoteBar(turn, pairIndex);
+      if (voteBar) wrapper.appendChild(voteBar);
+    }
+    if (Array.isArray(turn.notices)) {
+      turn.notices.forEach((notice) => wrapper.appendChild(el('div', { class: 'message-notice' }, iconEl('info'), el('span', { text: notice }))));
+    }
+    const laneHasError = order.some((key) => lanes[key]?.errors?.length);
+    if (turn.error && !laneHasError) {
+      wrapper.appendChild(el('div', { class: 'message-error', role: 'alert' }, iconEl('alert'), el('span', { text: turn.error })));
+    }
+    return wrapper;
+  }
+
+  function renderUnattachedPermissions(renderedIds) {
+    const remaining = state.pendingPermissions.filter((permission) => !permission.id || !renderedIds.has(String(permission.id)));
+    if (!remaining.length) return null;
+    const section = el('section', { class: 'message-turn', 'aria-label': "Pending approval" });
+    section.appendChild(el('div', { class: 'activity-head' },
+      el('span', { class: 'activity-icon' }, iconEl('shield-alert')),
+      el('span', { class: 'activity-title', text: "Awaiting your decision" }),
+      el('span', { class: 'activity-status is-wait', text: String(remaining.length) })
+    ));
+    remaining.forEach((permission) => section.appendChild(renderPermissionCard(permission)));
+    return section;
+  }
+
+  function renderMessages({ preserveScroll = true } = {}) {
+    if (!els.messageList) return;
+    const content = els.content;
+    const previousScroll = content?.scrollTop || 0;
+    const wasNearBottom = content ? content.scrollHeight - content.scrollTop - content.clientHeight < 140 : true;
+    clear(els.messageList);
+
+    if (state.historyLoading) {
+      const loading = el('div', { class: 'loading-history', 'aria-label': "Loading history" });
+      loading.appendChild(el('div', { class: 'skeleton-bar w-35' }));
+      loading.appendChild(el('div', { class: 'skeleton-right' }));
+      loading.appendChild(el('div', { class: 'message-skeleton' }, el('div', { class: 'skeleton-bar w-80' }), el('div', { class: 'skeleton-bar' }), el('div', { class: 'skeleton-bar w-55' })));
+      els.messageList.appendChild(loading);
+      updateArtifactCount();
+      return;
+    }
+
+    if (state.historyError) {
+      els.messageList.appendChild(el('div', { class: 'history-error' },
+        el('div', { class: 'error-panel' },
+          el('h3', { text: "Failed to load dialogue" }),
+          el('p', { text: state.historyError }),
+          el('button', { class: 'button button-small', type: 'button', 'data-action': 'retry-history' }, iconEl('refresh'), el('span', { text: "Retry" })),
+          el('button', { class: 'button button-small button-quiet', type: 'button', 'data-action': 'new-chat' }, el('span', { text: "New chat" }))
+        )
+      ));
+      return;
+    }
+
+    if (!state.messages.length) {
+      els.messageList.appendChild(el('div', { class: 'history-empty' },
+        el('span', { class: 'history-empty-icon' }, iconEl('spark')),
+        el('h3', { text: state.activeChatId ? "History is currently empty" : "Start a new dialogue" }),
+        el('p', { text: state.activeChatId ? "Send the first message — responses will appear here. Mode and task type settings are visible in the input field." : "Select an existing chat or create a new one." })
+      ));
+      return;
+    }
+
+    const renderedPermissions = new Set();
+    let pairIndex = -1;
+    state.messages.forEach((turn) => {
+      if (turn.lanes) {
+        Object.values(turn.lanes).forEach((lane) => {
+          (lane.permissions || []).forEach((permission) => {
+            if (permission.id) renderedPermissions.add(String(permission.id));
+          });
+        });
+      }
+      const isPair = Boolean(turn?.lanes?.a && turn?.lanes?.b);
+      if (isPair) pairIndex += 1;
+      els.messageList.appendChild(renderTurn(turn, isPair ? pairIndex : -1));
+    });
+    const unattached = renderUnattachedPermissions(renderedPermissions);
+    if (unattached) els.messageList.appendChild(unattached);
+
+    if (content) {
+      if (!preserveScroll || wasNearBottom) {
+        requestAnimationFrame(() => {
+          if (!content) return;
+          content.scrollTop = content.scrollHeight;
+        });
+      } else {
+        content.scrollTop = previousScroll;
+      }
+    }
+    updateArtifactCount();
+  }
+
+  function scheduleChatRender() {
+    if (state._renderFrame) return;
+    state._renderFrame = requestAnimationFrame(() => {
+      state._renderFrame = null;
+      if (state.view === 'chat') renderMessages();
+    });
+  }
+
+  function renderChatArea() {
+    if (!els.chatView) return;
+    renderChatHead();
+    renderChallenge();
+    renderMessages({ preserveScroll: false });
+    setView('chat');
+  }
+
+  function updateArtifactCount() {
+    const count = state.artifacts.length;
+    if (els.artifactCount) {
+      els.artifactCount.textContent = String(count);
+      els.artifactCount.hidden = !count;
+    }
+    if (els.artifactsButton) {
+      els.artifactsButton.setAttribute('aria-label', count ? `Open dialogue artifacts: ${count}` : "Open dialogue artifacts");
+    }
+  }
+
+  function renderWelcomeState() {
+    setView('welcome');
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Composer and model presentation                                       */
+  /* ---------------------------------------------------------------------- */
+  function setAgentKind(kind) {
+    if (kind !== 'native' && kind !== 'local') return;
+    state.agentKind = kind;
+    try { window.localStorage.setItem('ap-agent-kind', kind); } catch { /* private mode */ }
+    pruneAttachmentsForSelection();
+    renderModelStrip();
+    renderComposerContext();
+    updateComposerState();
+  }
+
+  function syncWorkspaceSyncToggle() {
+    // Workspace Sync is always in the toolbar, in every mode: it decides
+    // whether chats may work in the folder selected on this computer.
+    const chip = els.workspaceSyncChip;
+    const input = els.workspaceSyncToggle;
+    if (!chip || !input) return;
+    chip.hidden = false;
+    const on = state.mode === 'agent'
+      ? Boolean(state.directTools)
+      : Boolean(state.directTools && state.workspaceChosen);
+    input.checked = on;
+    input.disabled = state.generating;
+    chip.classList.toggle('is-on', on);
+    chip.classList.toggle('is-disabled', state.generating);
+    if (state.mode === 'agent') {
+      chip.title = on
+        ? "Workspace Sync is on: the Local Agent works in the folder selected on this computer. Arena Agent keeps its own Arena workspace either way."
+        : "Workspace Sync is off: the Local Agent answers without touching this computer. Arena Agent keeps its own Arena workspace either way.";
+    } else if (state.workspaceChosen) {
+      chip.title = on
+        ? "Workspace Sync is on: the models can run commands and use tools in the folder selected on this computer, and the results return to them automatically. Actions follow the permission mode."
+        : "Workspace Sync is off: the models only chat and cannot touch the folder selected on this computer.";
+    } else {
+      chip.title = "Workspace Sync: first choose a folder on this computer (the workspace chip on the left), then the models can work in it like an agent.";
+    }
+  }
+
+  function setWorkspaceSync(on) {
+    if (on && !state.workspaceChosen && state.mode !== 'agent') {
+      state.directTools = false;
+      syncWorkspaceSyncToggle();
+      toast("Choose a folder on this computer first — Workspace Sync lets the models work in that folder like an agent.", 'info', "Workspace Sync");
+      openWorkspacePopover(els.workspaceButton);
+      return;
+    }
+    state.directTools = Boolean(on);
+    try { window.localStorage.setItem('ap-direct-tools', state.directTools ? '1' : '0'); } catch { /* private mode */ }
+    syncWorkspaceSyncToggle();
+    toast(state.directTools
+      ? "Workspace Sync is on: models can run commands and use tools in the folder selected on this computer, and the results return to them automatically."
+      : "Workspace Sync is off: models answer with regular text and cannot touch the folder on this computer.", 'info', "Workspace Sync");
+  }
+
+  function renderModeBars() {
+    // Arena-style dropdown triggers in the composer toolbar (no segmented
+    // bars). The work-type trigger is hidden while Agent Mode is selected.
+    const locked = chatLocked();
+    const busy = state.generating;
+    if (els.modeButton) {
+      const meta = modeMeta(state.mode);
+      els.modeButton.disabled = locked || busy;
+      els.modeButton.title = locked ? 'This chat keeps the mode it started with' : meta.desc;
+      const modeIconNode = els.modeButton.querySelector(':scope > .icon');
+      if (modeIconNode) modeIconNode.innerHTML = icon(meta.icon);
+    }
+    if (els.modalityButton) {
+      const hiddenForAgent = state.mode === 'agent';
+      els.modalityButton.hidden = hiddenForAgent;
+      els.modalityButton.disabled = locked || busy || hiddenForAgent;
+      els.modalityButton.title = locked
+        ? 'This chat keeps the work type it started with'
+        : modalityMeta(state.modality).desc;
+    }
+  }
+
+  function renderModelStrip() {
+    if (!els.modelStrip) return;
+    clear(els.modelStrip);
+    const mode = state.mode;
+    if (mode === 'battle') {
+      els.modelStrip.append(
+        el('span', { class: 'model-pill' }, el('span', { class: 'lane-letter', text: 'A' }), el('span', { class: 'model-pill-label', text: "Model A" })),
+        el('span', { class: 'model-pill' }, el('span', { class: 'lane-letter', text: 'B' }), el('span', { class: 'model-pill-label', text: "Model B" })),
+        el('span', { class: 'model-strip-note', text: "Battle selects opponents randomly on the server" })
+      );
+      return;
+    }
+    if (mode === 'agent') {
+      // Like arena.ai/agent: no model pill and no backend switch in the
+      // composer. The Agent backend for NEW chats is chosen in Settings;
+      // a started chat keeps the backend it was created with.
+      return;
+    }
+    if (state.modelsLoading && !state.models.length) {
+      els.modelStrip.appendChild(el('span', { class: 'loading-block' }, el('span', { class: 'mini-spinner' }), el('span', { text: "Loading model list…" })));
+      return;
+    }
+    if (state.modelsError) {
+      const retry = el('button', { class: 'model-pill model-pill-error', type: 'button', 'data-action': 'retry-models', title: state.modelsError },
+        iconEl('alert'), el('span', { class: 'model-pill-label', text: "Models unavailable · retry" }));
+      els.modelStrip.appendChild(retry);
+      return;
+    }
+
+    const modelButton = (laneKey, modelId) => {
+      const model = getModel(modelId);
+      const label = model ? model.name : (laneKey === 'b' ? "Select model B" : "Select a model");
+      const color = safeColor(model?.color) || '#b9cabd';
+      return el('button', {
+        class: `model-pill${model ? '' : ' model-pill-empty'}`, type: 'button',
+        'data-model-picker': laneKey, 'aria-label': `Select a model ${laneKey.toUpperCase()}: ${label}`,
+        disabled: state.generating
+      },
+        el('span', { class: 'lane-letter', text: laneKey.toUpperCase() }),
+        model ? (modelIconNode(model) || el('span', { class: 'model-dot', style: { background: color } })) : el('span', { class: 'model-dot', style: { background: color } }),
+        el('span', { class: 'model-pill-label', text: label }),
+        iconEl('chevron-down')
+      );
+    };
+
+    if (mode === 'side-by-side') {
+      els.modelStrip.append(modelButton('a', state.modelAId), modelButton('b', state.modelBId));
+    } else {
+      els.modelStrip.appendChild(modelButton('a', state.modelAId));
+    }
+
+    if (state.modelsLoading) {
+      els.modelStrip.appendChild(el('span', { class: 'model-strip-note' }, el('span', { class: 'mini-spinner' }), el('span', { text: "Refreshing" })));
+    } else if (!state.models.length) {
+      els.modelStrip.appendChild(el('span', { class: 'model-strip-note', text: "The server did not return models for this type." }));
+    } else if (mode === 'agent') {
+      els.modelStrip.appendChild(el('span', { class: 'model-strip-note', text: "Agent actions require permission" }));
+    }
+  }
+
+  function renderModelsNavCount() {
+    if (!els.modelsNavCount) return;
+    const manual = allowsManualModels();
+    els.modelsNavCount.textContent = manual && state.modelsLoading ? '…' : (manual && state.models.length ? String(state.models.length) : '—');
+    if (els.modelsNavBtn) {
+      const locked = chatLocked();
+      els.modelsNavBtn.disabled = !manual || locked;
+      els.modelsNavBtn.title = locked
+        ? "Models in this chat are fixed after the first message"
+        : manual ? "Select a model for the current mode and task type" : "In this mode, model selection is disabled";
+      els.modelsNavBtn.setAttribute('aria-disabled', String(!manual || locked));
+    }
+  }
+
+  function renderComposerContext() {
+    if (!els.contextMode) return;
+    const isAgent = state.mode === 'agent';
+    els.contextMode.textContent = modeMeta(state.mode).label;
+    els.contextModality.textContent = modalityMeta(state.modality).label;
+    // Like arena.ai, Agent Mode simply has no work-type selector (or label).
+    els.contextModality.hidden = isAgent;
+    if (els.contextModality.previousElementSibling) els.contextModality.previousElementSibling.hidden = isAgent;
+    if (els.contextModel.previousElementSibling) els.contextModel.previousElementSibling.hidden = isAgent;
+    els.contextModel.hidden = isAgent;
+    if (state.mode === 'battle') {
+      els.contextModel.textContent = 'Arena selects 2 models';
+    } else if (state.mode === 'side-by-side') {
+      els.contextModel.textContent = `${currentModelA()?.name || 'A not selected'} ↔ ${currentModelB()?.name || 'B not selected'}`;
+    } else if (!isAgent) {
+      els.contextModel.textContent = currentModelA()?.name || 'Select a model';
+    }
+    if (els.contextPending) els.contextPending.hidden = !(state.pendingChanges > 0);
+  }
+
+  function updateComposerState() {
+    if (!els.prompt) return;
+    const meta = modeMeta(state.mode);
+    const mod = modalityMeta(state.modality);
+    if (els.modeLabel) els.modeLabel.textContent = meta.label;
+    if (els.modalityLabel) els.modalityLabel.textContent = mod.label;
+    const modalityIconNode = els.modalityButton?.querySelector(':scope > .icon');
+    if (modalityIconNode) modalityIconNode.innerHTML = icon(mod.icon);
+    const permission = permissionMeta(state.permissionMode);
+    if (els.permissionLabel) els.permissionLabel.textContent = permission.short;
+    els.permissionButton?.classList.toggle('is-danger', state.permissionMode === 'bypassPermissions');
+    els.permissionButton?.setAttribute('title', permission.desc);
+    if (els.workspaceLabel) {
+      els.workspaceLabel.textContent = state.workspace ? workspaceName() : "Choose folder";
+      els.workspaceButton.title = state.workspace || "Working folder not selected";
+    }
+    renderComposerContext();
+    renderModelStrip();
+    renderModeBars();
+    renderModelsNavCount();
+
+    const text = els.prompt.value.trim();
+    const busy = state.generating;
+    const transitions = state.pendingChanges > 0;
+    const noServer = Boolean(state.serverError) || state.networkOffline;
+    const noAuth = state.status && state.authenticated === false;
+    let disabledReason = '';
+    if (busy) disabledReason = "Wait for the current generation to complete";
+    else if (state.stopping) disabledReason = "Stopping generation";
+    else if (transitions) disabledReason = "Applying settings";
+    else if (noServer) disabledReason = "No connection to the local server";
+    else if (state.historyLoading) disabledReason = "Loading dialogue history";
+    else if (state.historyError) disabledReason = "History not loaded — please try again";
+    else if (!isValidSelection(state.mode, state.modality)) disabledReason = selectionIssue(state.mode, state.modality);
+    else if (attachmentsBusy()) disabledReason = "Uploading files…";
+    else if (attachmentsFailed()) disabledReason = "Remove the failed file to send";
+    else if (noAuth) disabledReason = "First, log in in a separate window or using cookies";
+    else if (!text) disabledReason = "Enter a message";
+    else if (!requiredModelsReady()) disabledReason = state.modelsLoading ? "Loading models"
+      : state.modelsError ? "Models unavailable"
+        : "Select a model";
+    else if (state.pendingPermissions.some((item) => !item.chatId || String(item.chatId) === String(state.activeChatId))) disabledReason = "First, resolve the permission request in this chat";
+    else if (state.generating) disabledReason = "Generation in progress";
+
+    const send = els.sendButton;
+    if (send) {
+      send.disabled = Boolean(disabledReason) || state.starting;
+      send.title = disabledReason || "Send message";
+      send.hidden = busy;
+      send.classList.toggle('is-stopping', state.stopping);
+    }
+    if (els.stopButton) {
+      els.stopButton.hidden = !busy;
+      els.stopButton.disabled = state.stopping;
+      const label = els.stopButton.querySelector('span:last-child');
+      if (label) label.textContent = state.stopping ? "Stopping…" : "Stop";
+    }
+    if (els.attachButton) {
+      const allowed = attachmentsAllowedHere();
+      els.attachButton.disabled = busy || !allowed;
+      els.attachButton.title = allowed ? `Attach files — ${attachmentHint()}` : 'Files cannot be attached in Web Search';
+      els.attachButton.setAttribute('aria-label', allowed ? `Attach files. ${attachmentHint()}` : 'Attach files (unavailable in Web Search)');
+    }
+    if (els.fileInput) els.fileInput.accept = attachmentAccept();
+    els.composerCard?.classList.toggle('is-generating', busy);
+    els.composerCard?.setAttribute('aria-busy', String(busy));
+    els.prompt.setAttribute('aria-label', `Message for models. ${meta.label}, ${mod.label}. ${disabledReason && !text ? disabledReason : ''}`);
+
+    if (els.composerSecondaryHint) {
+      if (state.demo) els.composerSecondaryHint.textContent = "Demo: no requests to arena.ai";
+      else if (state.pendingChanges) els.composerSecondaryHint.textContent = "Waiting for settings to apply";
+      else if (state.remoteBusy) els.composerSecondaryHint.textContent = "Server is busy with the current generation";
+      else if (state.serverError) els.composerSecondaryHint.textContent = "No connection with the local server";
+      else if (noAuth) els.composerSecondaryHint.textContent = "Not signed in";
+      else if (!requiredModelsReady() && state.modelsError) els.composerSecondaryHint.textContent = "Models unavailable";
+      else if (state.modelsLoading) els.composerSecondaryHint.textContent = "Loading models";
+      else if (allowsManualModels() && !currentModelA()) els.composerSecondaryHint.textContent = "Select a model";
+      else if (state.pendingPermissions.length) els.composerSecondaryHint.textContent = "Permission request exists";
+      else els.composerSecondaryHint.textContent = "Attachments are not supported by the server";
+    }
+
+    const locked = chatLocked();
+    syncWorkspaceSyncToggle();
+    els.modeButton.disabled = busy || locked;
+    els.modalityButton.disabled = busy || locked;
+    els.permissionButton.disabled = busy || transitions;
+    $$('[data-model-picker]', els.modelStrip || document).forEach((button) => { button.disabled = busy || locked; });
+    ensureBypassWarning();
+  }
+
+  function updatePendingPermissionsBadge() {
+    if (!els.pendingPermissionsBadge) return;
+    const count = Math.max(Number(state.permissionCount) || 0, state.pendingPermissions.length);
+    els.pendingPermissionsBadge.hidden = !count;
+    els.pendingPermissionsBadge.textContent = String(count);
+    els.pendingPermissionsBadge.title = `Awaiting permissions: ${count}`;
+    els.pendingPermissionsBadge.setAttribute('aria-label', `Awaiting permissions: ${count}`);
+  }
+
+  function renderPendingPermissionsUI() {
+    updatePendingPermissionsBadge();
+    updateComposerState();
+    if (state.view === 'chat') {
+      scheduleChatRender();
+    }
+  }
+
+  function resizePrompt() {
+    if (!els.prompt) return;
+    els.prompt.style.height = 'auto';
+    const next = clamp(els.prompt.scrollHeight, 50, 190);
+    els.prompt.style.height = `${next}px`;
+    els.prompt.style.overflowY = els.prompt.scrollHeight > 190 ? 'auto' : 'hidden';
+  }
+
+  function resetPromptHeight() {
+    if (!els.prompt) return;
+    els.prompt.style.height = '';
+    els.prompt.style.overflowY = 'hidden';
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Global UI state                                                       */
+  /* ---------------------------------------------------------------------- */
+  function dotState(node, tone) {
+    if (!node) return;
+    node.classList.remove('is-online', 'is-pending', 'is-offline', 'is-demo');
+    if (tone) node.classList.add(`is-${tone}`);
+  }
+
+  function connectionPresentation() {
+    if (state.demo) return { tone: 'demo', label: "Demo mode", title: "Demonstration data and events" };
+    if (state.networkOffline) return { tone: 'offline', label: "Offline", title: "No network connection" };
+    if (state.phase === 'loading' && !state.status) return { tone: 'pending', label: "Server check", title: "Checking local backend" };
+    if (state.serverError) return { tone: 'offline', label: "Server unavailable", title: state.serverError };
+    if (!state.backendReached) return { tone: 'pending', label: "No data", title: "Server status unknown" };
+    if (state.loginPending) return { tone: 'pending', label: "Waiting for sign-in", title: "Complete login in a separate window" };
+    if (state.status?.session_error) return { tone: 'offline', label: "Session error", title: String(textValue(state.status.session_error)) };
+    if (state.status?.offline) return { tone: 'pending', label: "arena.ai offline", title: "Local backend is available, arena.ai page reports offline" };
+    if (state.status && !state.authenticated) return { tone: 'pending', label: "Not signed in", title: "Log in in a separate window or using cookies" };
+    return { tone: 'online', label: "Local server", title: "Local backend is available" };
+  }
+
+  function updateConnectionUI() {
+    const presentation = connectionPresentation();
+    const iconTone = presentation.tone === 'offline' ? 'offline' : presentation.tone === 'online' ? 'online' : presentation.tone === 'demo' ? 'demo' : 'pending';
+    if (els.footerConnectionText) els.footerConnectionText.textContent = presentation.label;
+    dotState(els.footerConnectionDot, iconTone);
+
+    if (els.demoChip) els.demoChip.hidden = !state.demo;
+    if (els.demoBanner) els.demoBanner.hidden = !state.demo;
+    if (els.connectionBanner) {
+      const show = !state.demo && (state.networkOffline || Boolean(state.serverError));
+      els.connectionBanner.hidden = !show;
+      if (show) {
+        if (els.bannerTitle) els.bannerTitle.textContent = state.networkOffline ? "No network connection" : "Local server is unavailable";
+        if (els.bannerText) {
+          els.bannerText.textContent = state.networkOffline
+            ? "The interface works locally, but the network is unavailable. Try again after the connection is restored."
+            : (state.serverError || "Launch the Arena Desktop application and try again. Demo mode is available separately.");
+        }
+        if (els.bannerRetry) els.bannerRetry.disabled = state.retrying || state.networkOffline;
+        if (els.bannerDemo) els.bannerDemo.hidden = state.demo;
+      }
+    }
+    if (els.topbarTitle) els.topbarTitle.textContent = currentViewTitle();
+  }
+
+  function updateAccountUI() {
+    let name;
+    let sub;
+    let avatarClass = '';
+    if (state.demo) {
+      name = state.authenticated ? (state.fullName || 'Demo User') : 'Not signed in';
+      sub = state.authenticated ? 'Simulation · no tokens' : 'Demo mode';
+      avatarClass = 'is-demo';
+    } else if (state.authenticated) {
+      name = state.fullName || state.email || 'Connected';
+      sub = state.status?.session_error ? 'Session error' : state.status?.offline ? 'arena.ai offline' : (state.email && state.fullName ? state.email : 'Signed in');
+      avatarClass = '';
+    } else {
+      name = state.serverError ? 'Server unavailable' : 'Not signed in';
+      sub = state.serverError ? 'Check the local backend' : state.loginPending ? 'Waiting for sign-in…' : 'Sign in to continue';
+      avatarClass = 'is-anonymous';
+    }
+    if (els.accountName) els.accountName.textContent = name;
+    if (els.accountState) els.accountState.textContent = sub;
+    if (els.accountAvatar) {
+      els.accountAvatar.classList.toggle('is-anonymous', avatarClass === 'is-anonymous');
+      els.accountAvatar.classList.toggle('is-demo', avatarClass === 'is-demo');
+      if (state.demo && state.authenticated) {
+        delete els.accountAvatar.dataset.avatarUrl;
+        els.accountAvatar.textContent = 'D';
+      } else {
+        fillAvatarNode(els.accountAvatar);
+      }
+    }
+    if (els.accountDot) {
+      els.accountDot.classList.toggle('is-online', state.authenticated && !state.serverError);
+      els.accountDot.classList.toggle('is-error', Boolean(state.serverError) || Boolean(state.status?.session_error));
+    }
+    if (els.accountButton) {
+      els.accountButton.setAttribute('aria-label', `Profile: ${name}. ${sub}. Open accounts`);
+      els.accountButton.setAttribute('aria-haspopup', 'menu');
+    }
+  }
+
+  function updateAllUI() {
+    syncWorkspacePanelVisibility();
+    updateConnectionUI();
+    updateAccountUI();
+    updateComposerState();
+    renderChats();
+    renderModelsNavCount();
+    updatePendingPermissionsBadge();
+    updateTopbarTitle();
+    if (state.view === 'chat') {
+      renderChatHead();
+      renderChallenge();
+    }
+  }
+
+  function toast(message, kind = 'info', title = '') {
+    if (!els.toastRoot) return;
+    const iconName = kind === 'error' ? 'alert' : kind === 'warning' ? 'shield-alert' : kind === 'success' ? 'check' : 'info';
+    const node = el('div', { class: `toast is-${kind}`, role: kind === 'error' ? 'alert' : 'status' });
+    node.append(
+      iconEl(iconName),
+      el('div', { class: 'toast-copy' }, title ? el('strong', { text: title }) : null, el('span', { text: String(message || '') })),
+      el('button', {
+        class: 'icon-button toast-close', type: 'button', 'aria-label': "Dismiss notification",
+        onclick: () => node.remove()
+      }, iconEl('x'))
+    );
+    els.toastRoot.appendChild(node);
+    const items = $$('.toast', els.toastRoot);
+    if (items.length > 3) items.slice(0, items.length - 3).forEach((item) => item.remove());
+    window.setTimeout(() => {
+      node.style.opacity = '0';
+      node.style.transform = 'translateY(4px)';
+      window.setTimeout(() => node.remove(), 220);
+    }, kind === 'error' ? 7500 : 5000);
+  }
+
+  function tabNotice(message, kind = 'info', title = '') { toast(message, kind, title); }
+
+  /* ---------------------------------------------------------------------- */
+  /* History normalization                                                 */
+  /* ---------------------------------------------------------------------- */
+  function emptyLane(key, model = null) {
+    return {
+      modelId: model?.id || null,
+      modelName: model?.name || (key === 'b' ? "Model B" : "Model A"),
+      modelOrg: model?.org || '',
+      modelColor: model?.color || '',
+      text: '',
+      reasoning: '',
+      sources: [],
+      media: [],
+      activities: [],
+      permissions: [],
+      notices: [],
+      errors: [],
+      artifacts: [],
+      agentStages: [],
+      streaming: false,
+      done: false,
+      stopped: false,
+      error: false,
+      demo: state.demo
+    };
+  }
+
+  function normalizeHistory(raw) {
+    const messages = Array.isArray(raw) ? raw : (Array.isArray(raw?.messages) ? raw.messages : []);
+    const turns = [];
+    let current = null;
+    let assistantOrdinal = 0;
+
+    const newTurn = (user = null) => {
+      current = { user, lanes: {}, notices: [], error: null, round: null };
+      turns.push(current);
+      assistantOrdinal = 0;
+      return current;
+    };
+
+    const addLane = (item, keyHint = null) => {
+      if (!current) newTurn();
+      let key = keyHint;
+      if (!key) {
+        const explicit = item.lane ?? (item.model === 'a' || item.model === 'b' ? item.model : null);
+        if (explicit === 'a' || explicit === 'b') key = explicit;
+        else if (state.mode === 'battle' || state.mode === 'side-by-side') key = assistantOrdinal % 2 === 0 ? 'a' : 'b';
+        else key = 'a';
+      }
+      assistantOrdinal += 1;
+      if (!current.lanes[key]) {
+        const modelById = item.model_id ? getModel(item.model_id) : null;
+        let providedName = item.model_name ?? item.name ?? null;
+        if (!providedName && item.model && item.model !== 'a' && item.model !== 'b') providedName = item.model;
+        current.lanes[key] = emptyLane(key, modelById);
+        current.lanes[key].modelName = providedName || modelById?.name || (key === 'b' ? "Model B" : "Model A");
+        current.lanes[key].modelOrg = modelById?.org || String(item.org_display ?? item.org ?? '');
+        current.lanes[key].modelColor = modelById?.color || safeColor(item.color);
+      }
+      const lane = current.lanes[key];
+      const text = textValue(item.content ?? item.text ?? item.message ?? '');
+      if (text) lane.text += `${lane.text ? '\n\n' : ''}${text}`;
+      if (item.reasoning) lane.reasoning += textValue(item.reasoning);
+      if (Array.isArray(item.sources)) lane.sources.push(...item.sources.map(normalizeSource).filter(Boolean));
+      if (Array.isArray(item.media)) lane.media.push(...item.media.map(normalizeMedia).filter(Boolean));
+      if (Array.isArray(item.artifacts)) lane.artifacts.push(...item.artifacts.map((artifact) => normalizeArtifact(artifact)).filter(Boolean));
+      if (Array.isArray(item.permissions)) lane.permissions.push(...item.permissions.map(normalizePermission).filter(Boolean));
+      if (Array.isArray(item.notices)) lane.notices.push(...item.notices.map(textValue).filter(Boolean));
+      if (Array.isArray(item.errors)) lane.errors.push(...item.errors.map(textValue).filter(Boolean));
+      if (item.error) lane.errors.push(textValue(item.error));
+      if (lane.errors.length) lane.error = true;
+      lane.demo = lane.demo || Boolean(item.demo);
+      lane.done = true;
+      return lane;
+    };
+
+    for (const item of messages) {
+      if (!item || typeof item !== 'object') continue;
+      const role = String(item.role ?? item.type ?? '').toLowerCase();
+      if (role === 'user' || role === 'human') {
+        newTurn({
+          content: textValue(item.content ?? item.text ?? item.message),
+          created_at: item.created_at ?? item.createdAt ?? item.timestamp,
+          attachments: normalizeUserAttachments(item.attachments || item.experimental_attachments)
+        });
+        continue;
+      }
+      if (role === 'assistant' || role === 'model' || role === 'ai' || (!role && (item.text || item.content))) {
+        // The Flask backend persists both replies in a single assistant record.
+        const hasBackendLanes = Object.prototype.hasOwnProperty.call(item, 'text_b');
+        if (hasBackendLanes) {
+          const laneErrors = item.lane_errors && typeof item.lane_errors === 'object' ? item.lane_errors : null;
+          addLane({
+            ...item,
+            errors: Array.isArray(laneErrors?.a) ? laneErrors.a : item.errors,
+            // A combined record's plain `error` is a whole-turn failure; do
+            // not attribute it to Model A on reload.
+            error: null,
+            model_name: item.names?.a || item.model_name
+          }, 'a');
+          if (item.text_b || state.mode === 'battle' || state.mode === 'side-by-side') {
+            addLane({
+              ...item,
+              content: undefined,
+              text: item.text_b || '',
+              reasoning: item.reasoning_b || '',
+              sources: undefined,
+              media: undefined,
+              artifacts: undefined,
+              permissions: undefined,
+              notices: undefined,
+              errors: Array.isArray(laneErrors?.b) ? laneErrors.b : undefined,
+              model_name: item.names?.b || null,
+              error: null
+            }, 'b');
+          }
+          if (item.error) current.error = textValue(item.error);
+          current.vote = item.vote || null;
+          current.arenaIds = item.arena_message_ids || null;
+          current.revealed = Boolean(item.names?.a || item.names?.b);
+          for (const step of (Array.isArray(item.tools) ? item.tools : [])) {
+            const key = step.lane === 'b' ? 'b' : 'a';
+            const lane = current.lanes[key] || (current.lanes[key] = emptyLane(key));
+            const activity = normalizeActivity({ ...step, detail: step.summary, status: step.status || (step.ok ? 'ok' : 'error') }, 'tool');
+            if (activity) lane.activities.push(activity);
+          }
+          for (const step of (Array.isArray(item.sandbox) ? item.sandbox : [])) {
+            const key = step.model === 'b' ? 'b' : 'a';
+            const lane = current.lanes[key] || (current.lanes[key] = emptyLane(key));
+            const activity = normalizeActivity({ ...step, status: step.ok === false ? 'error' : (step.ok === true ? 'done' : 'running') }, 'sandbox');
+            if (activity) lane.activities.push(activity);
+          }
+        } else {
+          addLane(item);
+        }
+        continue;
+      }
+      if (role === 'system') {
+        if (!current) newTurn();
+        current.notices.push(textValue(item.content ?? item.text ?? item.message));
+        continue;
+      }
+      if (role === 'tool') {
+        if (!current) newTurn();
+        addLane(item);
+      }
+    }
+
+    const artifacts = [];
+    turns.forEach((turn) => {
+      Object.entries(turn.lanes).forEach(([laneKey, lane]) => {
+        lane.artifacts.forEach((artifact) => {
+          artifacts.push({ ...artifact, chatId: state.activeChatId, lane: laneKey });
+        });
+      });
+    });
+    state.artifacts = artifacts;
+    return turns;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Chat navigation and empty/error states                                */
+  /* ---------------------------------------------------------------------- */
+  async function openChat(chatId, { retry = false } = {}) {
+    if (!chatId) return;
+    if (state.creatingChat) return;
+    closePopover(false);
+    closeMobileSidebar();
+    if (String(state.activeChatId) !== String(chatId)) stashActiveTurns();
+    markChatSeen(chatId);
+    const known = state.chats.find((chat) => chat.id === String(chatId));
+    state.activeChatId = String(chatId);
+    syncGenerationState();
+    const historyToken = (state.historyRequest || 0) + 1;
+    state.historyRequest = historyToken;
+    state.activeChatTitle = known?.title || (retry ? state.activeChatTitle : "Conversation");
+    state.messages = [];
+    state.artifacts = [];
+    state.challenge = null;
+    state.historyError = null;
+    state.historyLoading = true;
+    state.view = 'chat';
+    renderChats();
+    renderChatHead();
+    renderChallenge();
+    renderMessages({ preserveScroll: false });
+    setView('chat');
+    if (els.content) els.content.scrollTop = 0;
+
+    try {
+      const chatRaw = await API.getChat(chatId);
+      if (historyToken !== state.historyRequest || String(state.activeChatId) !== String(chatId)) return;
+      const chat = normalizeChat(chatRaw);
+      if (chat) {
+        state.activeChatTitle = chat.title || state.activeChatTitle;
+        const selection = normalizeSelection(chat.mode || state.mode, chat.modality || state.modality);
+        state.mode = selection.mode;
+        state.modality = selection.modality;
+        state.selectionTouched = true;
+        if (chat.agent_backend) state.agentKind = chat.agent_backend === 'arena' ? 'native' : 'local';
+        // Restore manual selections saved by Flask only in modes where Arena
+        // permits them.  Battle ignores ids and Agent never exposes one.
+        if (allowsManualModels()) {
+          if (Object.prototype.hasOwnProperty.call(chat.raw, 'model_a')) state.modelAId = chat.raw.model_a || null;
+          if (Object.prototype.hasOwnProperty.call(chat.raw, 'model_b')) state.modelBId = chat.raw.model_b || null;
+        } else {
+          state.modelAId = null;
+          state.modelBId = null;
+        }
+        const existing = state.chats.find((item) => item.id === chat.id);
+        if (existing) Object.assign(existing, chat);
+      }
+      if (state.modelsMode !== state.mode || state.modelsModality !== state.modality
+        || ((allowsManualModels() || state.mode === 'agent') && !state.models.length)) {
+        void loadModels(state.modality, { quiet: true });
+      } else {
+        ensureModelSelections();
+      }
+      updateComposerState();
+      const liveTurns = chatIsGenerating(chatId) ? state.chatTurns[String(chatId)] : null;
+      if (Array.isArray(liveTurns) && liveTurns.length) {
+        // This chat is generating right now: keep showing the live stream
+        // instead of the server's last saved snapshot.
+        state.messages = liveTurns;
+      } else {
+        const historyRaw = await API.getHistory();
+        if (historyToken !== state.historyRequest || String(state.activeChatId) !== String(chatId)) return;
+        state.messages = normalizeHistory(historyRaw);
+        state.chatTurns[String(chatId)] = state.messages;
+      }
+      state.historyError = null;
+      state.historyLoading = false;
+      state.activeChatTitle = state.activeChatTitle || "Conversation";
+      renderChats();
+      updateTopbarTitle();
+      renderChatHead();
+      updateComposerState();
+      renderMessages({ preserveScroll: false });
+      syncGenerationState();
+      announce(`Dialog “${state.activeChatTitle}” loaded.`);
+    } catch (error) {
+      if (historyToken !== state.historyRequest) return;
+      state.historyLoading = false;
+      state.historyError = errorMessage(error);
+      updateComposerState();
+      renderMessages({ preserveScroll: false });
+      toast(state.historyError, 'error', "Dialog not loaded");
+    }
+  }
+
+  async function createNewChat({ focus = true } = {}) {
+    if (state.creatingChat) return null;
+    if (state.serverError || state.networkOffline) {
+      toast("Local server unavailable. New chat not created.", 'error', "No connection");
+      return null;
+    }
+    state.creatingChat = true;
+    els.newChatBtn?.classList.add('is-spinning');
+    els.newChatBtn?.setAttribute('aria-busy', 'true');
+    try {
+      const raw = await API.newChat();
+      const chatId = raw?.chat_id ?? raw?.id ?? raw?.chat?.id;
+      if (!chatId) throw new ApiError("The server did not return the new chat ID.");
+      stashActiveTurns();
+      state.activeChatId = String(chatId);
+      state.activeChatTitle = String(raw?.title ?? raw?.chat?.title ?? "New chat");
+      state.messages = [];
+      state.artifacts = [];
+      state.historyError = null;
+      state.historyLoading = false;
+      state.challenge = null;
+      state.view = 'chat';
+      renderChatArea();
+      syncGenerationState();
+      closeMobileSidebar();
+      void loadChats({ silent: true });
+      if (focus) window.setTimeout(focusComposer, 20);
+      announce("New chat created.");
+      return state.activeChatId;
+    } catch (error) {
+      toast(errorMessage(error), 'error', "New chat not created");
+      return null;
+    } finally {
+      state.creatingChat = false;
+      els.newChatBtn?.classList.remove('is-spinning');
+      els.newChatBtn?.removeAttribute('aria-busy');
+      updateComposerState();
+      updateTopbarTitle();
+    }
+  }
+
+  function confirmDeleteChat(chatId) {
+    const chat = state.chats.find((item) => item.id === String(chatId));
+    if (!chat) return;
+    const error = el('p', { class: 'form-error', role: 'alert' });
+    const result = mountModal({
+      title: "Delete chat?",
+      subtitle: "Action confirmation",
+      size: 'small',
+      content: el('div', {},
+        el('p', { class: 'modal-copy', text: `Chat “${chat.title}” will be deleted here and archived on arena.ai, so it disappears from both histories. This cannot be undone here.` }),
+        el('div', { class: 'note-box is-warning' }, iconEl('alert'), el('span', { text: "Archived chats can still be found under Archived on arena.ai." })),
+        error),
+      actions: [
+        { label: "Cancel", variant: 'quiet', autofocus: true },
+        {
+          label: "Delete", variant: 'danger',
+          onClick: async ({ button }) => {
+            button.disabled = true;
+            try {
+              const outcome = await API.deleteChat(chatId);
+              state.chats = state.chats.filter((item) => item.id !== String(chatId));
+              state.cloudChats = (state.cloudChats || []).filter((item) =>
+                String(item.local_chat_id || '') !== String(chatId)
+                && (!chat.eval_id || String(item.eval_id || item.id || '') !== String(chat.eval_id)));
+              if (String(state.activeChatId) === String(chatId)) {
+                state.activeChatId = null;
+                state.activeChatTitle = '';
+                state.messages = [];
+                state.artifacts = [];
+                state.historyError = null;
+                state.historyLoading = false;
+                state.challenge = null;
+                updateArtifactCount();
+                renderWelcomeState();
+                updateComposerState();
+              }
+              renderChats();
+              if (outcome?.arena === 'archived') {
+                toast(`Chat “${chat.title}” deleted and archived on Arena.`, 'success');
+              } else if (outcome?.arena === 'failed' || outcome?.arena === 'skipped') {
+                toast(outcome.arena_error || 'Deleted here, but it could not be archived on Arena.', 'warning', 'Deleted here only');
+              } else {
+                toast(`Chat “${chat.title}” deleted.`, 'success');
+              }
+              void loadChats({ silent: true });
+              return true;
+            } catch (apiError) {
+              error.textContent = errorMessage(apiError);
+              button.disabled = false;
+              return false;
+            }
+          }
+        }
+      ]
+    });
+    return result;
+  }
+
+  function confirmArchiveCloudChat(entry) {
+    if (!entry) return;
+    const sessionId = entry.eval_id || entry.id;
+    const error = el('p', { class: 'form-error', role: 'alert' });
+    return mountModal({
+      title: "Delete chat?",
+      subtitle: "Action confirmation",
+      size: 'small',
+      content: el('div', {},
+        el('p', { class: 'modal-copy', text: `Chat “${entry.title}” will be archived on arena.ai and disappear from the history here and on the website.` }),
+        el('div', { class: 'note-box is-warning' }, iconEl('alert'), el('span', { text: "Archived chats can still be found under Archived on arena.ai." })),
+        error),
+      actions: [
+        { label: "Cancel", variant: 'quiet', autofocus: true },
+        {
+          label: "Delete", variant: 'danger',
+          onClick: async ({ button }) => {
+            button.disabled = true;
+            try {
+              await API.archiveArenaChat(sessionId, entry.type || 'evaluation');
+              state.cloudChats = (state.cloudChats || []).filter((item) =>
+                String(item.eval_id || item.id || '') !== String(sessionId));
+              renderChats();
+              toast(`Chat “${entry.title}” archived on Arena.`, 'success');
+              void loadChats({ silent: true });
+              return true;
+            } catch (apiError) {
+              error.textContent = errorMessage(apiError);
+              button.disabled = false;
+              return false;
+            }
+          }
+        }
+      ]
+    });
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Mode, modality and permission transitions                             */
+  /* ---------------------------------------------------------------------- */
+  function queueTransition(task) {
+    state.pendingChanges += 1;
+    updateComposerState();
+    const run = state.transitionQueue.then(task);
+    state.transitionQueue = run.then(() => undefined, () => undefined).finally(() => {
+      state.pendingChanges = Math.max(0, state.pendingChanges - 1);
+      updateComposerState();
+    });
+    return run;
+  }
+
+  async function changeMode(nextMode) {
+    if (!VALID_MODES.includes(nextMode) || nextMode === state.mode) return true;
+    if (chatLocked()) { lockedNotice('Mode'); return false; }
+    if (state.generating) {
+      toast('Stop the current generation first.', 'warning', 'Mode not changed');
+      return false;
+    }
+    // Picking a mode never requires fixing the work type first. Agent runs
+    // as Text with the work-type selector hidden; leaving Agent restores
+    // the work type that was selected before it.
+    const beforeModality = state.modality;
+    if (nextMode === 'agent' && state.mode !== 'agent') state.savedModality = state.modality;
+    const desiredModality = state.mode === 'agent' && nextMode !== 'agent'
+      ? (state.savedModality || state.modality)
+      : state.modality;
+    const pair = normalizeSelection(nextMode, desiredModality);
+    try {
+      await queueTransition(async () => {
+        const response = await API.setMode(nextMode);
+        state.mode = validMode(response?.mode) || pair.mode;
+        const responseModality = validModality(response?.modality);
+        state.modality = responseModality || beforeModality;
+        if (pair.modality !== state.modality) {
+          // The mode endpoint normalizes against the backend's current
+          // modality (Text while Agent was active). Restoring the saved
+          // pre-Agent work type is a second, explicit step.
+          const modalityResponse = await API.setModality(pair.modality);
+          state.modality = validModality(modalityResponse?.modality) || pair.modality;
+        }
+        state.selectionTouched = true;
+        state.modelAId = null;
+        state.modelBId = null;
+        await loadModels(state.modality, { quiet: true });
+      });
+      ensureModelSelections();
+      pruneAttachmentsForSelection();
+      updateComposerState();
+      renderChatHead();
+      renderModelStrip();
+      announce(`Mode: ${modeMeta(state.mode).label}`);
+      return true;
+    } catch (error) {
+      toast(errorMessage(error), 'error', 'Could not change the mode');
+      updateComposerState();
+      return false;
+    }
+  }
+
+  async function changeModality(nextModality) {
+    if (!VALID_MODALITIES.includes(nextModality) || nextModality === state.modality) return true;
+    if (state.mode === 'agent') return true; // no work-type selector in Agent Mode
+    if (chatLocked()) { lockedNotice('Work type'); return false; }
+    const issue = selectionIssue(state.mode, nextModality);
+    if (issue) {
+      toast(issue, 'warning', 'Combination not available in Arena');
+      return false;
+    }
+    if (state.generating) {
+      toast('Stop the current generation first.', 'warning', 'Work type not changed');
+      return false;
+    }
+    const previous = state.modality;
+    let serverChanged = false;
+    try {
+      await queueTransition(async () => {
+        const response = await API.setModality(nextModality);
+        serverChanged = true;
+        state.modality = validModality(response?.modality) || nextModality;
+        state.selectionTouched = true;
+        state.modelAId = null;
+        state.modelBId = null;
+        await loadModels(state.modality, { quiet: true });
+      });
+      state.savedModality = state.modality;
+      pruneAttachmentsForSelection();
+      updateComposerState();
+      renderChatHead();
+      announce(`Work type: ${modalityMeta(state.modality).label}`);
+      return true;
+    } catch (error) {
+      if (!serverChanged) state.modality = previous;
+      updateComposerState();
+      toast(errorMessage(error), 'error', 'Could not change the work type');
+      return false;
+    }
+  }
+
+  async function changePermissionMode(nextMode) {
+    if (!VALID_PERMISSION_MODES.includes(nextMode) || nextMode === state.permissionMode) return true;
+    try {
+      await queueTransition(async () => {
+        const response = await API.setPermissionMode(nextMode);
+        state.permissionMode = validPermissionMode(response?.mode) || nextMode;
+      });
+      if (state.permissionMode === 'bypassPermissions') {
+        toast("Permission bypass enabled. The backend can perform actions without confirmation. Use only in an isolated environment.", 'warning', "Dangerous mode");
+      } else {
+        toast(`Permission mode: ${permissionMeta(state.permissionMode).label}.`, 'success');
+      }
+      updateComposerState();
+      state.settingsRerender?.();
+      return true;
+    } catch (error) {
+      toast(errorMessage(error), 'error', "Permission mode not changed");
+      state.settingsRerender?.();
+      return false;
+    }
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Model selection                                                       */
+  /* ---------------------------------------------------------------------- */
+  function selectModel(lane, modelId) {
+    if (!allowsManualModels()) return false;
+    if (chatLocked()) { lockedNotice("Models"); return false; }
+    const model = getModel(modelId);
+    if (!model) return false;
+    if (lane === 'b') {
+      if (String(modelId) === String(state.modelAId)) {
+        toast("For comparison, select a model different from model A.", 'warning', "Two different models required");
+        return false;
+      }
+      state.modelBId = modelId;
+    } else {
+      state.modelAId = modelId;
+    }
+    if (state.mode === 'side-by-side' && lane === 'a' && String(state.modelBId) === String(modelId)) {
+      const candidate = state.models.find((item) => String(item.id) !== String(modelId));
+      state.modelBId = candidate?.id || null;
+    }
+    updateComposerState();
+    renderChatHead();
+    announce(`Model ${lane.toUpperCase()}: ${model.name}`);
+    return true;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Permission decisions                                                  */
+  /* ---------------------------------------------------------------------- */
+  function findPermissionLane(id) {
+    if (!id) return null;
+    for (const turn of state.messages) {
+      for (const lane of Object.values(turn.lanes || {})) {
+        const permission = (lane.permissions || []).find((item) => String(item.id) === String(id));
+        if (permission) return { turn, lane, permission };
+      }
+    }
+    return null;
+  }
+
+  async function decidePermission(permissionId, decision) {
+    if (!permissionId) {
+      toast("The server did not provide a permission ID. Action unavailable.", 'error');
+      return;
+    }
+    if (state.decidingPermissions.has(String(permissionId))) return;
+    const local = state.pendingPermissions.find((item) => String(item.id) === String(permissionId));
+    const located = findPermissionLane(permissionId);
+    if (!local && !located) return;
+    state.decidingPermissions.add(String(permissionId));
+    renderPendingPermissionsUI();
+    if (state.view === 'chat') renderMessages();
+    try {
+      await API.decidePermission(permissionId, decision);
+      const laneRecord = located || findPermissionLane(permissionId);
+      if (laneRecord?.lane) {
+        const permission = laneRecord.permission || laneRecord.lane.permissions.find((item) => String(item.id) === String(permissionId));
+        if (permission) permission.status = decision;
+      }
+      state.pendingPermissions = state.pendingPermissions.filter((item) => String(item.id) !== String(permissionId));
+      state.permissionCount = state.pendingPermissions.length;
+      const label = decision === 'deny' ? "Action denied." : decision === 'always' ? "Category allowed for the current session." : "Allowed once.";
+      toast(label, decision === 'deny' ? 'warning' : 'success', "Permission decision");
+      announce(label);
+    } catch (error) {
+      toast(errorMessage(error), 'error', "Decision not sent");
+    } finally {
+      state.decidingPermissions.delete(String(permissionId));
+      renderPendingPermissionsUI();
+      if (state.view === 'chat') renderMessages();
+      state.settingsRerender?.();
+    }
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Stream generation                                                      */
+  /* ---------------------------------------------------------------------- */
+  function turnLane(turn, key, event = {}) {
+    if (!turn.lanes[key]) {
+      const rawModel = event.model && typeof event.model === 'object' ? event.model : null;
+      turn.lanes[key] = emptyLane(key, rawModel ? normalizeModel(rawModel) : null);
+    }
+    return turn.lanes[key];
+  }
+
+  function eventLaneKey(event) {
+    return event?.model === 'b' || event?.lane === 'b' ? 'b' : 'a';
+  }
+
+  function addArtifactRecord(artifact, laneKey) {
+    if (!artifact) return;
+    const key = `${artifact.kind}:${artifact.path || artifact.url || artifact.name}`;
+    if (state.artifacts.some((item) => `${item.kind}:${item.path || item.url || item.name}` === key)) return;
+    state.artifacts.push({ ...artifact, chatId: state.activeChatId, lane: laneKey });
+    updateArtifactCount();
+  }
+
+  function addActivity(turn, lane, event, kind) {
+    const activity = normalizeActivity(event, kind);
+    if (!activity) return null;
+    const id = activity.id;
+    const existing = lane.activities.find((item) => String(item.id) === String(id));
+    if (existing) {
+      Object.assign(existing, { status: activity.status, detail: activity.detail || existing.detail, command: activity.command || existing.command, path: activity.path || existing.path, url: activity.url || existing.url });
+      return existing;
+    }
+    lane.activities.push(activity);
+    return activity;
+  }
+
+  function handleStreamEvent(event, generation) {
+    if (!event || typeof event !== 'object') return;
+    const type = String(event.type || '').toLowerCase();
+    const turn = generation.turn;
+    if (type === 'ping') return;
+    if (type === 'meta') {
+      const rawModels = event.models ?? event.data?.models;
+      const normalizeMetaModel = (value) => {
+        if (!value) return null;
+        if (typeof value === 'string') {
+          const known = getModel(value);
+          return known || { id: value, name: value, org: '', color: '', capabilities: [] };
+        }
+        return normalizeModel(value);
+      };
+      let metaModels = {};
+      if (Array.isArray(rawModels)) {
+        metaModels.a = normalizeMetaModel(rawModels[0]);
+        metaModels.b = normalizeMetaModel(rawModels[1]);
+      } else if (rawModels && typeof rawModels === 'object') {
+        metaModels.a = normalizeMetaModel(rawModels.a);
+        metaModels.b = normalizeMetaModel(rawModels.b);
+      } else {
+        metaModels.a = normalizeMetaModel(event.model_a);
+        metaModels.b = normalizeMetaModel(event.model_b);
+      }
+      if (event.name && metaModels.a && !metaModels.a.name) metaModels.a.name = String(event.name);
+      if (event.model_name_a || event.model_name_b) {
+        if (!metaModels.a) metaModels.a = { id: 'a', name: String(event.model_name_a || "Model A"), org: '', color: '', capabilities: [] };
+        else if (event.model_name_a) metaModels.a.name = String(event.model_name_a);
+        if (event.model_name_b) {
+          if (!metaModels.b) metaModels.b = { id: 'b', name: String(event.model_name_b), org: '', color: '', capabilities: [] };
+          else metaModels.b.name = String(event.model_name_b);
+        }
+      }
+      // The existing backend emits names as {a, b}, not a models array.
+      if (event.names?.a && !metaModels.a) metaModels.a = { id: 'a', name: String(event.names.a), org: '', color: '', capabilities: [] };
+      if (event.names?.b && !metaModels.b) metaModels.b = { id: 'b', name: String(event.names.b), org: '', color: '', capabilities: [] };
+      const activeModel = event.model_id ? normalizeModel(event.model_id) : null;
+      const modelA = metaModels.a || activeModel;
+      if (modelA) {
+        const lane = turnLane(turn, 'a');
+        lane.modelId = modelA.id;
+        lane.modelName = modelA.name;
+        lane.modelOrg = modelA.org;
+        lane.modelColor = modelA.color;
+      }
+      if (metaModels.b) {
+        const lane = turnLane(turn, 'b');
+        lane.modelId = metaModels.b.id;
+        lane.modelName = metaModels.b.name;
+        lane.modelOrg = metaModels.b.org;
+        lane.modelColor = metaModels.b.color;
+        lane.streaming = true;
+      }
+      if (event.mode) turn.mode = event.mode;
+      if (event.modality) turn.modality = event.modality;
+      if (event.chat_id && !state.activeChatId) state.activeChatId = String(event.chat_id);
+      if (!generation._chatsReloaded) {
+        // The backend has saved this chat by now (it does so before the
+        // stream starts), so refresh the sidebar with the real entry.
+        generation._chatsReloaded = true;
+        void loadChats({ silent: true });
+      }
+      scheduleChatRender();
+      return;
+    }
+
+    const key = eventLaneKey(event);
+    const lane = turnLane(turn, key, event);
+
+    if (type === 'text' || type === 'message') {
+      const delta = textValue(event.text ?? event.delta ?? event.content ?? '');
+      if (delta) lane.text += delta;
+      if (event.model_id && !lane.modelId) {
+        const model = normalizeModel(event.model_id);
+        if (model) {
+          lane.modelId = model.id;
+          lane.modelName = model.name;
+          lane.modelOrg = model.org;
+          lane.modelColor = model.color;
+        }
+      }
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'reasoning') {
+      const delta = textValue(event.text ?? event.delta ?? event.reasoning ?? '');
+      if (delta) lane.reasoning += delta;
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'source') {
+      const payload = Array.isArray(event.sources) ? event.sources : [event.source ?? event.data ?? event];
+      payload.forEach((item) => {
+        const source = normalizeSource(item);
+        if (source) lane.sources.push(source);
+      });
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'media') {
+      const payload = Array.isArray(event.media) ? event.media : [event.media ?? event.data ?? event];
+      payload.forEach((item) => {
+        const media = normalizeMedia(item);
+        if (media) lane.media.push(media);
+      });
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'tool_call') {
+      addActivity(turn, lane, event, 'tool');
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'tool_result') {
+      const id = event.id ?? event.tool_call_id ?? event.call_id;
+      // Backend tool_result has no call id: match the most recent pending call by tool.
+      const existing = id ? lane.activities.find((item) => String(item.id) === String(id)) :
+        [...lane.activities].reverse().find((item) => item.kind === 'tool' && item.name === event.tool && item.status === 'running');
+      const output = textValue(event.output ?? event.result ?? event.text ?? event.message ?? '');
+      if (existing) {
+        existing.status = event.status || 'ok';
+        if (output) existing.detail = output;
+      } else {
+        addActivity(turn, lane, { ...event, name: event.name || "Tool result", detail: output, status: event.status || 'ok' }, 'tool');
+      }
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'permission') {
+      const permissionPayload = event.permission ?? event.data ?? event;
+      const permission = normalizePermission(event.permission || event.data ? { ...event, ...permissionPayload } : event);
+      if (!permission) return;
+      permission.lane = key;
+      if (!permission.chatId && generation.chatId) permission.chatId = generation.chatId;
+      if (permission.id) {
+        const existingGlobal = state.pendingPermissions.find((item) => String(item.id) === String(permission.id));
+        if (existingGlobal) Object.assign(existingGlobal, permission);
+        else state.pendingPermissions.push(permission);
+        state.permissionCount = Math.max(state.permissionCount, state.pendingPermissions.length);
+      }
+      if (!lane.permissions.some((item) => permission.id && String(item.id) === String(permission.id))) lane.permissions.push(permission);
+      updatePendingPermissionsBadge();
+      announce("New permission request. Your decision is needed.");
+      toast(permission.title || "Permission request", 'warning', "Decision required");
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'permission_done') {
+      const id = event.id ?? event.permission_id;
+      const decision = String(event.decision ?? event.status ?? 'done');
+      state.pendingPermissions = state.pendingPermissions.filter((item) => String(item.id) !== String(id));
+      state.permissionCount = state.pendingPermissions.length;
+      state.messages.forEach((messageTurn) => {
+        Object.values(messageTurn.lanes || {}).forEach((messageLane) => {
+          (messageLane.permissions || []).forEach((permission) => {
+            if (id && String(permission.id) === String(id)) permission.status = decision;
+          });
+        });
+      });
+      updatePendingPermissionsBadge();
+      scheduleChatRender();
+      state.settingsRerender?.();
+      return;
+    }
+    if (type === 'sandbox' || type === 'sandbox_done') {
+      addActivity(turn, lane, {
+        ...event,
+        name: event.title ?? event.name ?? (event.status === 'done' ? "Sandbox completed" : "Sandbox"),
+        status: type === 'sandbox_done' ? (event.ok === false ? 'error' : 'done') : (event.status || 'running'),
+        detail: event.note ?? event.message ?? event.detail ?? ''
+      }, 'sandbox');
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'webdev') {
+      addActivity(turn, lane, {
+        ...event,
+        name: event.title ?? "Web development",
+        status: event.status || 'running',
+        detail: event.message ?? event.description ?? event.output ?? event.url ?? ''
+      }, 'webdev');
+      if (event.url) {
+        const artifact = normalizeArtifact({ ...event, title: event.title ?? "Preview" }, 'preview');
+        if (artifact) {
+          lane.artifacts.push(artifact);
+          addArtifactRecord(artifact, key);
+        }
+      }
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'files_written' || type === 'files') {
+      const list = Array.isArray(event.files) ? event.files : Array.isArray(event.data) ? event.data : Array.isArray(event.paths) ? event.paths : [];
+      list.forEach((file) => {
+        const artifact = normalizeArtifact(file, 'file');
+        if (!artifact) return;
+        lane.artifacts.push(artifact);
+        addArtifactRecord(artifact, key);
+      });
+      if (list.length) {
+        lane.notices.push(`The server reported ${list.length} ${list.length === 1 ? "in the file" : "files"}. Artifacts are available, but full workspace synchronization is not guaranteed.`);
+      }
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'preview') {
+      const previewData = event.preview && typeof event.preview === 'object' ? event.preview : event;
+      const artifact = normalizeArtifact({
+        path: previewData.path ?? previewData.title ?? '',
+        name: previewData.title ?? "Preview",
+        title: previewData.title ?? "Preview",
+        url: previewData.url ?? previewData.preview_url ?? event.url ?? '',
+        note: "Link from preview event"
+      }, 'preview');
+      if (artifact) {
+        lane.artifacts.push(artifact);
+        addArtifactRecord(artifact, key);
+      }
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'agent') {
+      const stage = textValue(event.stage ?? event.status ?? event.message ?? '');
+      if (stage && !lane.agentStages.includes(stage)) lane.agentStages.push(stage);
+      if (event.message && event.stage && event.message !== event.stage && !lane.notices.includes(event.message)) lane.notices.push(textValue(event.message));
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'round') {
+      const round = Number(event.round ?? event.n ?? event.number ?? event.value);
+      if (Number.isFinite(round)) turn.round = round;
+      if (event.message) lane.notices.push(textValue(event.message));
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'notice') {
+      const message = textValue(event.message ?? event.text ?? event.notice ?? event.data);
+      if (message && !lane.notices.includes(message)) lane.notices.push(message);
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'challenge') {
+      state.challenge = { message: textValue(event.message ?? event.text ?? event.detail ?? "Manual verification required."), raw: event };
+      renderChallenge();
+      if (state.view === 'chat') renderMessages();
+      announce("The server reports a challenge. Open a separate window and verify login manually.");
+      toast("The server requires manual login verification. Automatic bypass is not performed.", 'warning', 'Challenge');
+      return;
+    }
+    if (type === 'challenge_done') {
+      const wasChallenge = state.challenge;
+      state.challenge = null;
+      renderChallenge();
+      if (wasChallenge) lane.notices.push("Login verification marked by the server as completed.");
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'error') {
+      const message = textValue(event.message ?? event.error ?? event.detail ?? 'The server reported an error.');
+      generation.hadError = true;
+      if (event.model === 'a' || event.model === 'b' || event.lane === 'a' || event.lane === 'b' || event.ui_lane === 'a' || event.ui_lane === 'b') {
+        // Lane-scoped error: only this model's card fails. A surviving
+        // Battle lane keeps streaming to its own terminal event.
+        lane.error = true;
+        if (!lane.errors.includes(message)) lane.errors.push(message);
+        lane.streaming = false;
+        lane.done = true;
+      } else if (!turn.error) {
+        // Global backend error: show it once at turn level instead of
+        // attributing it to Model A or pretending a card generated it.
+        turn.error = message;
+      }
+      toast(message, 'error', 'Generation error');
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'done') {
+      generation.done = true;
+      if (event.arena_message_ids && typeof event.arena_message_ids === 'object') {
+        turn.arenaIds = event.arena_message_ids;
+      }
+      if (event.error) {
+        generation.hadError = true;
+        const message = textValue(event.error);
+        const laneScoped = event.model === 'a' || event.model === 'b' || event.lane === 'a' || event.lane === 'b' || event.ui_lane === 'a' || event.ui_lane === 'b';
+        if (laneScoped || Object.keys(turn.lanes).length <= 1) {
+          lane.error = true;
+          if (message && !lane.errors.includes(message)) lane.errors.push(message);
+        } else if (message && !turn.error) {
+          turn.error = message;
+        }
+      }
+      Object.values(turn.lanes).forEach((laneItem) => {
+        laneItem.streaming = false;
+        laneItem.done = true;
+      });
+      const controller = generation.controller;
+      window.setTimeout(() => {
+        if (!generation.finished && controller) {
+          try { controller.abort(); } catch { /* already closed */ }
+        }
+      }, 900);
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'title' && (event.title || event.text)) {
+      state.activeChatTitle = String(event.title ?? event.text);
+      renderChatHead();
+      updateTopbarTitle();
+      return;
+    }
+    // Unknown event types are deliberately ignored, not guessed or rendered as HTML.
+  }
+
+  function makeGenerationTurn(message, chatId, attachments = []) {
+    const mode = state.mode;
+    const lanes = {};
+    const laneA = emptyLane('a', mode === 'agent' ? null : currentModelA());
+    if (mode === 'agent') {
+      laneA.modelId = null;
+      laneA.modelName = 'Agent';
+      laneA.modelOrg = "Automatic model selection";
+    }
+    laneA.streaming = true;
+    lanes.a = laneA;
+    if (mode === 'battle' || mode === 'side-by-side') {
+      const laneB = emptyLane('b', currentModelB());
+      laneB.streaming = true;
+      lanes.b = laneB;
+    }
+    return {
+      user: { content: message, created_at: new Date().toISOString(), attachments: attachments || [] },
+      lanes,
+      notices: [],
+      error: null,
+      round: null,
+      vote: null,
+      arenaIds: null,
+      revealed: false,
+      chatId,
+      mode,
+      modality: state.modality
+    };
+  }
+
+  function markGenerationError(generation, message) {
+    if (!generation || generation.finished) return;
+    generation.hadError = true;
+    const entries = Object.entries(generation.turn.lanes);
+    // A global transport/backend error belongs to the turn, not to Model A.
+    // If exactly one Battle lane already carries this same error, keep the
+    // error there and let the other card simply say no answer was received.
+    const matching = entries.filter(([, lane]) => message && lane.errors.includes(message));
+    if (entries.length <= 1) {
+      const primary = generation.turn.lanes[entries[0]?.[0]] || (generation.turn.lanes.a = emptyLane('a'));
+      primary.error = true;
+      if (message && !primary.errors.includes(message)) primary.errors.push(message);
+    } else if (!matching.length && message && !generation.turn.error) {
+      generation.turn.error = message;
+    }
+    entries.forEach(([, lane]) => {
+      lane.streaming = false;
+      lane.done = true;
+      const hasReceived = lane.text || lane.errors.length || (lane.media || []).length || lane.stopped;
+      if (entries.length > 1 && !hasReceived) lane.notices.push('No answer was received from this model.');
+    });
+  }
+
+  function finishGeneration(generation, { aborted = false } = {}) {
+    if (!generation || generation.finished) return;
+    generation.finished = true;
+    const wasStopped = Boolean(generation.stopRequested);
+    if (generation.abortTimer) {
+      clearTimeout(generation.abortTimer);
+      generation.abortTimer = null;
+    }
+    Object.values(generation.turn.lanes || {}).forEach((lane) => {
+      const wasStreaming = lane.streaming;
+      lane.streaming = false;
+      lane.done = true;
+      if (wasStopped && wasStreaming) lane.stopped = true;
+      if (!wasStopped && !generation.done && !lane.error && !generation.hadError) {
+        lane.notices.push("Stream ended without a done event. The result may be incomplete.");
+      }
+      if (!wasStopped && aborted && !generation.hadError) lane.notices.push("Stream connection was terminated locally.");
+    });
+    if (aborted && wasStopped) {
+      const lane = Object.values(generation.turn.lanes)[0];
+      if (lane && !lane.text) lane.notices.push("Generation stopped before text was received.");
+    }
+    const genChatId = generation.chatId ? String(generation.chatId) : null;
+    if (genChatId) state.generations.delete(genChatId);
+    const isOpenChat = genChatId && String(state.activeChatId) === genChatId;
+    if (genChatId && !isOpenChat && !generation.hadError && !wasStopped && generation.done) {
+      // Finished in the background: the sidebar shows a check until opened.
+      state.unreadDone.add(genChatId);
+      saveUnreadDone();
+      const finishedChat = state.chats.find((item) => item.id === genChatId);
+      toast(`“${truncate(finishedChat?.title || 'Chat', 40)}” is done.`, 'success', 'Generation finished');
+    }
+    syncGenerationState();
+    if (isOpenChat && state.view === 'chat') renderMessages();
+    announce(generation.hadError ? "Generation completed with an error." : wasStopped ? "Generation stopped." : "Generation completed.");
+    window.setTimeout(() => {
+      if (!state.serverError) {
+        void loadChats({ silent: true });
+        void loadStatus({ quiet: true });
+        void loadPermissions({ quiet: true });
+        if (state.workspacePanelOpen) void loadWorkspaceTree('.', { force: true });
+      }
+    }, 280);
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Composer attachments                                                  */
+  /* ---------------------------------------------------------------------- */
+  const ATTACH_EXT_MIME = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
+    gif: 'image/gif', pdf: 'application/pdf', txt: 'text/plain', md: 'text/markdown',
+    csv: 'text/csv', html: 'text/html', htm: 'text/html', xml: 'text/xml',
+    css: 'text/css', js: 'text/javascript', mjs: 'text/javascript', json: 'application/json'
+  };
+  const AGENT_ATTACH_MIME = ['image/png', 'image/webp', 'image/jpeg', 'image/gif', 'text/plain',
+    'text/markdown', 'text/csv', 'text/html', 'text/xml', 'text/css', 'text/javascript',
+    'application/json', 'application/xml', 'application/javascript', 'application/pdf'];
+  const EVAL_ATTACH_MIME = ['image/png', 'image/jpeg', 'image/webp', 'application/pdf'];
+  let attachmentSeq = 0;
+  let uploadChain = Promise.resolve();
+
+  function attachmentKind() {
+    return state.mode === 'agent' && state.agentKind === 'native' ? 'agent' : 'evaluation';
+  }
+  function attachmentsAllowedHere() {
+    if (attachmentKind() === 'agent') return true;
+    return state.modality !== 'search';
+  }
+  function fileMediaType(file) {
+    const ext = String(file?.name || '').split('.').pop()?.toLowerCase() || '';
+    const byExt = ATTACH_EXT_MIME[ext];
+    const declared = String(file?.type || '').split(';')[0].trim().toLowerCase();
+    if (byExt && (!declared || declared === 'application/octet-stream' || declared === 'text/plain'
+      || byExt.startsWith('text/') || byExt === 'application/json')) return byExt;
+    return declared || byExt || 'application/octet-stream';
+  }
+  function attachmentAccept() {
+    if (attachmentKind() === 'agent') {
+      return '.png,.webp,.jpg,.jpeg,.gif,.pdf,.txt,.md,.csv,.html,.xml,.css,.js,.json';
+    }
+    if (state.modality === 'text' || state.modality === 'auto') return '.png,.jpg,.jpeg,.webp,.pdf';
+    return '.png,.jpg,.jpeg,.webp';
+  }
+  function attachmentHint() {
+    if (attachmentKind() === 'agent') {
+      return 'PNG, WebP, JPEG, GIF, PDF, TXT, MD, CSV, HTML, XML, CSS, JS, JSON · up to 25 MB per file (PDF 10 MB), 50 MB per message';
+    }
+    if (state.modality === 'video') return 'PNG, JPEG, WebP · up to 10 MB per file';
+    if (state.modality === 'text' || state.modality === 'auto') return 'PNG, JPEG, WebP, PDF · up to 15 MB per file';
+    return 'PNG, JPEG, WebP · up to 15 MB per file';
+  }
+  function attachmentProblem(file, mediaType, pending) {
+    const kind = attachmentKind();
+    const list = pending || state.attachments;
+    if (!attachmentsAllowedHere()) return 'Files cannot be attached in Web Search. Switch the work type to attach files.';
+    if (kind === 'agent') {
+      if (!AGENT_ATTACH_MIME.includes(mediaType)) return `${file.name} is not a supported file type. Agent Mode accepts PNG, WebP, JPEG, GIF, PDF, TXT, MD, CSV, HTML, XML, CSS, JS and JSON.`;
+      if (mediaType === 'application/pdf' && file.size > 10 * 1024 * 1024) return `${file.name} is over the 10 MB PDF limit for Agent Mode.`;
+      if (file.size > 25 * 1024 * 1024) return `${file.name} is over the 25 MB per-file limit for Agent Mode.`;
+      if (list.length >= 20) return 'Agent Mode accepts up to 20 files per message.';
+      const total = list.reduce((sum, item) => sum + (item.size || 0), 0) + file.size;
+      if (total > 50 * 1024 * 1024) return 'Agent Mode accepts up to 50 MB of files per message.';
+      return null;
+    }
+    if (!EVAL_ATTACH_MIME.includes(mediaType)) return `${file.name} is not supported here. This mode accepts PNG, JPEG, WebP and PDF — Agent Mode accepts more types.`;
+    if (mediaType === 'application/pdf' && state.modality !== 'text' && state.modality !== 'auto') {
+      return 'PDF files attach in Text (and Battle Auto). Switch the work type, or use Agent Mode.';
+    }
+    const limit = state.modality === 'video' ? 10 * 1024 * 1024 : 15 * 1024 * 1024;
+    if (file.size > limit) return `${file.name} is over the ${limit / (1024 * 1024)} MB per-file limit.`;
+    if (list.length >= 10) return 'Attach up to 10 files per message.';
+    return null;
+  }
+  function attachmentsBusy() {
+    return state.attachments.some((item) => item.status === 'uploading');
+  }
+  function attachmentsFailed() {
+    return state.attachments.some((item) => item.status === 'error');
+  }
+  function readyAttachments() {
+    return state.attachments.filter((item) => item.status === 'ready' && item.result);
+  }
+  function renderAttachmentStrip() {
+    const strip = els.attachmentStrip;
+    if (!strip) return;
+    clear(strip);
+    strip.hidden = !state.attachments.length;
+    state.attachments.forEach((item) => {
+      const chip = el('div', { class: `attachment-chip${item.status === 'error' ? ' is-error' : ''}` });
+      if (item.previewUrl) {
+        chip.appendChild(el('img', { class: 'attachment-thumb', src: item.previewUrl, alt: '' }));
+      } else {
+        chip.appendChild(el('span', { class: 'attachment-file-icon' }, iconEl(item.mediaType === 'application/pdf' ? 'file-text' : 'file')));
+      }
+      chip.appendChild(el('span', { class: 'attachment-copy' },
+        el('span', { class: 'attachment-name', text: item.name, title: item.name }),
+        el('span', { class: 'attachment-meta', text: item.status === 'error' ? (item.error || 'Upload failed') : formatBytes(item.size) })
+      ));
+      if (item.status === 'uploading') chip.appendChild(el('span', { class: 'mini-spinner', 'aria-hidden': 'true' }));
+      const remove = el('button', { class: 'attachment-remove', type: 'button', 'aria-label': `Remove ${item.name}`, title: 'Remove' }, iconEl('x'));
+      remove.addEventListener('click', () => removeAttachment(item.id));
+      chip.appendChild(remove);
+      strip.appendChild(chip);
+    });
+  }
+  function removeAttachment(id) {
+    const index = state.attachments.findIndex((item) => item.id === id);
+    if (index < 0) return;
+    const [item] = state.attachments.splice(index, 1);
+    if (item.previewUrl) { try { URL.revokeObjectURL(item.previewUrl); } catch { /* already gone */ } }
+    renderAttachmentStrip();
+    updateComposerState();
+  }
+  function clearAttachments() {
+    state.attachments.forEach((item) => {
+      if (item.previewUrl) { try { URL.revokeObjectURL(item.previewUrl); } catch { /* already gone */ } }
+    });
+    state.attachments = [];
+    renderAttachmentStrip();
+  }
+  function pruneAttachmentsForSelection() {
+    if (!state.attachments.length) return;
+    const kind = attachmentKind();
+    const kept = [];
+    let dropped = 0;
+    for (const item of state.attachments) {
+      const fake = { name: item.name, size: item.size, type: item.mediaType };
+      if (item.kind === kind && !attachmentProblem(fake, item.mediaType, kept)) kept.push(item);
+      else {
+        dropped += 1;
+        if (item.previewUrl) { try { URL.revokeObjectURL(item.previewUrl); } catch { /* already gone */ } }
+      }
+    }
+    if (dropped) {
+      state.attachments = kept;
+      renderAttachmentStrip();
+      toast('Attached files were removed: they do not fit the new mode or work type.', 'info', 'Attachments removed');
+    }
+  }
+  function addFiles(fileList) {
+    const files = Array.from(fileList || []).filter((file) => file && typeof file.size === 'number');
+    if (!files.length) return;
+    if (state.generating) {
+      toast('Wait for the current answer before attaching files.', 'warning');
+      return;
+    }
+    if (!attachmentsAllowedHere()) {
+      toast('Files cannot be attached in Web Search. Switch the work type to attach files.', 'warning', 'Attachments unavailable');
+      return;
+    }
+    let firstProblem = null;
+    const kind = attachmentKind();
+    for (const file of files) {
+      const mediaType = fileMediaType(file);
+      const problem = attachmentProblem(file, mediaType, state.attachments);
+      if (problem) { if (!firstProblem) firstProblem = problem; continue; }
+      const item = {
+        id: `att-${++attachmentSeq}`,
+        file,
+        kind,
+        name: file.name || (mediaType.startsWith('image/') ? 'pasted-image.png' : 'file'),
+        size: file.size,
+        mediaType,
+        status: 'uploading',
+        error: null,
+        result: null,
+        previewUrl: mediaType.startsWith('image/') ? URL.createObjectURL(file) : null
+      };
+      state.attachments.push(item);
+      uploadChain = uploadChain.then(() => uploadOneAttachment(item)).catch(() => undefined);
+    }
+    if (firstProblem) toast(firstProblem, 'warning', 'File not attached');
+    renderAttachmentStrip();
+    updateComposerState();
+  }
+  async function uploadOneAttachment(item) {
+    if (!state.attachments.includes(item)) return;
+    try {
+      const result = await API.uploadAttachment(item.file, item.kind, item.kind === 'evaluation' ? state.modality : '');
+      item.result = result;
+      item.status = 'ready';
+    } catch (error) {
+      item.status = 'error';
+      item.error = errorMessage(error);
+      toast(item.error, 'error', `Could not attach ${item.name}`);
+    }
+    renderAttachmentStrip();
+    updateComposerState();
+  }
+  function turnAttachmentsFromComposer() {
+    return readyAttachments().map((item) => ({
+      name: item.result.name || item.result.filename || item.name,
+      contentType: item.result.contentType || item.result.mediaType || item.mediaType,
+      mediaType: item.result.mediaType || item.result.contentType || item.mediaType,
+      url: item.result.url,
+      size: item.result.size ?? item.size,
+      previewUrl: item.previewUrl || null
+    }));
+  }
+  function normalizeUserAttachments(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((item) => item && typeof item === 'object' && (item.url || item.name || item.filename)).map((item) => ({
+      name: String(item.name || item.filename || 'File'),
+      contentType: String(item.contentType || item.mediaType || ''),
+      mediaType: String(item.mediaType || item.contentType || ''),
+      url: typeof item.url === 'string' ? item.url : '',
+      size: Number(item.size) || 0,
+      previewUrl: null
+    }));
+  }
+
+  async function sendMessage() {
+    if (state.starting) return;
+    if (chatIsGenerating(state.activeChatId)) {
+      toast("This chat is still working on the previous message. You can use other chats meanwhile.", 'warning', "Generation is already in progress");
+      return;
+    }
+    const text = els.prompt?.value.trim() || '';
+    if (!text) {
+      focusComposer();
+      updateComposerState();
+      return;
+    }
+    if (attachmentsBusy()) {
+      toast('Files are still uploading. The message sends when they finish — try again in a moment.', 'info', 'Uploading files');
+      return;
+    }
+    if (attachmentsFailed()) {
+      toast('One file did not upload. Remove it (×) and send again.', 'warning', 'Attachment failed');
+      return;
+    }
+    if (state.modality === 'video' && text.length > 2500) {
+      toast('Video prompts can be up to 2,500 characters. Shorten the prompt and send again.', 'warning', 'Prompt too long');
+      return;
+    }
+    if (state.historyLoading) {
+      toast("Wait for the dialog history to load.", 'info');
+      return;
+    }
+    if (state.historyError) {
+      toast("Dialog history not loaded. Reload to avoid sending a request in an incomplete context.", 'warning', "History unavailable");
+      return;
+    }
+    if (state.serverError || state.networkOffline) {
+      toast(state.serverError || "No connection to the local server. Request not sent.", 'error', "Server unavailable");
+      return;
+    }
+    if (state.status && !state.authenticated) {
+      toast("Log in first in a separate window or using cookies.", 'warning', "Not signed in");
+      openSettings('connection');
+      return;
+    }
+    if (state.demo && !demoStore.authenticated) {
+      toast("Logged out of the demo profile. Log in to send a demo message.", 'warning', "Not signed in");
+      openSettings('connection');
+      return;
+    }
+    state.starting = true;
+    updateComposerState();
+    try {
+      if (state.pendingChanges > 0) {
+        toast("First apply the changes to the mode and task type.", 'info', "Synchronization of settings");
+        while (state.pendingChanges > 0) {
+          await state.transitionQueue.catch(() => undefined);
+        }
+      }
+      if (state.modelsPromise) await state.modelsPromise.catch(() => undefined);
+      if (state.pendingChanges > 0) {
+        toast("Settings are still being applied. Please resend.", 'warning', "Please wait");
+        return;
+      }
+      if (state.serverError) {
+        toast(state.serverError, 'error', "Server unavailable");
+        return;
+      }
+      if (!requiredModelsReady()) {
+        if (state.mode !== 'battle') {
+          toast(state.modelsError || (state.modelsLoading ? "Wait for the models to load." : "Select a model to send."), 'warning', "Model is not ready");
+          openModelPicker(state.mode === 'side-by-side' && state.modelAId ? 'b' : 'a');
+        } else {
+          toast("The server is not yet ready for Battle.", 'warning');
+        }
+        return;
+      }
+
+      let chatId = state.activeChatId;
+      if (!chatId) {
+        const raw = await API.newChat();
+        chatId = raw?.chat_id ?? raw?.id ?? raw?.chat?.id;
+        if (!chatId) throw new ApiError("The server did not return a chat ID.");
+        chatId = String(chatId);
+        state.activeChatId = chatId;
+        state.activeChatTitle = String(raw?.title ?? "New chat");
+        state.messages = [];
+        state.artifacts = [];
+        state.historyError = null;
+        state.historyLoading = false;
+        state.challenge = null;
+        updateArtifactCount();
+        void loadChats({ silent: true });
+      }
+
+      // The visible composer selection travels with the request itself, so a
+      // late status/chat response can never reroute this send to another mode.
+      const body = { message: text, chat_id: chatId, mode: state.mode, modality: state.modality };
+      try { body.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { /* optional */ }
+      if (state.mode === 'agent') {
+        // 'arena' = native Arena Agent Mode streamed in-app; 'local' = the
+        // folder-tools loop.  A saved chat keeps its own backend server-side.
+        body.agent_backend = state.agentKind === 'native' ? 'arena' : 'local';
+      }
+      // Workspace Sync: the composer switch decides whether models get the
+      // automatic folder-tools loop on this computer. It applies to Direct,
+      // Side by Side, Battle and the Local Agent alike.
+      body.tools = Boolean(state.directTools);
+      // Only Direct and Side by Side have user-chosen models.  Battle sends
+      // no ids, Video is Battle-only, and Agent is always automatic.
+      if (allowsManualModels()) {
+        if (!state.modelAId) throw new ApiError("Model A not selected.");
+        body.model_id = state.modelAId;
+      }
+      if (state.mode === 'side-by-side') {
+        if (!state.modelBId) throw new ApiError("Model B not selected.");
+        body.model_id_b = state.modelBId;
+      }
+      const sentAttachments = turnAttachmentsFromComposer();
+      if (sentAttachments.length) body.attachments = sentAttachments;
+
+      const turn = makeGenerationTurn(text, chatId, sentAttachments);
+      if (!state.activeChatTitle || state.activeChatTitle === "New chat") {
+        state.activeChatTitle = truncate(text, 52);
+        const chat = state.chats.find((item) => item.id === String(chatId));
+        if (chat) chat.title = state.activeChatTitle;
+        else {
+          state.chats.unshift({ id: String(chatId), title: state.activeChatTitle, updated_at: new Date().toISOString(), mode: state.mode, modality: state.modality });
+        }
+      }
+      state.messages.push(turn);
+      state.artifacts = state.artifacts.filter((artifact) => artifact.chatId !== null || artifact.chatId === chatId);
+      if (els.prompt) els.prompt.value = '';
+      state.draft = '';
+      // The turn keeps its own preview URLs; the composer starts clean.
+      state.attachments = [];
+      renderAttachmentStrip();
+      resetPromptHeight();
+      const controller = new AbortController();
+      const generation = { turn, controller, chatId: String(chatId), hadError: false, done: false, finished: false, abortTimer: null, stopRequested: false };
+      state.generations.set(generation.chatId, generation);
+      state.chatTurns[generation.chatId] = state.messages;
+      markChatSeen(generation.chatId);
+      state.starting = false;
+      syncGenerationState();
+      setView('chat');
+      renderChatArea();
+      renderChats();
+      updateComposerState();
+      if (els.content) els.content.scrollTop = els.content.scrollHeight;
+      announce("Request sent. Awaiting response.");
+      try {
+        await API.streamChat(body, (event) => handleStreamEvent(event, generation), controller.signal);
+      } catch (error) {
+        if (!generation.done && !(generation.stopRequested && error?.name === 'AbortError')) {
+          markGenerationError(generation, errorMessage(error));
+          toast(errorMessage(error), 'error', "Generation interrupted");
+        } else if (generation.stopRequested) {
+          Object.values(turn.lanes).forEach((lane) => { lane.stopped = true; lane.streaming = false; });
+        }
+      } finally {
+        finishGeneration(generation, { aborted: controller.signal.aborted });
+      }
+    } catch (error) {
+      toast(errorMessage(error), 'error', "Request not sent");
+    } finally {
+      state.starting = false;
+      updateComposerState();
+    }
+  }
+
+  async function stopGeneration() {
+    if (state.stopping) return;
+    const generation = state.activeGeneration;
+    if (!generation && !state.remoteBusy) return;
+    state.stopping = true;
+    if (generation) generation.stopRequested = true;
+    state.stopRequested = Boolean(generation);
+    updateComposerState();
+    try {
+      await API.stop(generation ? generation.chatId : null);
+      if (generation) {
+        toast("Stop signal sent to the server. Waiting for the thread to finish.", 'info', "Stopping");
+        generation.abortTimer = window.setTimeout(() => {
+          if (!generation.finished) {
+            try { generation.controller.abort(); } catch { /* already closed */ }
+          }
+        }, 4200);
+      } else {
+        toast("Stop signal sent to the local server.", 'info', "Stopping");
+        window.setTimeout(() => { state.stopping = false; void loadStatus({ quiet: true }); }, 700);
+      }
+    } catch (error) {
+      state.stopping = false;
+      if (generation) generation.stopRequested = false;
+      state.stopRequested = false;
+      updateComposerState();
+      toast(errorMessage(error), 'error', "Failed to stop generation");
+    } finally {
+      if (!state.generating) {
+        state.stopping = false;
+        updateComposerState();
+      }
+    }
+  }
+
+  async function retryPendingHistory() {
+    if (state.activeChatId) await openChat(state.activeChatId, { retry: true });
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Popovers                                                              */
+  /* ---------------------------------------------------------------------- */
+  let activePopover = null;
+
+  function positionPopover(popover, trigger) {
+    if (!popover || !trigger) return;
+    popover.style.visibility = 'hidden';
+    popover.style.left = '8px';
+    popover.style.top = '8px';
+    const triggerRect = trigger.getBoundingClientRect();
+    const width = popover.offsetWidth || 320;
+    const height = popover.offsetHeight || 280;
+    const margin = 8;
+    const left = clamp(triggerRect.left, margin, window.innerWidth - width - margin);
+    const below = window.innerHeight - triggerRect.bottom - margin;
+    const above = triggerRect.top - margin;
+    let top;
+    if (below < Math.min(height, 280) && above > below) {
+      top = Math.max(margin, triggerRect.top - height - 7);
+    } else {
+      top = triggerRect.bottom + 7;
+      if (top + height > window.innerHeight - margin) top = Math.max(margin, window.innerHeight - height - margin);
+    }
+    popover.style.left = `${left}px`;
+    popover.style.top = `${top}px`;
+    popover.style.visibility = 'visible';
+  }
+
+  function closePopover(restoreFocus = true) {
+    if (!activePopover) return;
+    const reference = activePopover;
+    activePopover = null;
+    document.removeEventListener('pointerdown', reference.onOutside, true);
+    document.removeEventListener('keydown', reference.onKey, true);
+    reference.trigger?.setAttribute('aria-expanded', 'false');
+    reference.node?.remove();
+    try { reference.onClose?.(); } catch { /* noop */ }
+    if (restoreFocus && reference.trigger?.isConnected) {
+      try { reference.trigger.focus({ preventScroll: true }); } catch { reference.trigger.focus(); }
+    }
+  }
+
+  function openPopover(trigger, { title, subtitle, content, wide = false, menu = false, initialFocus = null, onClose = null, role = 'dialog' }) {
+    closePopover(false);
+    if (!trigger || !els.popoverRoot) return null;
+    const node = el('div', {
+      class: `popover${wide ? ' popover-wide' : ''}${menu ? ' popover-menu' : ''}`,
+      role,
+      'aria-label': title || 'Menu',
+      'data-popover': '1'
+    });
+    if (!menu) {
+      const closeButton = el('button', {
+        class: 'icon-button popover-close', type: 'button', 'aria-label': 'Close menu',
+        onclick: () => closePopover()
+      }, iconEl('x'));
+      const head = el('div', { class: 'popover-head' },
+        el('div', {}, el('p', { class: 'popover-title', text: title || 'Options' }), subtitle ? el('p', { class: 'popover-subtitle', text: subtitle }) : null),
+        closeButton
+      );
+      node.appendChild(head);
+    }
+    if (content) append(node, content);
+    els.popoverRoot.replaceChildren(node);
+    trigger.setAttribute('aria-expanded', 'true');
+
+    let outsideTarget = null;
+    const onOutside = (event) => {
+      if (!activePopover || activePopover.node !== node) return;
+      if (node.contains(event.target) || trigger.contains(event.target) || event.target.closest?.('.modal-backdrop')) return;
+      closePopover(false);
+    };
+    const onKey = (event) => {
+      if (!activePopover || activePopover.node !== node) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        closePopover();
+        return;
+      }
+      const options = $$('[role="option"], [data-popover-action]', node).filter((item) => item.getAttribute('aria-disabled') !== 'true' && !item.disabled);
+      if (!options.length) return;
+      const index = options.indexOf(document.activeElement);
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        const next = index < 0 || index >= options.length - 1 ? options[0] : options[index + 1];
+        next.focus();
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        const previous = index <= 0 ? options[options.length - 1] : options[index - 1];
+        previous.focus();
+      } else if (event.key === 'Home' && !event.target.matches('input, textarea')) {
+        event.preventDefault();
+        options[0].focus();
+      } else if (event.key === 'End' && !event.target.matches('input, textarea')) {
+        event.preventDefault();
+        options[options.length - 1].focus();
+      }
+    };
+    document.addEventListener('pointerdown', onOutside, true);
+    document.addEventListener('keydown', onKey, true);
+    activePopover = { node, trigger, onOutside, onKey, onClose };
+    positionPopover(node, trigger);
+    window.requestAnimationFrame(() => {
+      if (!activePopover || activePopover.node !== node) return;
+      const preferred = initialFocus && initialFocus.isConnected ? initialFocus : node.querySelector('[data-popover-autofocus]')
+        || node.querySelector('[aria-selected="true"]')
+        || node.querySelector('input')
+        || node.querySelector('button, [tabindex="-1"]');
+      if (preferred) {
+        try { preferred.focus({ preventScroll: true }); } catch { preferred.focus(); }
       }
     });
-    scrollBottom();
-    loadChatHistory();
-  } catch (_) {}
-}
+    return node;
+  }
 
-async function deleteChat(chatId) {
-  await api('/api/chats/' + chatId + '/delete', { method: 'POST' });
-  if (chatId === currentChatId) newChat();
-  loadChatHistory();
-}
+  function popoverNote(text) {
+    return el('p', { class: 'popover-note', text });
+  }
 
-function addToHistory(text) {
-  chatCounter++;
-  loadChatHistory();
-}
+  function popoverOption({ title, desc = '', icon = '', selected = false, disabled = false, danger = false, tag = '', meta = '', onClick = null }) {
+    const button = el('button', {
+      class: `popover-option${danger ? ' is-danger' : ''}`,
+      type: 'button',
+      role: 'option',
+      'aria-selected': String(Boolean(selected)),
+      'aria-disabled': disabled ? 'true' : false,
+      disabled
+    },
+      icon ? el('span', { class: 'option-icon' }, iconEl(icon)) : null,
+      el('span', { class: 'option-copy' },
+        el('span', { class: 'option-title' }, el('span', { text: title }), tag ? el('span', { class: 'option-tag', text: tag }) : null),
+        desc ? el('span', { class: 'option-desc', text: desc }) : null
+      ),
+      meta ? el('span', { class: 'model-option-meta', text: meta }) : null,
+      selected ? el('span', { class: 'option-check' }, iconEl('check')) : null
+    );
+    if (onClick && !disabled) button.addEventListener('click', onClick);
+    return button;
+  }
 
-/* ── Webdev File Tree ── */
-function _buildFileTree(files) {
-  if (!files || !files.length) return '';
-  return '<div class="wf-tree">' + files.map(f => {
-    const name = f.path.split('/').pop();
-    const ext = name.split('.').pop().toLowerCase();
-    const iconColors = {html:'#E34C26',js:'#F7DF1E',jsx:'#61DAFB',tsx:'#3178C6',css:'#563D7C',json:'#292929',py:'#3572A5',sql:'#336791',md:'#083FA1',svg:'#FFB13B',toml:'#9C4121',yaml:'#CB171E',yml:'#CB171E',sh:'#89E051',txt:'var(--text-muted)'};
-    const color = iconColors[ext] || 'var(--text-muted)';
-    return `<div class="wf-file" title="${esc(f.path)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>${esc(name)}</span></div>`;
-  }).join('') + '</div>';
-}
+  function openModePopover(trigger = els.modeButton) {
+    if (!trigger) return;
+    const list = el('div', { class: 'popover-list', role: 'listbox', 'aria-label': 'Mode' });
+    MODES.forEach((mode) => {
+      list.appendChild(popoverOption({
+        title: mode.title,
+        desc: mode.desc,
+        icon: mode.icon,
+        selected: state.mode === mode.id,
+        onClick: () => {
+          closePopover();
+          void changeMode(mode.id);
+        }
+      }));
+    });
+    openPopover(trigger, {
+      title: 'Mode',
+      menu: true,
+      role: 'listbox',
+      content: list
+    });
+  }
 
-/* ── IDE File Manager ── */
-let ideOpen = false;
-let ideFiles = [];
-let ideCwd = '.';
+  function openModalityPopover(trigger = els.modalityButton) {
+    if (!trigger || state.mode === 'agent') return;
+    const list = el('div', { class: 'popover-list', role: 'listbox', 'aria-label': 'Work type' });
+    modalityOptionsForMode(state.mode).forEach((modality) => {
+      list.appendChild(popoverOption({
+        title: modality.label,
+        desc: modality.desc,
+        icon: modality.icon,
+        selected: state.modality === modality.id,
+        onClick: () => {
+          closePopover();
+          void changeModality(modality.id);
+        }
+      }));
+    });
+    openPopover(trigger, {
+      title: 'Work type',
+      menu: true,
+      role: 'listbox',
+      content: list
+    });
+  }
 
-function toggleIDE() {
-  const panel = document.getElementById('idePanel');
-  ideOpen = !ideOpen;
-  panel.classList.toggle('collapsed', !ideOpen);
-  if (ideOpen) loadFileTree();
-}
+  function openPermissionModePopover(trigger = els.permissionButton) {
+    if (!trigger) return;
+    const list = el('div', { class: 'popover-list', role: 'listbox', 'aria-label': 'Permissions' });
+    PERMISSION_MODES.forEach((mode) => {
+      list.appendChild(popoverOption({
+        title: mode.label,
+        desc: mode.desc,
+        icon: mode.icon,
+        selected: state.permissionMode === mode.id,
+        danger: mode.danger,
+        tag: mode.danger ? 'Dangerous' : '',
+        onClick: () => {
+          closePopover();
+          void changePermissionMode(mode.id);
+        }
+      }));
+    });
+    openPopover(trigger, {
+      title: 'Permissions',
+      menu: true,
+      role: 'listbox',
+      content: list
+    });
+  }
 
-async function loadFileTree() {
-  try {
-    const data = await api('/api/files?path=' + encodeURIComponent(ideCwd));
-    if (data.files) {
-      ideFiles = data.files;
-      renderFileTree(data.files, data.cwd);
+  function openWorkspacePopover(trigger = els.workspaceButton) {
+    if (!trigger) return;
+    const path = state.workspace;
+    const list = el('div', { class: 'popover-list', role: 'listbox', 'aria-label': 'Workspace' });
+    list.appendChild(popoverOption({
+      title: path ? workspaceName() : 'No folder selected',
+      desc: path || 'Choose a folder for Local Agent and saved code',
+      icon: 'folder',
+      selected: true,
+      onClick: () => {
+        closePopover(false);
+        setWorkspacePanelOpen(true);
+      }
+    }));
+    list.appendChild(popoverOption({
+      title: 'Change folder…',
+      desc: state.nativeReady ? 'Pick a folder on this computer' : 'Enter the path in Settings',
+      icon: 'folder',
+      onClick: async () => {
+        closePopover(false);
+        if (!state.nativeReady) {
+          openSettings('workspace');
+          return;
+        }
+        await chooseNativeFolder();
+      }
+    }));
+    if (path) {
+      list.appendChild(popoverOption({
+        title: 'Open in Explorer',
+        icon: 'external',
+        onClick: async () => { closePopover(false); await openWorkspaceFolder(); }
+      }));
+      list.appendChild(popoverOption({
+        title: 'Show files',
+        icon: 'panel-right',
+        onClick: () => { closePopover(false); setWorkspacePanelOpen(true); }
+      }));
     }
-  } catch (e) {
-    document.getElementById('fileTree').innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:12px">Could not load files</div>';
-  }
-}
-
-function renderFileTree(files, cwd) {
-  const tree = document.getElementById('fileTree');
-  tree.innerHTML = '';
-  if (cwd) {
-    document.getElementById('ideCwd').textContent = cwd;
-    const upItem = document.createElement('div');
-    upItem.className = 'tree-item dir';
-    upItem.innerHTML = '<svg class="tree-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg><span class="tree-name">..</span>';
-    upItem.onclick = () => { ideCwd = cwd.split(/[\\/]/).slice(0, -1).join('/') || '.'; loadFileTree(); };
-    tree.appendChild(upItem);
-  }
-  const dirs = files.filter(f => f.is_dir).sort((a, b) => a.name.localeCompare(b.name));
-  const filesList = files.filter(f => !f.is_dir).sort((a, b) => a.name.localeCompare(b.name));
-  dirs.forEach(f => {
-    const item = document.createElement('div');
-    item.className = 'tree-item dir';
-    item.innerHTML = `<svg class="tree-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span class="tree-name">${esc(f.name)}</span>`;
-    item.onclick = () => { ideCwd = f.path; loadFileTree(); };
-    tree.appendChild(item);
-  });
-  filesList.forEach(f => {
-    const item = document.createElement('div');
-    item.className = 'tree-item';
-    const ext = f.name.split('.').pop().toLowerCase();
-    const iconColor = { py: '#3572A5', js: '#F7DF1E', html: '#E34C26', css: '#563D7C', json: '#292929', md: '#083FA1', txt: '#635E57' }[ext] || 'var(--text-muted)';
-    item.innerHTML = `<svg class="tree-icon" viewBox="0 0 24 24" fill="none" stroke="${iconColor}" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span class="tree-name">${esc(f.name)}</span>`;
-    item.onclick = () => openFile(f.path);
-    tree.appendChild(item);
-  });
-  document.getElementById('ideFileCount').textContent = `${files.length} items`;
-}
-
-async function openFile(path) {
-  try {
-    const data = await api('/api/files/read?path=' + encodeURIComponent(path));
-    if (data.content !== undefined) {
-      document.getElementById('welcome').style.display = 'none';
-      document.getElementById('settingsPanel').style.display = 'none';
-      const msgsEl = document.getElementById('messages');
-      msgsEl.style.display = '';
-      msgsEl.classList.add('active');
-      msgsEl.innerHTML = '';
-      const el = document.createElement('div');
-      el.className = 'message';
-      const fileName = path.split(/[\\/]/).pop();
-      el.innerHTML = `
-        <div class="msg-header">
-          <span class="msg-role user" style="font-family:'JetBrains Mono',monospace;font-size:12px">${esc(path)}</span>
-          <div class="spacer" style="flex:1"></div>
-          <button class="icon-btn" onclick="saveFileFromEditor('${esc(path).replace(/'/g, "\\'")}')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
-        </div>
-        <div class="code-editor">
-          <textarea id="editorContent" spellcheck="false">${esc(data.content)}</textarea>
-        </div>
-      `;
-      msgsEl.appendChild(el);
+    if (state.workspaceChosen) {
+      list.appendChild(popoverOption({
+        title: 'Use default folder',
+        desc: 'ArenaProjects\\workspace',
+        icon: 'x',
+        onClick: async () => {
+          closePopover(false);
+          try {
+            const result = await API.clearWorkspace();
+            state.workspace = normalizeWorkspace(result?.workspace ?? result?.path) || state.workspace;
+            state.workspaceChosen = false;
+            state.workspacePanelRoot = '';
+            resetWorkspaceTree();
+            updateComposerState();
+            renderWorkspaceTreePanel();
+            toast('Back to the default workspace folder.', 'success');
+          } catch (error) {
+            toast(errorMessage(error), 'error', 'Folder not changed');
+          }
+        }
+      }));
     }
-  } catch (e) {}
-}
-
-async function saveFileFromEditor(path) {
-  const content = document.getElementById('editorContent')?.value;
-  if (content === undefined) return;
-  try {
-    const r = await api('/api/files/write', { method: 'POST', body: JSON.stringify({ path, content }) });
-    if (r.ok) {
-      const el = document.createElement('div');
-      el.className = 'status-msg ok';
-      el.style.cssText = 'position:fixed;top:12px;right:12px;z-index:999;animation:fadeIn .15s';
-      el.textContent = 'Saved';
-      document.body.appendChild(el);
-      setTimeout(() => el.remove(), 2000);
-    }
-  } catch (e) {}
-}
-
-async function ideNewFile() {
-  const name = prompt('File name:');
-  if (!name) return;
-  const path = ideCwd === '.' ? name : ideCwd + '/' + name;
-  await api('/api/files/write', { method: 'POST', body: JSON.stringify({ path, content: '' }) });
-  loadFileTree();
-}
-
-async function ideNewFolder() {
-  const name = prompt('Folder name:');
-  if (!name) return;
-  const path = ideCwd === '.' ? name : ideCwd + '/' + name;
-  await api('/api/files/mkdir', { method: 'POST', body: JSON.stringify({ path }) });
-  loadFileTree();
-}
-
-function ideRefresh() { loadFileTree(); }
-
-/* ── Terminal ── */
-let terminalOpen = false;
-
-function toggleTerminal() {
-  const panel = document.getElementById('terminalPanel');
-  terminalOpen = !terminalOpen;
-  panel.classList.toggle('collapsed', !terminalOpen);
-  if (terminalOpen) document.getElementById('terminalInput').focus();
-}
-
-function clearTerminal() {
-  document.getElementById('terminalOutput').innerHTML = '';
-}
-
-async function runCommand() {
-  const input = document.getElementById('terminalInput');
-  const cmd = input.value.trim();
-  if (!cmd) return;
-  input.value = '';
-  const output = document.getElementById('terminalOutput');
-  output.innerHTML += `<div style="color:var(--brand-green)">$ ${esc(cmd)}</div>`;
-  try {
-    const r = await api('/api/terminal', { method: 'POST', body: JSON.stringify({ command: cmd }) });
-    if (r.output) output.innerHTML += `<div>${esc(r.output)}</div>`;
-    if (r.error) output.innerHTML += `<div style="color:var(--interactive-negative)">${esc(r.error)}</div>`;
-  } catch (e) {
-    output.innerHTML += `<div style="color:var(--interactive-negative)">Error: ${esc(e.message)}</div>`;
-  }
-  output.scrollTop = output.scrollHeight;
-}
-
-/* ── Voting ── */
-function castVote(btn, choice) {
-  const row = btn.closest('.vote-row');
-  row.querySelectorAll('.vote-btn').forEach(b => b.classList.remove('selected'));
-  btn.classList.add('selected');
-  row.querySelector('.vote-label').textContent = choice === 'a' ? 'You picked Model A' : choice === 'b' ? 'You picked Model B' : choice === 'tie' ? 'You said it\'s a tie' : 'You said both were bad';
-  row.classList.add('voted');
-}
-
-/* ── Markdown ── */
-if (window.marked) marked.use({ renderer: { html(t) { return esc(typeof t === 'string' ? t : (t.raw || t.text || '')); } } });
-
-function renderMd(text) {
-  // Model output is untrusted: raw HTML is shown as text and only safe link schemes survive.
-  if (!text) return '';
-  let html;
-  try { html = marked.parse(text, { breaks: true, gfm: true }); } catch (_) { return esc(text); }
-  const tpl = document.createElement('template');
-  tpl.innerHTML = html;
-  tpl.content.querySelectorAll('[href],[src]').forEach(n => {
-    for (const a of ['href', 'src']) {
-      const v = n.getAttribute(a);
-      if (v !== null && !/^(https?:|mailto:|#|data:image\/)/i.test(v.trim())) n.removeAttribute(a);
-    }
-  });
-  tpl.content.querySelectorAll('a[href]').forEach(a => { a.target = '_blank'; a.rel = 'noopener noreferrer'; });
-  return tpl.innerHTML;
-}
-
-function hlAll(container) {
-  container.querySelectorAll('pre code').forEach(block => {
-    try { hljs.highlightElement(block); } catch (_) {}
-  });
-}
-
-function addCopyBtns(container) {
-  container.querySelectorAll('pre').forEach(pre => {
-    if (pre.querySelector('.copy-btn')) return;
-    const btn = document.createElement('button');
-    btn.className = 'copy-btn';
-    btn.title = 'Copy';
-    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-    btn.onclick = () => {
-      const code = pre.querySelector('code');
-      navigator.clipboard.writeText(code ? code.textContent : pre.textContent);
-      btn.classList.add('copied');
-      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
-      setTimeout(() => {
-        btn.classList.remove('copied');
-        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-      }, 2000);
-    };
-    pre.appendChild(btn);
-  });
-}
-
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-/* ── Dropdowns ── */
-function toggleDD(id) {
-  const menu = document.getElementById(id);
-  const wasOpen = menu.classList.contains('open');
-  closeAllDD();
-  if (!wasOpen) {
-    menu.classList.add('open');
-    menu.closest('.dropdown').querySelector('.sel-btn')?.classList.add('open');
-    const searchInput = menu.querySelector('.dd-search input');
-    if (searchInput) setTimeout(() => searchInput.focus(), 50);
-    if (id === 'modelMenu' || id === 'modelMenuB') loadModels();
-  }
-}
-
-function closeAllDD() {
-  document.querySelectorAll('.dropdown-menu').forEach(m => m.classList.remove('open'));
-  document.querySelectorAll('.sel-btn').forEach(b => b.classList.remove('open'));
-}
-
-document.addEventListener('click', e => {
-  if (!e.target.closest('.dropdown')) closeAllDD();
-  if (!e.target.closest('.sidebar-user-wrap')) closeAccountMenu();
-});
-
-document.getElementById('loginModal').addEventListener('click', e => {
-  if (e.target === e.currentTarget) closeLogin();
-});
-
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    closeAllDD();
-    closeAccountMenu();
-    closeLogin();
-    if (document.getElementById('settingsPanel').style.display !== 'none') closeSettings();
-  }
-  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-    e.preventDefault();
-    const editor = document.getElementById('editorContent');
-    if (editor) {
-      const pathEl = document.querySelector('.msg-role.user');
-      if (pathEl) saveFileFromEditor(pathEl.textContent);
-    }
-  }
-});
-
-/* Drag and drop files */
-document.addEventListener('dragover', e => { e.preventDefault(); });
-document.addEventListener('drop', e => {
-  e.preventDefault();
-  const files = Array.from(e.dataTransfer.files);
-  if (files.length) addFiles(files);
-});
-
-/* ── Permission modes (Claude Code style) ── */
-const PERM_LABELS = { default: 'Ask before edits', acceptEdits: 'Accept edits', auto: 'Auto', plan: 'Plan mode', bypassPermissions: 'Bypass permissions' };
-const PERM_ORDER = ['default', 'acceptEdits', 'auto', 'plan', 'bypassPermissions'];
-const PERM_HELP = {
-  default: 'Asks before every file change and command. Reading inside the project folder is free.',
-  acceptEdits: 'Creates and edits files without asking. Deletes and commands still ask.',
-  auto: 'Works freely inside the project folder. Risky commands and anything outside the folder ask.',
-  plan: 'Read only. The model looks around and proposes a plan; nothing changes.',
-  bypassPermissions: 'Never asks. Catastrophic commands (format, rm -rf /, ...) stay blocked.',
-};
-let permMode = 'default';
-
-function updatePermUI() {
-  const label = document.getElementById('permLabel');
-  if (label) {
-    label.textContent = PERM_LABELS[permMode];
-    label.hidden = (permMode === 'default');
-  }
-  document.getElementById('permBtn')?.setAttribute('data-perm', permMode);
-  document.querySelectorAll('#permMenu .dd-item').forEach(i => i.classList.toggle('sel', i.dataset.perm === permMode));
-  const sel = document.getElementById('settingsPerm');
-  if (sel) sel.value = permMode;
-}
-
-function toggleAdv() {
-  const m = document.getElementById('permMenu');
-  if (!m) return;
-  const wasOpen = m.classList.contains('open');
-  closeAllDD();
-  if (!wasOpen) m.classList.add('open');
-}
-
-function closeAdv() { document.getElementById('permMenu')?.classList.remove('open'); }
-
-document.addEventListener('click', e => {
-  if (!e.target.closest('.dropdown')) closeAllDD();
-  if (!e.target.closest('.adv-wrap')) closeAdv();
-  if (!e.target.closest('.h-menu')) closeChatMenu();
-  if (!e.target.closest('.sidebar-user-wrap')) closeAccountMenu();
-});
-
-async function setPerm(mode) {
-  closeAllDD();
-  if (mode === 'bypassPermissions' && permMode !== mode &&
-      !confirm('Bypass permissions lets the model create, edit and delete files and run commands without asking. Only catastrophic commands stay blocked. Turn it on?')) {
-    updatePermUI();
-    return;
-  }
-  const r = await api('/api/permission-mode', { method: 'POST', body: JSON.stringify({ mode }) });
-  if (!r.ok) return notice(r.error || 'Could not change the permission mode', 'err');
-  permMode = r.mode;
-  updatePermUI();
-  notice('Permission mode: ' + PERM_LABELS[permMode]);
-}
-
-function cyclePerm() {
-  // Shift+Tab, like Claude Code; bypass is only reachable on purpose
-  const order = ['default', 'acceptEdits', 'auto', 'plan'];
-  setPerm(order[(order.indexOf(permMode) + 1) % order.length]);
-}
-
-async function answerPermission(pid, decision, card) {
-  card.querySelectorAll('button').forEach(b => { b.disabled = true; });
-  try {
-    const r = await api('/api/permissions/' + encodeURIComponent(pid), { method: 'POST', body: JSON.stringify({ decision }) });
-    if (!r.ok) notice(r.error, 'warn');
-  } catch (e) {
-    notice('Could not send the answer: ' + e.message, 'err');
-  }
-}
-
-/* ── arena.ai window (engine) ── */
-async function showEngine() {
-  const r = await api('/api/engine/show', { method: 'POST' });
-  if (!r.ok) notice(r.error, 'warn');
-}
-
-async function stopStreaming() {
-  try { await api('/api/stop', { method: 'POST' }); } catch (_) {}
-  if (streamAbort) streamAbort.abort();  // frees the UI even when arena.ai is slow to stop
-}
-
-/* ── Toasts ── */
-function notice(text, level = 'info') {
-  const box = document.getElementById('toasts');
-  if (!box || !text) return;
-  const t = document.createElement('div');
-  t.className = 'toast ' + level;
-  t.textContent = text;
-  box.appendChild(t);
-  setTimeout(() => t.remove(), level === 'err' ? 9000 : 4500);
-}
-
-/* ── Slash commands ── */
-const SLASH = [
-  ['/new', 'Start a new chat'], ['/clear', 'Clear the screen'], ['/help', 'Commands and shortcuts'],
-  ['/settings', 'Open settings'], ['/login', 'Sign in to arena.ai'], ['/logout', 'Sign out'],
-  ['/mode', 'battle | direct | side-by-side | agent'], ['/modality', 'auto | text | code | search | image | video'],
-  ['/model', 'Pick a model by name'], ['/perm', 'default | acceptEdits | auto | plan | bypassPermissions'],
-  ['/plan', 'Turn on plan mode (read only)'], ['/folder', 'Set the agent project folder'],
-  ['/doctor', 'Check the connection to arena.ai'], ['/arena', 'Show the arena.ai window'], ['/stop', 'Stop the reply'],
-];
-const SLASH_ARGS = ['/mode', '/modality', '/model', '/perm', '/folder'];
-let slashIdx = 0;
-
-function updateSlash() {
-  const v = document.getElementById('chatInput').value;
-  const menu = document.getElementById('slashMenu');
-  if (!menu) return;
-  const m = v.startsWith('/') && !/\s/.test(v) ? SLASH.filter(([c]) => c.startsWith(v.toLowerCase())) : [];
-  if (!m.length) { menu.classList.remove('open'); return; }
-  slashIdx = Math.min(slashIdx, m.length - 1);
-  menu.innerHTML = m.map(([c, d], i) => `<div class="slash-item${i === slashIdx ? ' sel' : ''}" onmousedown="event.preventDefault();completeSlash('${c}', true)"><span class="slash-cmd">${c}</span><span class="slash-desc">${esc(d)}</span></div>`).join('');
-  menu.classList.add('open');
-}
-
-function hideSlash() { document.getElementById('slashMenu')?.classList.remove('open'); }
-
-function completeSlash(cmd, run) {
-  const input = document.getElementById('chatInput');
-  hideSlash();
-  if (run && !SLASH_ARGS.includes(cmd)) {
-    input.value = '';
-    runSlash(cmd);
-  } else {
-    input.value = cmd + ' ';
-  }
-  autoResize(input);
-  updateSendBtn();
-  input.focus();
-}
-
-function runSlash(text) {
-  const [cmd, ...rest] = text.trim().split(/\s+/);
-  const arg = rest.join(' ');
-  const low = arg.toLowerCase();
-  switch (cmd.toLowerCase()) {
-    case '/new': newChat(); return true;
-    case '/clear': document.getElementById('messages').innerHTML = ''; return true;
-    case '/help': case '/?': showHelp(); return true;
-    case '/settings': showSettings(); return true;
-    case '/login': showLogin(); return true;
-    case '/logout': logout(); return true;
-    case '/doctor': runDoctor(true); return true;
-    case '/arena': showEngine(); return true;
-    case '/stop': stopStreaming(); return true;
-    case '/plan': setPerm('plan'); return true;
-    case '/perm':
-      if (PERM_ORDER.includes(arg)) setPerm(arg); else notice('Permission modes: ' + PERM_ORDER.join(', '), 'warn');
-      return true;
-    case '/mode':
-      if (MODE_LABELS[low]) selectMode(low); else notice('Modes: battle, direct, side-by-side, agent', 'warn');
-      return true;
-    case '/modality':
-      if (['auto', 'text', 'code', 'search', 'image', 'video'].includes(low)) selectModality(low);
-      else notice('Modalities: auto, text, code, search, image, video', 'warn');
-      return true;
-    case '/folder':
-      if (arg) setWorkspace(arg); else chooseWorkspace();
-      return true;
-    case '/model': {
-      const m = low && models.find(x => (x.name || '').toLowerCase().includes(low) || x.id === arg);
-      if (m) { selectModel(m); notice('Model: ' + m.name); } else notice(low ? `No model matches "${arg}"` : 'Usage: /model <name>', 'warn');
-      return true;
-    }
-  }
-  if (/^\/[a-z?]+$/i.test(cmd)) { notice(`Unknown command ${cmd}. Type /help for the list.`, 'warn'); return true; }
-  return false;
-}
-
-/* ── Help ── */
-function showHelp() {
-  const keys = [['Enter', 'Send'], ['Shift+Enter', 'New line'], ['Shift+Tab', 'Cycle permission mode'], ['Tab', 'Complete a / command'],
-    ['F1', 'Help'], ['Ctrl+,', 'Settings'], ['Ctrl+N', 'New chat'], ['Esc', 'Close menus and dialogs']];
-  document.getElementById('helpBody').innerHTML = `
-    <h3>Getting started</h3><ol class="settings-note help-steps">
-      <li>Press <b>Sign in</b> and log in on the arena.ai page that opens inside the app. The app picks up your arena.ai session by itself.</li>
-      <li>Pick a mode and a model, then type your message.</li>
-      <li>For <b>Agent</b>, pick a project folder (Settings, Workspace) and a permission mode. The agent reads and writes files only in that folder, and uses the <b>Auto</b> modality only.</li></ol>
-    <h3>Commands</h3><div class="help-grid">${SLASH.map(([c, d]) => `<code>${c}</code><span>${esc(d)}</span>`).join('')}</div>
-    <h3>Shortcuts</h3><div class="help-grid">${keys.map(([k, d]) => `<kbd>${k}</kbd><span>${d}</span>`).join('')}</div>
-    <h3>Chat modes</h3><div class="help-grid">
-      <b>Battle</b><span>Two anonymous models answer; vote for the better one.</span>
-      <b>Side by Side</b><span>Two models you pick answer the same message.</span>
-      <b>Direct</b><span>One model you pick.</span>
-      <b>Agent</b><span>One model you pick works in your project folder with file and command tools, under the permission mode.</span></div>
-    <h3>Permission modes</h3><div class="help-grid">${PERM_ORDER.map(m => `<b>${PERM_LABELS[m]}</b><span>${PERM_HELP[m]}</span>`).join('')}</div>
-    <h3>Code answers</h3><p class="settings-note">Code mode answers are written to a local project folder (one per model), so you keep real files. Use Open folder, Download zip or Local preview on the answer.</p>
-    <h3>Human checks</h3><p class="settings-note">When arena.ai asks for a reCAPTCHA or Cloudflare check, the app opens arena.ai in a pane on the right of this window so you can finish it there. The app never solves checks for you.</p>
-    <p class="settings-note">Unofficial client. Your use of arena.ai falls under arena.ai's Terms of Use, Privacy Policy and Cookie Policy, linked at the bottom of arena.ai.</p>
-    <div class="card-actions"><button class="btn btn-secondary" onclick="closeHelp();runDoctor(true)">Run diagnostics</button><button class="btn btn-secondary" onclick="closeHelp();showLogin()">Sign in</button><a class="btn btn-secondary" href="https://arena.ai" target="_blank" rel="noopener">Open arena.ai</a></div>`;
-  document.getElementById('helpModal').classList.add('open');
-}
-
-function closeHelp() { document.getElementById('helpModal')?.classList.remove('open'); }
-
-/* ── Diagnostics and workspace ── */
-async function runDoctor(open) {
-  if (open) showSettings(true);
-  const out = document.getElementById('doctorOut');
-  if (!out) return;
-  out.innerHTML = '<div class="thinking"><div class="spinner"></div> Checking...</div>';
-  out.scrollIntoView({ block: 'nearest' });
-  try {
-    const r = await api('/api/doctor');
-    out.innerHTML = r.checks.map(c => {
-      const cls = c.ok === true ? 'ok' : c.ok === false ? 'bad' : 'warn';
-      return `<div class="diag-row ${cls}"><span class="st">${c.ok === true ? '&#10003;' : c.ok === false ? '&#10007;' : '!'}</span><b>${esc(c.name)}</b><span class="dd">${esc(c.detail)}</span></div>`;
-    }).join('');
-  } catch (e) {
-    out.innerHTML = `<div class="diag-row bad"><span class="st">&#10007;</span><span class="dd">Diagnostics failed: ${esc(e.message)}</span></div>`;
-  }
-}
-
-async function setWorkspace(path) {
-  const r = await api('/api/workspace/set', { method: 'POST', body: JSON.stringify({ path }) });
-  if (!r.ok) return notice(r.error, 'err');
-  const el = document.getElementById('settingsWorkspace');
-  if (el) el.textContent = r.workspace;
-  updateWsChip(r.workspace);
-  notice('Agent project folder: ' + r.workspace, 'ok');
-}
-
-async function chooseWorkspace() {
-  let path = null;
-  if (window.pywebview?.api?.choose_folder) path = await window.pywebview.api.choose_folder();
-  else path = prompt('Full path of the project folder for Agent mode:');
-  if (path) setWorkspace(path);
-}
-
-function hideSplash() {
-  const b = document.getElementById('bootSplash');
-  if (!b) return;
-  b.classList.add('gone');
-  setTimeout(() => b.remove(), 300);
-}
-setTimeout(hideSplash, 8000);
-
-function toolCardHtml(t) {
-  const st = t.diff ? diffStats(t.diff) : null;
-  return `<div class="card tool ${t.ok ? 'ok' : 'err'}${st ? ' has-diff' : ''}"><div class="card-head"><span class="tag">${esc(KIND_LABEL[t.tool] || t.tool)}</span><span class="card-sub">${esc(t.summary || '')}</span>`
-    + (st ? `<span class="diff-stat"><b class="add">+${st.add}</b> <b class="del">-${st.del}</b></span>` : '')
-    + `<span class="tool-state">${t.ok ? 'done' : esc(t.status || 'failed')}</span></div>`
-    + (t.diff ? `<details class="diff-drop"><summary>Show changes</summary><pre class="diff">${diffHtml(t.diff)}</pre></details>` : '') + '</div>';
-}
-
-function toggleArenaPane() {
-  return document.body.classList.contains('arena-pane') ? closeArenaPane() : showEngine();
-}
-
-function updateWsChip(path) {
-  const name = document.getElementById('wsChipName'), chip = document.getElementById('wsChip');
-  if (!name || !chip) return;
-  const parts = String(path || '').split(/[\\/]/).filter(Boolean);
-  name.textContent = parts.length ? parts[parts.length - 1] : 'Pick folder';
-  chip.title = path ? `Project folder: ${path}\nClick to change` : 'Pick a project folder for Agent mode';
-}
-
-/* Called by the desktop shell when the arena.ai pane opens or closes inside this window. */
-function arenaPane(open, share) {
-  if (share) document.documentElement.style.setProperty('--pane-w', (share * 100).toFixed(2) + 'vw');
-  document.body.classList.toggle('arena-pane', !!open);
-}
-
-async function closeArenaPane() {
-  arenaPane(false);
-  await api('/api/engine/hide', { method: 'POST' });
-}
-
-function diffStats(d) {
-  let add = 0, del = 0;
-  for (const l of String(d || '').split('\n')) {
-    if (l.startsWith('+') && !l.startsWith('+++')) add++;
-    else if (l.startsWith('-') && !l.startsWith('---')) del++;
-  }
-  return { add, del };
-}
-
-async function openFolder(path) {
-  const r = await api('/api/workspace/open', { method: 'POST', body: JSON.stringify({ path }) });
-  if (!r.ok) notice(r.error, 'warn');
-}
-
-async function saveWebdev(chatId, lane, btn, card) {
-  btn.disabled = true;
-  const r = await api('/api/workspace/save', { method: 'POST', body: JSON.stringify({ chat_id: chatId, lane }) });
-  if (!r.ok) { btn.disabled = false; return notice(r.error, 'err'); }
-  card.classList.add('ok');
-  card.querySelector('.card-title').textContent = 'Saved on this computer';
-  btn.remove();
-  if (r.preview) {
-    const b = document.createElement('button');
-    b.className = 'btn btn-secondary';
-    b.textContent = 'Local preview';
-    b.onclick = () => window.open(r.preview, '_blank');
-    card.querySelector('.card-actions').appendChild(b);
-  }
-  notice(`Saved ${r.written} file(s) to ${r.root}`, 'ok');
-}
-
-async function saveMedia(url, btn) {
-  btn.disabled = true;
-  const r = await api('/api/media/save', { method: 'POST', body: JSON.stringify({ url }) });
-  btn.disabled = false;
-  if (!r.ok) return notice(r.error, 'err');
-  btn.textContent = 'Saved';
-  notice('Saved to ' + r.path, 'ok');
-}
-
-/* ── Reply view: renders one streamed answer ── */
-const KIND_LABEL = { read_file: 'Read', ls: 'List', search: 'Search', write_file: 'Write', edit_file: 'Edit', mkdir: 'New folder', delete: 'Delete', run_cmd: 'Run', write_project: 'Save project' };
-const ALWAYS_LABEL = { write_file: 'edits', edit_file: 'edits', mkdir: 'edits', write_project: 'edits', delete: 'deletes', run_cmd: 'commands', read_file: 'reads', ls: 'reads', search: 'reads' };
-const ERR_TITLES = {
-  network: 'Cannot reach arena.ai', cloudflare: 'Cloudflare check needed', challenge: 'Human check needed', auth: 'Not signed in',
-  rate_limit: 'Too many messages', bad_request: 'arena.ai rejected the request', client_bug: 'App bug', eval_gone: 'Conversation expired',
-  too_large: 'Message too large', server: 'arena.ai is having trouble', forbidden: 'arena.ai refused the request', model: 'The model stopped',
-  internal: 'App error',
-};
-
-function attr(s) { return esc(String(s ?? '')).replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
-function safeUrl(u) { u = String(u || ''); return /^(https?:|data:(image|video|audio)\/)/i.test(u) ? u : '#'; }
-function stripTools(raw) { return raw.replace(/<tool\s+name\s*=\s*["']?[\w-]+["']?\s*>[\s\S]*?(?:<\/tool\s*>|$)/gi, '').replace(/```[\w-]*[ \t]*\n?\s*```/g, ''); }
-function diffHtml(d) {
-  return String(d || '').split('\n').map(l => {
-    const cls = l.startsWith('+') && !l.startsWith('+++') ? 'add' : l.startsWith('-') && !l.startsWith('---') ? 'del' : l.startsWith('@@') ? 'hunk' : '';
-    return `<span class="${cls}">${esc(l)}</span>`;
-  }).join('');
-}
-
-// Activity rows for arena.ai's own sandbox steps ("Created src/App.tsx"), like arena.ai shows them.
-const SB_ICONS = {
-  write: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M12 18v-6M9 15h6"/>',
-  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
-  run: '<path d="m4 17 6-6-6-6M12 19h8"/>',
-  read: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
-};
-function sandboxRowHtml(r) {
-  const key = { write: r.verb === 'Created' ? 'write' : 'edit', edit: 'edit', download: 'write', delete: 'edit', touch: 'edit', run: 'run' }[r.kind] || 'read';
-  const target = r.kind === 'run' ? (r.detail || '') : (r.path || r.detail || '');
-  const stats = (r.add || r.del) ? `<span class="diff-stat"><b class="add">+${r.add || 0}</b> <b class="del">-${r.del || 0}</b></span>` : '';
-  const note = r.error ? `<span class="sb-note warn-text">${esc(r.error)}</span>` : (r.abs ? '<span class="sb-note">on your PC</span>' : '');
-  return `<svg class="sb-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${SB_ICONS[key]}</svg>`
-    + `<span class="sb-verb">${esc(r.verb || r.kind)}</span><span class="sb-path">${esc(target)}</span>${stats}<span class="sb-state"></span>${note}`;
-}
-function sandboxRow(r) {
-  return `<div class="sb-row${r.ok === false ? ' err' : r.ok ? ' ok' : ''}"${r.abs ? ` data-abs="${esc(r.abs)}"` : ''}>${sandboxRowHtml(r)}</div>`;
-}
-document.addEventListener('click', e => {
-  const row = e.target.closest && e.target.closest('.sb-row[data-abs]');
-  if (row) openFile(row.dataset.abs);
-});
-
-class ReplyView {
-  constructor(el) {
-    this.el = el;
-    this.body = el.querySelector('.msg-content');
-    this.lanes = {};
-    this.tools = [];
-    this.perms = {};
-    this.sources = {};
-    this.previews = {};
-    this.mode = currentMode;
-    this.failed = false;
-    this.finished = false;
-    this.body.innerHTML = '<div class="thinking"><div class="spinner"></div> Waiting for arena.ai...</div>';
+    openPopover(trigger, {
+      title: 'Workspace',
+      menu: true,
+      role: 'listbox',
+      content: list
+    });
   }
 
-  setup(meta) {
-    this.mode = meta.mode || this.mode;
-    this.chatId = meta.chat_id || this.chatId;
-    const dual = !!meta.dual;
-    const name = l => this.mode === 'battle' ? 'Model ' + l.toUpperCase() : (meta.names?.[l] || (l === 'a' ? selectedModel : selectedModelB)?.name || 'Model ' + l.toUpperCase());
-    this.body.innerHTML = dual
-      ? `<div class="sbs-grid">${['a', 'b'].map(l => `<div class="sbs-col"><div class="sbs-head"><span class="sbs-badge ${l}">${l.toUpperCase()}</span>${esc(name(l))}</div><div class="lane" data-lane="${l}"></div></div>`).join('')}</div>`
-      : '<div class="lane" data-lane="a"></div>';
-    const role = this.el.querySelector('.msg-role');
-    if (role && !dual && this.mode !== 'battle') role.textContent = name('a');
-    this.lanes = {};
-    for (const l of dual ? ['a', 'b'] : ['a']) this.lanes[l] = { root: this.body.querySelector(`.lane[data-lane="${l}"]`), seg: null, r: null };
-  }
-
-  lane(l) {
-    if (!this.lanes.a) this.setup({});
-    return this.lanes[l] || this.lanes.a;
-  }
-
-  add(l, cls, html) {
-    const ln = this.lane(l);
-    const d = document.createElement('div');
-    d.className = cls;
-    d.innerHTML = html;
-    ln.root.appendChild(d);
-    ln.seg = null;
-    ln.r = null;
-    scrollBottom();
-    return d;
-  }
-
-  text(l, t) {
-    const ln = this.lane(l);
-    if (!ln.seg) {
-      const seg = this.add(l, 'seg streaming-cursor', '');
-      seg.raw = '';
-      ln.seg = seg;
-    }
-    const seg = ln.seg;
-    seg.raw += t;
-    if (!seg.pending) {
-      seg.pending = true;
-      requestAnimationFrame(() => this.paint(seg));
-    }
-  }
-
-  paint(seg) {
-    seg.pending = false;
-    seg.innerHTML = renderMd(stripTools(seg.raw || ''));
-    scrollBottom();
-  }
-
-  reasoning(l, t) {
-    const ln = this.lane(l);
-    if (!ln.r) {
-      const r = this.add(l, 'reasoning', '<details><summary>Thinking</summary><div class="r-body"></div></details>');
-      ln.r = r;
-    }
-    ln.r.querySelector('.r-body').textContent += t;
-  }
-
-  handle(ev) {
-    const l = ev.model || 'a';
-    switch (ev.type) {
-      case 'meta': this.setup(ev); break;
-      case 'text': this.text(l, ev.text || ''); break;
-      case 'reasoning': this.reasoning(l, ev.text || ''); break;
-      case 'source': (this.sources[l] = this.sources[l] || []).push(ev.data); break;
-      case 'agent': this.add('a', 'notice-line', `Files: <code>${esc(ev.root)}</code> &middot; ${esc(PERM_LABELS[ev.mode] || ev.mode)}${ev.dual ? ' &middot; A writes to option-a, B to option-b' : ''}`); break;
-      case 'round': this.add('a', 'notice-line', `Round ${esc(ev.n)}`); break;
-      case 'notice': this.add(l, 'notice-line', esc(ev.text)); break;
-      case 'tool_call': this.toolCall(ev); break;
-      case 'tool_result': this.toolResult(ev); break;
-      case 'sandbox': this.sandbox(l, ev); break;
-      case 'sandbox_done': this.sandboxDone(ev); break;
-      case 'permission': this.permission(ev); break;
-      case 'permission_done': this.permissionDone(ev); break;
-      case 'webdev': this.webdev(l, ev); break;
-      case 'files_written': this.files(l, ev); break;
-      case 'preview': this.preview(l, ev); break;
-      case 'media': this.media(l, ev); break;
-      case 'challenge': this.challenge(ev); break;
-      case 'challenge_done': this.challengeDone(); break;
-      case 'error': this.error(ev); break;
-      case 'done': this.done(ev); break;
-    }
-  }
-
-  sandbox(l, ev) {
-    const key = l + ':' + ev.id;
-    const old = (this.rows = this.rows || {})[key];
-    const row = old && ev.id ? old : this.add(l, 'sb-row', '');
-    row.className = 'sb-row' + (ev.pending ? ' pending' : '');
-    row.innerHTML = sandboxRowHtml(ev);
-    if (ev.abs) row.dataset.abs = ev.abs;
-    this.rows[key] = row;
-  }
-
-  sandboxDone(ev) {
-    const row = (this.rows || {})[(ev.model || 'a') + ':' + ev.id];
-    if (row) row.classList.add(ev.ok ? 'ok' : 'err');
-  }
-
-  toolCall(ev) {
-    const st = ev.diff ? diffStats(ev.diff) : null;
-    const card = this.add(ev.model || 'a', 'card tool' + (st ? ' has-diff' : ''), `<div class="card-head"><span class="tag">${esc(KIND_LABEL[ev.tool] || ev.tool)}</span><span class="card-sub">${esc(ev.summary || ev.rel || '')}</span>`
-      + (st ? `<span class="diff-stat"><b class="add">+${st.add}</b> <b class="del">-${st.del}</b></span>` : '') + `<span class="tool-state">...</span></div>`
-      + (ev.diff ? `<details class="diff-drop"><summary>Show changes</summary><pre class="diff">${diffHtml(ev.diff)}</pre></details>` : '')
-      + '<div class="tool-out"></div>');
-    this.tools.push(card);
-  }
-
-  toolResult(ev) {
-    const card = this.tools.shift();
-    if (!card) return;
-    card.classList.add(ev.ok ? 'ok' : 'err');
-    card.querySelector('.tool-state').textContent = ev.ok ? 'done' : (ev.status || 'failed');
-    if (ev.output) card.querySelector('.tool-out').textContent = ev.output;
-  }
-
-  permission(ev) {
-    const files = ev.files ? `<div class="file-list">${ev.files.map(esc).join('<br>')}</div>` : '';
-    const outside = ev.inside === false ? `<div class="card-sub warn-text">Outside the project folder: ${esc(ev.path)}</div>` : '';
-    const card = this.add(ev.model || 'a', 'card perm', `<div class="card-head"><span class="card-title">Allow this?</span><span class="tag">${esc(PERM_LABELS[ev.mode] || '')}</span></div>`
-      + `<div class="card-sub">${esc(ev.summary || '')}</div>${outside}`
-      + (ev.command ? `<pre class="diff">${esc(ev.command)}</pre>` : '') + (ev.diff ? `<pre class="diff">${diffHtml(ev.diff)}</pre>` : '') + files
-      + `<div class="card-actions"><button class="btn btn-primary" data-d="allow">Allow</button><button class="btn btn-secondary" data-d="always">Always allow ${esc(ALWAYS_LABEL[ev.tool] || 'this')}</button><button class="btn btn-secondary" data-d="deny">Deny</button></div>`);
-    card.querySelectorAll('[data-d]').forEach(b => { b.onclick = () => answerPermission(ev.id, b.dataset.d, card); });
-    this.perms[ev.id] = card;
-  }
-
-  permissionDone(ev) {
-    const card = this.perms[ev.id];
-    if (!card) return;
-    const ok = ev.decision === 'allow';
-    card.classList.replace('perm', ok ? 'ok' : 'err');
-    card.querySelector('.card-title').textContent = ok ? 'Allowed' : 'Denied';
-    card.querySelector('.card-actions')?.remove();
-  }
-
-  webdev(l, ev) {
-    const d = ev.data || {};
-    if (ev.event === 'title' && typeof d.title === 'string') this.add(l, 'notice-line', 'Project: ' + esc(d.title));
-    const files = Array.isArray(d.files) ? d.files : [];
-    if (!files.length) return;
-    this.add(l, 'card code-files', `<div class="card-head"><span class="card-title">Code</span><span class="tag">${esc(d.templateKind || 'project')}</span><span class="card-sub">${files.length} file(s)</span></div>`
-      + files.slice(0, 40).map(f => `<details><summary class="notice-line">${esc(f.path)}</summary><pre><code>${esc(String(f.content ?? '').slice(0, 200000))}</code></pre></details>`).join(''));
-  }
-
-  files(l, ev) {
-    const card = this.add(l, 'card' + (ev.saved ? ' ok' : ''), `<div class="card-head"><span class="card-title">${ev.saved ? 'Saved on this computer' : 'Not saved yet'}</span><span class="card-sub">${esc(ev.root)}</span></div>`
-      + `<div class="notice-line">${ev.written} written &middot; ${ev.deleted} removed &middot; ${ev.unchanged} unchanged${ev.skipped ? ` &middot; ${ev.skipped} skipped (unsafe path or binary)` : ''}</div><div class="card-actions"></div>`);
-    const act = card.querySelector('.card-actions');
-    const button = (label, fn, primary) => {
-      const b = document.createElement('button');
-      b.className = 'btn ' + (primary ? 'btn-primary' : 'btn-secondary');
-      b.textContent = label;
-      b.onclick = () => fn(b);
-      act.appendChild(b);
-    };
-    if (!ev.saved) button('Save to disk', b => saveWebdev(this.chatId, l, b, card), true);
-    button('Open folder', () => openFolder(ev.root));
-    button('Download zip', () => { location.href = '/api/workspace/zip?path=' + encodeURIComponent(ev.root); });
-    if (ev.preview) button('Local preview', () => window.open(ev.preview, '_blank'));
-  }
-
-  preview(l, ev) {
-    if (!ev.url) {
-      if (ev.status && ev.status !== 'success') this.add(l, 'notice-line', `Preview: ${esc(ev.status)}${ev.message ? ' - ' + esc(ev.message) : ''}`);
+  function openModelPicker(lane = 'a', trigger = null) {
+    if (!allowsManualModels()) {
+      const message = state.mode === 'agent'
+        ? "In Agent, the model is not selected and does not appear: it is assigned automatically."
+        : state.modality === 'video'
+          ? "Video is only available in Battle; both models are selected by Arena."
+          : "In Battle, both models are selected by Arena.";
+      toast(message, 'info', "Manual selection is disabled");
       return;
     }
-    if (this.previews[l] === ev.url) return;
-    this.previews[l] = ev.url;
-    this.add(l, 'card', `<div class="card-head"><span class="card-title">Live preview on arena.ai</span></div><div class="card-actions"><a class="btn btn-secondary" href="${attr(safeUrl(ev.url))}" target="_blank" rel="noopener">Open preview</a></div>`);
-  }
+    const anchor = trigger || els.modelsNavBtn || els.modeButton;
+    if (!anchor) return;
+    const effectiveLane = lane === 'b' && state.mode === 'side-by-side' ? 'b' : 'a';
+    const content = el('div');
+    const searchWrap = el('div', { class: 'popover-search' }, iconEl('search'));
+    const searchInput = el('input', { type: 'search', placeholder: "Find a model or laboratory", autocomplete: 'off', 'aria-label': "Search for a model" });
+    searchWrap.appendChild(searchInput);
+    content.appendChild(searchWrap);
+    const list = el('div', { class: 'popover-list', role: 'listbox', 'aria-label': `Model ${effectiveLane.toUpperCase()}` });
+    content.appendChild(list);
+    const footer = el('div', { class: 'popover-foot' },
+      el('span', { class: 'modal-copy', style: { margin: '0', fontSize: '9px' }, text: `${modalityMeta(state.modality).label} · ${state.models.length} of models` }),
+      el('button', {
+        class: 'icon-button tiny', type: 'button', 'aria-label': "Update the model list",
+        onclick: async () => { await loadModels(state.modality); renderModelOptions(); }
+      }, iconEl('refresh'))
+    );
+    content.appendChild(footer);
 
-  media(l, ev) {
-    const u = attr(safeUrl(ev.url));
-    const tag = ev.kind === 'video' ? `<video src="${u}" controls></video>` : ev.kind === 'audio' ? `<audio src="${u}" controls></audio>` : `<img src="${u}" alt="">`;
-    const box = this.add(l, 'card media-box', tag + `<div class="card-actions"><button class="btn btn-secondary">Save to disk</button><a class="btn btn-secondary" target="_blank" rel="noopener" href="${u}">Open</a></div>`);
-    box.querySelector('button').onclick = e => saveMedia(ev.url, e.target);
-  }
-
-  challenge(ev) {
-    this.chal = this.add('a', 'card challenge', `<div class="card-head"><span class="card-title">${ev.kind === 'cloudflare' ? 'Cloudflare check' : 'Human check'}</span></div><div class="card-sub">${esc(ev.message)}</div>`
-      + '<div class="card-actions"><button class="btn btn-primary">Show arena.ai window</button><button class="btn btn-secondary">Cancel</button></div>');
-    const [show, cancel] = this.chal.querySelectorAll('button');
-    show.onclick = showEngine;
-    cancel.onclick = stopStreaming;
-  }
-
-  challengeDone() {
-    if (!this.chal) return;
-    this.chal.classList.replace('challenge', 'ok');
-    this.chal.querySelector('.card-sub').textContent = 'Verified. Sending your message...';
-    this.chal.querySelector('.card-actions')?.remove();
-    this.chal = null;
-  }
-
-  error(ev) {
-    this.failed = true;
-    const detail = ev.detail && ev.detail !== ev.message ? `<details><summary class="notice-line">Details</summary><pre class="diff">${esc(String(ev.detail).slice(0, 4000))}</pre></details>` : '';
-    const card = this.add(ev.model || 'a', 'card err', `<div class="card-head"><span class="card-title">${esc(ERR_TITLES[ev.code] || 'Something went wrong')}</span>${ev.status ? `<span class="tag">HTTP ${esc(ev.status)}</span>` : ''}</div>`
-      + `<div class="card-sub">${esc(ev.message || ev.text || '')}</div>${detail}<div class="card-actions"></div>`);
-    const act = card.querySelector('.card-actions');
-    const button = (label, fn) => {
-      const b = document.createElement('button');
-      b.className = 'btn btn-secondary';
-      b.textContent = label;
-      b.onclick = fn;
-      act.appendChild(b);
-    };
-    if (ev.retry) button(ev.wait ? `Retry (wait about ${ev.wait}s)` : 'Retry', () => sendMessage(lastSent));
-    if (ev.code === 'auth') button('Sign in', showLogin);
-    if (ev.code === 'challenge' || ev.code === 'cloudflare') button('Show arena.ai window', showEngine);
-    if (['network', 'server', 'http', 'internal', 'forbidden'].includes(ev.code)) button('Run diagnostics', () => runDoctor(true));
-  }
-
-  settle() {
-    this.body.querySelectorAll('.seg').forEach(s => { this.paint(s); s.classList.remove('streaming-cursor'); });
-    hlAll(this.body);
-    addCopyBtns(this.body);
-  }
-
-  done(ev) {
-    this.finished = true;
-    for (const [l, ln] of Object.entries(this.lanes)) {
-      if (ln.seg && ln.seg.pending) this.paint(ln.seg);  // text can still be queued in rAF when a fast answer ends
-      const src = this.sources[l];
-      if (src && src.length) {
-        this.add(l, 'sources', 'Sources: ' + src.map((s, i) => {
-          const u = safeUrl((s && (s.url || s.uri)) || '');
-          return `<a href="${attr(u)}" target="_blank" rel="noopener">${esc((s && (s.title || s.name)) || (u !== '#' ? u : 'source ' + (i + 1)))}</a>`;
-        }).join(' &middot; '));
+    const renderModelOptions = () => {
+      clear(list);
+      if (state.modelsLoading && !state.models.length) {
+        list.appendChild(el('div', { class: 'popover-empty' }, el('span', { class: 'loading-block' }, el('span', { class: 'mini-spinner' }), el('span', { text: "Loading models…" }))));
+        return;
       }
-      if (!ln.root.textContent.trim() && !this.failed) this.add(l, 'notice-line', '(no response)');
+      if (state.modelsError) {
+        list.appendChild(el('div', { class: 'popover-empty' }, el('span', { text: state.modelsError })));
+        list.appendChild(el('div', { class: 'popover-foot' }, el('span'), el('button', {
+          class: 'button button-small button-quiet', type: 'button',
+          onclick: () => { void loadModels(state.modality).then(renderModelOptions); }
+        }, iconEl('refresh'), el('span', { text: "Retry" }))));
+        return;
+      }
+      const query = searchInput.value.trim().toLocaleLowerCase('en');
+      const filtered = state.models.filter((model) => {
+        if (!query) return true;
+        return `${model.name} ${model.org} ${model.capabilities.join(' ')}`.toLocaleLowerCase('en').includes(query);
+      });
+      if (!filtered.length) {
+        list.appendChild(el('div', { class: 'popover-empty', text: state.models.length ? "Models not found." : "The server did not return models for this type." }));
+        return;
+      }
+      const selectedId = effectiveLane === 'b' ? state.modelBId : state.modelAId;
+      filtered.forEach((model) => {
+        const conflicts = effectiveLane === 'b' && String(state.modelAId) === String(model.id);
+        const meta = [model.rank ? `#${model.rank}` : '', model.arena_score ? `rating ${model.arena_score}` : ''].filter(Boolean).join(' · ');
+        const option = popoverOption({
+          title: model.name,
+          desc: `${model.org || "Unknown organization"}${model.capabilities.length ? ` · ${model.capabilities.slice(0, 3).join(' · ')}` : ''}`,
+          icon: '',
+          selected: String(selectedId) === String(model.id),
+          disabled: conflicts,
+          tag: conflicts ? "in A" : '',
+          meta,
+          onClick: () => {
+            if (selectModel(effectiveLane, model.id)) closePopover();
+          }
+        });
+        const logoNode = modelIconNode(model);
+        const iconWrap = logoNode
+          ? el('span', { class: 'model-avatar has-logo' }, logoNode)
+          : el('span', {
+            class: 'model-avatar',
+            style: { background: safeColor(model.color) || '#bdd3c1', color: '#1b231e' },
+            text: initialLetters(model.name)
+          });
+        option.insertBefore(iconWrap, option.firstChild);
+        list.appendChild(option);
+      });
+    };
+
+    searchInput.addEventListener('input', renderModelOptions);
+    renderModelOptions();
+
+    openPopover(anchor, {
+      title: `Select a model ${effectiveLane.toUpperCase()}`,
+      subtitle: `${modeMeta(state.mode).label} · ${modalityMeta(state.modality).label} · only available in Arena`,
+      content,
+      wide: true,
+      initialFocus: searchInput
+    });
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Modal infrastructure                                                  */
+  /* ---------------------------------------------------------------------- */
+  let modalSequence = 0;
+
+  function mountModal({ title, subtitle = '', size = '', content, actions = [], onMount, onClose }) {
+    closePopover(false);
+    if (state.activeModal) state.activeModal.close();
+    const previousFocus = document.activeElement;
+    const titleId = `modal-title-${++modalSequence}`;
+    modalSequence += 1;
+    const descriptionId = subtitle ? `modal-desc-${modalSequence}` : '';
+    const backdrop = el('div', { class: 'modal-backdrop' });
+    const modal = el('section', {
+      class: `modal${size ? ` modal-${size}` : ''}`,
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-labelledby': titleId,
+      'aria-describedby': descriptionId || false
+    });
+    const closeButton = el('button', { class: 'icon-button', type: 'button', 'aria-label': "Close window" }, iconEl('x'));
+    const head = el('header', { class: 'modal-head' },
+      el('div', {}, el('h2', { id: titleId, text: title }), subtitle ? el('p', { id: descriptionId, text: subtitle }) : null),
+      closeButton
+    );
+    const body = el('div', { class: 'modal-body' });
+    if (content) append(body, content);
+    const footer = el('footer', { class: 'modal-foot' });
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener('keydown', onKey);
+      backdrop.remove();
+      if (state.activeModal?.backdrop === backdrop) state.activeModal = null;
+      try { onClose?.(); } catch { /* noop */ }
+      if (previousFocus && previousFocus.isConnected) {
+        try { previousFocus.focus({ preventScroll: true }); } catch { previousFocus.focus(); }
+      }
+    };
+    const onKey = (event) => {
+      if (!backdrop.isConnected) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+        return;
+      }
+      trapFocus(event, modal);
+    };
+    closeButton.addEventListener('click', close);
+
+    actions.forEach((action) => {
+      const button = el('button', {
+        class: `button${action.variant === 'danger' ? ' button-danger' : action.variant === 'primary' ? '' : ' button-quiet'}`,
+        type: 'button',
+        'data-autofocus': action.autofocus ? '' : false,
+        disabled: Boolean(action.disabled)
+      }, action.icon ? iconEl(action.icon) : null, el('span', { text: action.label }));
+      button.addEventListener('click', async () => {
+        if (action.onClick) {
+          button.disabled = true;
+          let keepOpen = false;
+          try {
+            const result = await action.onClick({ close, modal, body, footer, button });
+            keepOpen = result === false;
+          } catch (error) {
+            keepOpen = true;
+            toast(errorMessage(error), 'error');
+          }
+          if (closed) return;
+          if (!keepOpen) close();
+          else button.disabled = false;
+        } else {
+          close();
+        }
+      });
+      footer.appendChild(button);
+    });
+    if (actions.length) modal.appendChild(head); else modal.appendChild(head);
+    modal.append(body);
+    if (actions.length) modal.appendChild(footer);
+    backdrop.appendChild(modal);
+    backdrop.addEventListener('pointerdown', (event) => {
+      if (event.target === backdrop) close();
+    });
+    els.modalRoot.replaceChildren(backdrop);
+    document.addEventListener('keydown', onKey);
+    state.activeModal = { close, backdrop, modal, body };
+    window.requestAnimationFrame(() => {
+      if (!backdrop.isConnected) return;
+      const preferred = modal.querySelector('[data-autofocus]') || modal.querySelector('button, input, textarea, [tabindex]:not([tabindex="-1"])');
+      if (preferred) {
+        try { preferred.focus({ preventScroll: true }); } catch { preferred.focus(); }
+      }
+      onMount?.({ close, modal, body, footer });
+    });
+    return { close, modal, body, footer };
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Engine / native pane                                                  */
+  /* ---------------------------------------------------------------------- */
+  function syncDock(notify = false) {
+    if (!els.app || !els.dockPane) return;
+    // In the Windows app Arena is a separate native window, not a docked pane.
+    const showDemoPane = state.demo && state.engineOpen;
+    els.app.dataset.dock = showDemoPane ? 'open' : 'closed';
+    els.app.style.setProperty('--dock-share', String(state.dockShare || 0.42));
+    els.dockPane.hidden = !showDemoPane;
+    if (state.engineOpen) {
+      if (els.dockSubtitle) els.dockSubtitle.textContent = state.demo ? "Demo panel" : (state.desktop ? "Native application window" : "Panel opened via API");
+      if (els.dockDescription) {
+        els.dockDescription.textContent = state.demo
+          ? "In demo mode, the native arena.ai page does not open. Only the reserved area layout is shown; the real panel appears through the existing backend."
+          : "The arena.ai page is opened in a separate application panel. Login and challenge verification are performed manually. The interface does not bypass protection and does not save passwords or tokens.";
+      }
+      if (els.dockNote) els.dockNote.textContent = state.demo
+        ? "Demo: no request to arena.ai is executed."
+        : "The content of the panel is displayed by the backend application, not this interface.";
+      if (els.dockTitle) els.dockTitle.textContent = state.demo ? "arena.ai Panel · demo" : "arena.ai Panel";
     }
-    this.settle();
-    if (ev.chat_id) currentChatId = ev.chat_id;
-    if (ev.dual && this.mode === 'battle' && !this.failed) {
-      const row = document.createElement('div');
-      row.className = 'vote-row';
-      row.innerHTML = `<span class="vote-label">Which response was better?</span>
-        <button class="vote-btn" onclick="castVote(this, 'a')">A is better</button>
-        <button class="vote-btn" onclick="castVote(this, 'b')">B is better</button>
-        <button class="vote-btn tie" onclick="castVote(this, 'tie')">Tie</button>
-        <button class="vote-btn bad" onclick="castVote(this, 'bad')">Both bad</button>
-        <span class="vote-note">Local only: not sent to the arena.ai leaderboard</span>`;
-      this.el.appendChild(row);
+    if (notify) announce(state.engineOpen ? "arena.ai Panel is open." : "arena.ai Panel is hidden.");
+  }
+
+  async function showEngine() {
+    if (state.engineBusy) return;
+    // Opening Arena while signed out is also a login attempt: poll until it
+    // succeeds so a user who signs in from this button is not left disconnected.
+    if (!state.authenticated && !state.loginPending) return startLogin();
+    if (state.serverError) {
+      toast("Local server is unavailable. Panel is not open.", 'error', "No connection");
+      return;
+    }
+    state.engineBusy = true;
+    try {
+      const result = await API.engineShow();
+      state.engineKnown = true;
+      state.engineOpen = result?.open ?? result?.engine ?? result?.shown ?? true;
+      const engine = normalizeEngine(result?.engine);
+      if (engine.known) state.dockShare = clamp(engine.share, 0.24, 0.7);
+      syncDock(true);
+      toast(state.demo ? "Demo: panel area is open. Real page is not loaded." : "arena.ai page is open in a separate window.", 'success', "Panel");
+      void loadStatus({ quiet: true });
+    } catch (error) {
+      toast(errorMessage(error), 'error', "Panel is not open");
+    } finally {
+      state.engineBusy = false;
     }
   }
 
-  finish() {
-    if (!this.finished) this.settle();
-    const th = this.body.querySelector('.thinking');
-    if (th) th.textContent = '(no response)';
+  async function hideEngine() {
+    if (state.engineBusy) return;
+    if (state.serverError) {
+      toast("Local server is unavailable. Cannot hide the native panel.", 'error');
+      return;
+    }
+    state.engineBusy = true;
+    try {
+      const result = await API.engineHide();
+      state.engineKnown = true;
+      state.engineOpen = Boolean(result?.open ?? result?.engine ?? false);
+      syncDock(true);
+      toast("arena.ai Panel is hidden.", 'success');
+    } catch (error) {
+      toast(errorMessage(error), 'error', "The panel is not hidden");
+    } finally {
+      state.engineBusy = false;
+    }
   }
-}
 
-/* ── Global shortcuts ── */
-document.addEventListener('keydown', e => {
-  if (e.key === 'F1') { e.preventDefault(); showHelp(); }
-  else if ((e.ctrlKey || e.metaKey) && e.key === ',') { e.preventDefault(); showSettings(); }
-  else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'n' || e.key === 'N')) { e.preventDefault(); newChat(); }
-  else if (e.key === 'Escape') { closeHelp(); hideSlash(); }
-});
+  window.arenaPane = function arenaPane(open, share) {
+    state.engineOpen = Boolean(open);
+    state.engineKnown = true;
+    const parsedShare = Number(share);
+    const normalizedShare = parsedShare > 1 ? parsedShare / 100 : parsedShare;
+    if (Number.isFinite(normalizedShare) && normalizedShare > 0) state.dockShare = clamp(normalizedShare, 0.24, 0.7);
+    state.dockLayoutCalled = true;
+    syncDock(false);
+  };
+
+  /* ---------------------------------------------------------------------- */
+  /* Workspace                                                             */
+  /* ---------------------------------------------------------------------- */
+  function isAbsolutePath(path) {
+    if (!path) return false;
+    return /^[a-zA-Z]:[\\/]/.test(path) || /^\\\\[^\\]/.test(path) || /^\//.test(path);
+  }
+
+  async function applyWorkspacePath(path) {
+    const clean = String(path || '').trim();
+    if (!clean) throw new ApiError("Enter the full path to the working folder.");
+    if (!isAbsolutePath(clean)) throw new ApiError("Full path is required, for example C:\\Projects\\Arena.");
+    if (state.serverError) throw new ApiError("Local server is unavailable.");
+    const result = await API.setWorkspace(clean);
+    state.workspace = normalizeWorkspace(result?.workspace ?? result?.path) || clean;
+    state.workspaceChosen = true;
+    state.workspacePanelRoot = '';
+    resetWorkspaceTree();
+    updateComposerState();
+    renderWorkspaceTreePanel();
+    if (state.workspacePanelOpen) void loadWorkspaceTree('.', { force: true });
+    return state.workspace;
+  }
+
+  async function chooseNativeFolder() {
+    if (!state.nativeReady) {
+      openSettings('workspace');
+      toast("Native dialog pywebview is not available yet. Enter the full path manually.", 'info');
+      return null;
+    }
+    if (!window.pywebview?.api?.choose_folder) {
+      openSettings('workspace');
+      toast("Method choose_folder is unavailable. Enter the path manually.", 'warning');
+      return null;
+    }
+    try {
+      const chosen = await window.pywebview.api.choose_folder();
+      const path = typeof chosen === 'string' ? chosen : (chosen?.path ?? chosen?.folder ?? chosen?.directory ?? '');
+      if (!path) {
+        if (chosen?.error) toast(String(chosen.error), 'error', "No folder selected");
+        return null;
+      }
+      const saved = await applyWorkspacePath(path);
+      toast(saved, 'success', "Working folder saved");
+      state.settingsRerender?.();
+      return saved;
+    } catch (error) {
+      toast(errorMessage(error), 'error', "Working folder not changed");
+      return null;
+    }
+  }
+
+  async function openWorkspaceFolder(path = state.workspace) {
+    if (state.demo) {
+      toast("In the demo, the folder cannot be opened. Only the path is shown.", 'info', "Demo mode");
+      return;
+    }
+    if (!path) {
+      openSettings('workspace');
+      return;
+    }
+    try {
+      await API.openWorkspace(path);
+      toast("Request to open folder sent to local server.", 'success');
+    } catch (error) {
+      toast(errorMessage(error), 'error', "Folder not opened");
+    }
+  }
+
+  async function saveWorkspaceLane(lane) {
+    if (!state.activeChatId) {
+      toast("No active chat to save.", 'warning');
+      return null;
+    }
+    if (state.demo) {
+      const result = await API.saveWorkspace(state.activeChatId, lane);
+      toast(`${result.path || "Demo path"}`, 'success', "Demo: save simulated");
+      return result;
+    }
+    try {
+      const result = await API.saveWorkspace(state.activeChatId, lane);
+      toast(result?.path ? String(result.path) : "Server confirmed save.", 'success', "Saved to working folder");
+      return result;
+    } catch (error) {
+      toast(errorMessage(error), 'error', "Server refused to save");
+      return null;
+    }
+  }
+
+  async function downloadWorkspaceZip() {
+    if (state.demo) {
+      toast("In demo, server ZIP export is not created. This is not a real working folder.", 'info', "Demo mode");
+      return;
+    }
+    if (!state.workspace) {
+      toast("First, select a working folder in the settings.", 'warning');
+      openSettings('workspace');
+      return;
+    }
+    try {
+      const blob = await API.workspaceZip(state.workspace);
+      downloadBlob(blob, `${baseName(state.workspace) || 'workspace'}.zip`);
+      toast("ZIP archive of the working folder received from the local server.", 'success');
+    } catch (error) {
+      toast(errorMessage(error), 'error', "ZIP not created");
+    }
+  }
+
+  async function saveMediaFromEvent(url, button) {
+    if (!url) return;
+    if (button) button.disabled = true;
+    try {
+      const result = await API.saveMedia(url);
+      toast(result?.path ? String(result.path) : "Server saved media.", 'success', "Media saved");
+    } catch (error) {
+      toast(errorMessage(error), 'error', "Media not saved");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Login, logout (no credentials are requested or stored)                 */
+  /* ---------------------------------------------------------------------- */
+  async function startLogin({ addAccount = false } = {}) {
+    if (state.loginPending) return;
+    if (state.serverError || state.networkOffline) {
+      toast("Local server unavailable. Login impossible.", 'error', "No connection");
+      return;
+    }
+    state.loginPending = true;
+    updateConnectionUI();
+    updateAccountUI();
+    state.settingsRerender?.();
+    const previousAccountId = addAccount ? state.currentAccountId : null;
+    try {
+      const loginResult = addAccount ? await API.addAccount() : await API.login();
+      if (loginResult?.challenge) {
+        state.challenge = { message: textValue(loginResult.challenge) || "Login requires manual verification in the arena.ai panel." };
+        renderChallenge();
+        toast("Login requires manual verification. Open the arena.ai panel; automatic bypass is not performed.", 'warning', 'Challenge');
+      }
+      toast("Log in in the opened Arena window. After confirmation, it will close automatically.", 'info', "Arena Login");
+      let completed = false;
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        await sleep(1000);
+        if (!state.loginPending) return;
+        const result = await API.loginPoll();
+        if (result?.cancelled || result?.error) {
+          throw new ApiError(extractError(result, 0));
+        }
+        const done = result?.done === true || result?.authenticated === true || result?.status === 'done';
+        if (done) { completed = true; break; }
+      }
+      if (!completed && !state.demo) await API.engineHide().catch(() => {});
+      await loadStatus({ quiet: true });
+      if (state.authenticated) {
+        toast(state.email || "Login completed.", 'success', "Arena connected");
+        await Promise.allSettled([loadChats({ silent: true }), loadModels(state.modality), loadPermissions({ quiet: true }), refreshWorkspacePanel({ force: true })]);
+        announce("Login completed.");
+      } else {
+        toast(completed ? "Backend finished login, but status has not updated yet. Check the state." : "Login timeout expired. Please try again.", 'warning');
+      }
+    } catch (error) {
+      toast(errorMessage(error), 'error', "Not signed in");
+      if (addAccount && previousAccountId) {
+        // The Arena window was switched to a guest for the new sign-in;
+        // restore the previous account into it.
+        await API.switchAccount(previousAccountId).catch(() => undefined);
+      }
+    } finally {
+      state.loginPending = false;
+      updateConnectionUI();
+      updateAccountUI();
+      updateComposerState();
+      state.settingsRerender?.();
+      void loadStatus({ quiet: true });
+    }
+  }
+
+  async function loginWithCookie(cookie) {
+    if (state.demo || state.loginPending || !cookie.trim()) return;
+    state.loginPending = true;
+    updateConnectionUI();
+    updateAccountUI();
+    updateComposerState();
+    try {
+      const result = await API.loginCookie(cookie);
+      if (!result?.ok) throw new ApiError(extractError(result, 0));
+      await loadStatus({ quiet: true });
+      if (!state.authenticated) throw new ApiError("Session imported, but the server has not confirmed the account. Check cookies and connection.");
+      toast(state.email || "Login completed.", 'success', "Arena connected");
+      await Promise.allSettled([loadChats({ silent: true }), loadModels(state.modality), loadPermissions({ quiet: true }), refreshWorkspacePanel({ force: true })]);
+      announce("Login completed.");
+    } catch (error) {
+      toast(errorMessage(error), 'error', "Login via cookies not performed");
+    } finally {
+      state.loginPending = false;
+      updateConnectionUI();
+      updateAccountUI();
+      updateComposerState();
+      state.settingsRerender?.();
+    }
+  }
+
+
+  function accountInitials(account) {
+    const source = String(account?.name || account?.email || 'A').trim();
+    const parts = source.split(/[\s@._-]+/).filter(Boolean);
+    return ((parts[0]?.[0] || 'A') + (parts[1]?.[0] || '')).toUpperCase();
+  }
+
+  function accountAvatarEl(account) {
+    const node = el('span', { class: 'avatar account-menu-avatar', 'aria-hidden': 'true' });
+    if (account?.expired) {
+      node.classList.add('is-expired');
+      node.textContent = '?';
+      return node;
+    }
+    const url = account?.avatar_url ? safeUrl(account.avatar_url, { image: true }) : '';
+    if (url) node.appendChild(el('img', { src: url, alt: '', referrerpolicy: 'no-referrer' }));
+    else node.textContent = accountInitials(account);
+    return node;
+  }
+
+  function resetForAccountChange() {
+    state.chats = [];
+    state.cloudChats = [];
+    state.cloudChatsError = null;
+    state.messages = [];
+    state.chatTurns = {};
+    state.activeChatId = null;
+    state.activeChatTitle = '';
+    state.artifacts = [];
+    state.challenge = null;
+    updateArtifactCount();
+    renderWelcomeState();
+    updateAllUI();
+  }
+
+  async function switchToAccount(account) {
+    if (!account || state.accountBusy) return;
+    if (anyGenerationRunning() || state.remoteBusy) {
+      toast('Finish or stop the running generations before switching accounts.', 'warning', 'Account not switched');
+      return;
+    }
+    state.accountBusy = true;
+    try {
+      const result = await API.switchAccount(account.id);
+      if (Array.isArray(result?.accounts)) state.accounts = result.accounts;
+      closePopover(false);
+      resetForAccountChange();
+      await loadStatus({ quiet: true });
+      await Promise.allSettled([loadChats({ silent: true }), loadArenaChats({ silent: true }), loadModels(state.modality, { quiet: true })]);
+      toast(account.email || account.name || 'Account switched.', 'success', 'Account switched');
+      state.settingsRerender?.();
+    } catch (error) {
+      const payload = error?.payload;
+      if (Array.isArray(payload?.accounts)) state.accounts = payload.accounts;
+      toast(errorMessage(error), 'error', payload?.expired ? 'Session expired — sign in again' : 'Account not switched');
+      await loadStatus({ quiet: true }).catch(() => undefined);
+    } finally {
+      state.accountBusy = false;
+    }
+  }
+
+  async function removeSavedAccount(account) {
+    if (!account || state.accountBusy) return;
+    state.accountBusy = true;
+    try {
+      const result = await API.removeAccount(account.id);
+      if (Array.isArray(result?.accounts)) state.accounts = result.accounts;
+      toast('The saved session for this account was removed from this app.', 'success', 'Account removed');
+    } catch (error) {
+      toast(errorMessage(error), 'error', 'Account not removed');
+    } finally {
+      state.accountBusy = false;
+    }
+  }
+
+  function buildAccountMenu() {
+    const content = el('div', { class: 'account-menu' });
+    const render = () => {
+      clear(content);
+      content.appendChild(el('p', { class: 'account-menu-head', text: 'Accounts' }));
+      const accounts = Array.isArray(state.accounts) ? state.accounts : [];
+      if (!accounts.length) {
+        content.appendChild(el('p', { class: 'account-menu-note', text: state.authenticated
+          ? 'Signed in. Accounts you add will appear here for quick switching.'
+          : 'Not signed in yet. Sign in, then add more accounts here to switch between them.' }));
+      }
+      accounts.forEach((account) => {
+        if (account.expired) {
+          const card = el('button', {
+            class: 'account-expired-card', type: 'button', 'data-popover-action': 'account-expired',
+            onclick: () => { closePopover(false); void startLogin({ addAccount: !account.current }); }
+          },
+            accountAvatarEl(account),
+            el('span', { class: 'account-menu-copy' },
+              el('span', { class: 'account-menu-email', text: account.email || account.name || 'Arena account' }),
+              el('span', { class: 'account-menu-sub', text: 'Session expired: sign in' }))
+          );
+          content.appendChild(card);
+          return;
+        }
+        const row = el('div', { class: `account-menu-row${account.current ? ' is-current' : ''}` });
+        const main = el('button', {
+          class: 'account-menu-main', type: 'button', 'data-popover-action': 'account-switch',
+          'data-account-id': account.id || '',
+          'aria-label': account.current ? `Current account: ${account.email || account.name}` : `Switch to ${account.email || account.name}`,
+          onclick: () => { if (!account.current) void switchToAccount(account); }
+        },
+          accountAvatarEl(account),
+          el('span', { class: 'account-menu-copy' },
+            el('span', { class: 'account-menu-email', text: account.email || account.name || 'Arena account' }),
+            el('span', { class: 'account-menu-sub', text: account.name && account.name !== account.email ? account.name : 'Arena account' })),
+          account.current
+            ? el('span', { class: 'account-current-label', text: 'Current' })
+            : el('span', { class: 'account-menu-chev', 'aria-hidden': 'true' }, iconEl('chevron-right'))
+        );
+        row.appendChild(main);
+        if (!account.current) {
+          row.appendChild(el('button', {
+            class: 'account-menu-remove', type: 'button', 'aria-label': `Remove saved account ${account.email || account.name}`,
+            title: 'Forget this account on this device',
+            onclick: (event) => { event.stopPropagation(); void removeSavedAccount(account).then(render); }
+          }, iconEl('x')));
+        }
+        content.appendChild(row);
+      });
+      content.appendChild(el('div', { class: 'account-menu-divider', role: 'separator' }));
+      const methods = el('div', { class: 'account-menu-methods', hidden: true },
+        el('button', {
+          class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-add-window',
+          onclick: () => { closePopover(false); void startLogin({ addAccount: accounts.length > 0 }); }
+        }, iconEl('login'), el('span', { text: 'Sign-in window' })),
+        el('button', {
+          class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-add-cookies',
+          onclick: () => { closePopover(false); openSettings('connection'); }
+        }, iconEl('login'), el('span', { text: 'Use cookies' }))
+      );
+      content.appendChild(el('button', {
+        class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-add',
+        'aria-expanded': 'false',
+        onclick: (event) => {
+          methods.hidden = !methods.hidden;
+          event.currentTarget.setAttribute('aria-expanded', String(!methods.hidden));
+        }
+      }, iconEl('plus'), el('span', { text: accounts.length ? 'Add account' : 'Sign in' })));
+      content.appendChild(methods);
+      content.appendChild(el('button', {
+        class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-settings',
+        onclick: () => { closePopover(false); openSettings('connection'); }
+      }, iconEl('settings'), el('span', { text: 'Settings' })));
+      if (state.authenticated || accounts.some((a) => a.current)) {
+        content.appendChild(el('div', { class: 'account-menu-divider', role: 'separator' }));
+        content.appendChild(el('button', {
+          class: 'account-menu-action is-danger', type: 'button', 'data-popover-action': 'account-signout',
+          onclick: () => {
+            if (anyGenerationRunning() || state.remoteBusy) {
+              toast('Finish or stop the running generations before signing out.', 'warning');
+              return;
+            }
+            closePopover(false);
+            void logoutAccount();
+          }
+        }, iconEl('logout'), el('span', { text: 'Sign out' })));
+      }
+    };
+    render();
+    content._rerender = render;
+    return content;
+  }
+
+  function openAccountMenu() {
+    if (!els.accountButton) return;
+    if (activePopover && activePopover.trigger === els.accountButton) { closePopover(); return; }
+    const content = buildAccountMenu();
+    openPopover(els.accountButton, { title: 'Accounts', content, menu: true, role: 'menu' });
+    void API.getAccounts?.().then((result) => {
+      if (Array.isArray(result?.accounts)) {
+        state.accounts = result.accounts;
+        state.currentAccountId = result.current_id || state.currentAccountId;
+        if (content.isConnected) content._rerender?.();
+      }
+    }).catch(() => undefined);
+  }
+
+  async function logoutAccount() {
+    if (state.loginPending) return;
+    try {
+      await API.logout();
+      state.authenticated = false;
+      state.email = '';
+      state.fullName = '';
+      state.avatarUrl = '';
+      state.modelAId = null;
+      state.modelBId = null;
+      state.chats = [];
+      state.cloudChats = [];
+      state.cloudChatsError = null;
+      state.messages = [];
+      state.chatTurns = {};
+      state.activeChatId = null;
+      state.activeChatTitle = '';
+      state.artifacts = [];
+      state.challenge = null;
+      updateArtifactCount();
+      renderWelcomeState();
+      updateAllUI();
+      await loadStatus({ quiet: true });
+      state.settingsRerender?.();
+      toast("Logout completed; local saved cookies file deleted.", 'success');
+    } catch (error) {
+      toast(errorMessage(error), 'error', "Logout not performed");
+    }
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Artifacts                                                             */
+  /* ---------------------------------------------------------------------- */
+
+  /* ---------------------------------------------------------------------- */
+  /* Help                                                                  */
+  /* ---------------------------------------------------------------------- */
+  function shortcutRow(name, keys) {
+    return el('div', { class: 'shortcut-row' },
+      el('span', { class: 'shortcut-name', text: name }),
+      el('span', { class: 'kbd' }, keys.map((key) => el('kbd', { text: key })))
+    );
+  }
+
+  function openHelp() {
+    const content = el('div');
+    content.appendChild(el('div', { class: 'account-status-card' },
+      accountAvatarNode(),
+      el('div', { class: 'account-status-copy' },
+        el('span', { class: 'account-status-name', text: state.authenticated ? (state.email || "Connected") : "Not signed in" }),
+        el('span', { class: 'account-status-email', text: state.demo ? "Demo profile: data simulated" : (state.serverError ? "Local server is unavailable" : "Status received from local backend") })
+      ),
+      el('span', { class: 'status-line' }, el('span', { class: `status-dot ${state.authenticated ? 'is-online' : 'is-pending'}`, 'aria-hidden': 'true' }), el('span', { text: state.authenticated ? "login active" : "login required" }))
+    ));
+
+    content.appendChild(el('h3', { class: 'modal-section-title', text: "Keyboard" }));
+    const shortcuts = el('div', { class: 'shortcut-list' },
+      shortcutRow("Open this window", ['F1']),
+      shortcutRow("Send message", ['Enter']),
+      shortcutRow("New line", ['Shift', 'Enter']),
+      shortcutRow("Search in loaded chats", ['Ctrl', 'K']),
+      shortcutRow("Focus in input field", ['Ctrl', '/']),
+      shortcutRow("Close menu or window", ['Esc'])
+    );
+    content.appendChild(shortcuts);
+
+    content.appendChild(el('h3', { class: 'modal-section-title', text: "Demo mode" }));
+    content.appendChild(el('div', { class: 'note-box is-demo' }, iconEl('flask'), el('span', {},
+      el('strong', { text: "?demo=1 — local simulation only. " }),
+      document.createTextNode("Models, streaming events, permissions, files, and media — are test. Requests to arena.ai are not executed. Without the demo parameter, all data and actions go through the real local Flask backend.")
+    )));
+    const demoButton = el('button', {
+      class: 'button button-small button-quiet', type: 'button', style: { marginTop: '8px' },
+      onclick: () => {
+        if (state.demo) window.location.href = window.location.pathname;
+        else window.location.href = `${window.location.pathname}?demo=1`;
+      }
+    }, iconEl('flask'), el('span', { text: state.demo ? "Exit demo" : "Open ?demo=1" }));
+    content.appendChild(demoButton);
+
+    content.appendChild(el('h3', { class: 'modal-section-title', text: "Connection status" }));
+    content.appendChild(el('p', { class: 'modal-copy', text: state.demo
+      ? "Demo mode. The real backend is not queried."
+      : state.serverError
+        ? `Local server unavailable: ${state.serverError}`
+        : state.status?.session_error
+          ? `Backend session error: ${textValue(state.status.session_error)}`
+          : "Relative requests go to the local Flask backend. Login — in a separate window or, optionally, through cookies of your account."
+    }));
+    content.appendChild(el('p', { class: 'modal-copy', text: "Arena Desktop is an unofficial client and is not associated with Arena.ai. Attach files with +, by dragging them onto the message box, or by pasting. Battle votes are sent to Arena and reveal both models." }));
+
+    mountModal({
+      title: "Arena Desktop Help",
+      subtitle: "Unofficial local client",
+      size: 'medium',
+      content,
+      actions: [
+        { label: "Settings", variant: 'quiet', onClick: () => { openSettings('connection'); return true; } },
+        { label: "Got it", variant: 'primary', autofocus: true }
+      ]
+    });
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Settings                                                              */
+  /* ---------------------------------------------------------------------- */
+
+  async function loadPermissionModeFromServer({ quiet = true } = {}) {
+    if (state.serverError) return null;
+    try {
+      const raw = await API.getPermissionMode();
+      const candidate = validPermissionMode(raw?.mode ?? raw?.permission_mode ?? raw);
+      if (candidate) {
+        state.permissionMode = candidate;
+        updateComposerState();
+      }
+      return state.permissionMode;
+    } catch (error) {
+      if (!quiet) toast(errorMessage(error), 'error', "Permission mode not obtained");
+      return null;
+    }
+  }
+
+  async function loadWorkspaceFromServer({ quiet = true } = {}) {
+    if (state.serverError) return state.workspace;
+    try {
+      const raw = await API.getWorkspace();
+      const path = normalizeWorkspace(raw);
+      if (path && path !== state.workspace) {
+        state.workspace = path;
+        state.workspacePanelRoot = '';
+        resetWorkspaceTree();
+        updateComposerState();
+        renderWorkspaceTreePanel();
+      }
+      return state.workspace;
+    } catch (error) {
+      if (!quiet) toast(errorMessage(error), 'error', "Working folder not received");
+      return state.workspace;
+    }
+  }
+
+  function settingsActionButton(label, icon, onClick, { variant = 'quiet', disabled = false, title = '' } = {}) {
+    const button = el('button', {
+      class: `button button-small${variant === 'quiet' ? ' button-quiet' : variant === 'danger' ? ' button-danger' : ''}`,
+      type: 'button',
+      disabled,
+      title: title || false
+    }, icon ? iconEl(icon) : null, el('span', { text: label }));
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try { await onClick({ button }); } catch (error) { toast(errorMessage(error), 'error'); }
+      finally { if (button.isConnected) button.disabled = false; }
+    });
+    return button;
+  }
+
+
+  function openSettings(initialTab = 'connection') {
+    const tabDefs = [
+      { id: 'connection', label: 'Account', icon: 'user' },
+      { id: 'permissions', label: 'Permissions', icon: 'shield' },
+      { id: 'workspace', label: 'Folder', icon: 'folder' },
+      { id: 'about', label: 'About', icon: 'info' }
+    ];
+    let currentTab = tabDefs.some((tab) => tab.id === initialTab) ? initialTab : 'connection';
+    state.settingsTab = currentTab;
+    const hydrated = {};
+    const tabsBar = el('div', { class: 'settings-tabs', role: 'tablist', 'aria-label': 'Settings sections', 'aria-orientation': 'vertical' });
+    const panel = el('div', { class: 'settings-panels', role: 'tabpanel', id: 'settings-panel' });
+    const layout = el('div', { class: 'settings-layout' }, tabsBar, panel);
+    const tabButtons = {};
+
+    tabDefs.forEach((tab) => {
+      const button = el('button', {
+        class: 'settings-tab',
+        type: 'button', role: 'tab', id: `settings-tab-${tab.id}`,
+        'aria-selected': String(tab.id === currentTab), 'aria-controls': 'settings-panel',
+        tabindex: tab.id === currentTab ? '0' : '-1'
+      }, iconEl(tab.icon), el('span', { text: tab.label }));
+      button.addEventListener('click', () => selectTab(tab.id, true));
+      tabButtons[tab.id] = button;
+      tabsBar.appendChild(button);
+    });
+    tabsBar.addEventListener('keydown', (event) => {
+      if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const index = tabDefs.findIndex((tab) => tab.id === currentTab);
+      let nextIndex = index;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowRight') nextIndex = (index + 1) % tabDefs.length;
+      if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') nextIndex = (index - 1 + tabDefs.length) % tabDefs.length;
+      if (event.key === 'Home') nextIndex = 0;
+      if (event.key === 'End') nextIndex = tabDefs.length - 1;
+      selectTab(tabDefs[nextIndex].id, true);
+    });
+
+    function renderConnectionPanel() {
+      const wrap = el('div');
+      const account = el('div', { class: 'account-status-card' },
+        accountAvatarNode(),
+        el('div', { class: 'account-status-copy' },
+          el('span', { class: 'account-status-name', text: state.authenticated ? (state.fullName || state.email || 'Signed in') : 'Not signed in' }),
+          el('span', { class: 'account-status-email', text: state.loginPending ? 'Waiting for sign-in…' : state.demo ? 'Demo profile' : state.authenticated ? (state.email || 'Signed in to Arena') : 'Sign in to chat on Arena' })
+        ),
+        el('span', { class: 'status-dot ' + (state.authenticated ? 'is-online' : 'is-pending'), 'aria-hidden': 'true' })
+      );
+      wrap.appendChild(account);
+
+      const actions = el('div', { class: 'setting-actions' });
+      if (!state.authenticated) {
+        actions.appendChild(settingsActionButton(
+          state.loginPending ? 'Waiting for sign-in…' : 'Sign in',
+          state.loginPending ? 'refresh' : 'login',
+          async () => { await startLogin(); refreshPanel(); },
+          { variant: 'primary', disabled: state.loginPending || Boolean(state.serverError) || state.networkOffline }
+        ));
+      } else {
+        actions.appendChild(settingsActionButton('Log out', 'logout', async () => { await logoutAccount(); refreshPanel(); }));
+      }
+      actions.appendChild(settingsActionButton('Open arena.ai window', 'external', async () => {
+        if (state.engineOpen) await hideEngine(); else await showEngine();
+      }, { disabled: Boolean(state.serverError) }));
+      wrap.appendChild(actions);
+      wrap.appendChild(el('p', { class: 'setting-desc', text: 'Sign-in and human checks open in their own window and close by themselves when you are done.' }));
+
+      if (!state.authenticated && !state.demo) {
+        wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Sign in with cookies' }));
+        wrap.appendChild(el('p', { class: 'modal-copy', text: 'On arena.ai in your browser: DevTools → Application → Cookies → arena.ai. Copy the arena-auth-prod-v1 lines as name=value pairs and paste them here.' }));
+        const cookieField = el('textarea', { class: 'input mono', rows: '3', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
+          'aria-label': 'Arena cookies', placeholder: 'arena-auth-prod-v1.0=…; arena-auth-prod-v1.1=…' });
+        const importButton = settingsActionButton('Sign in with cookies', 'login', async () => {
+          const cookie = cookieField.value.trim();
+          cookieField.value = '';
+          if (!cookie) { toast('Paste the cookies first.', 'warning'); return; }
+          await loginWithCookie(cookie);
+        }, { disabled: state.loginPending || Boolean(state.serverError) || state.networkOffline });
+        wrap.append(cookieField, el('div', { class: 'setting-actions', style: { marginTop: '8px' } }, importButton));
+        wrap.appendChild(el('p', { class: 'field-help', text: 'Cookies give full access to your account — never share them. They are stored only on this computer.' }));
+      }
+      if (state.serverError) {
+        wrap.appendChild(el('div', { class: 'note-box is-danger', style: { marginTop: '10px' } }, iconEl('wifi-off'), el('span', { text: state.serverError })));
+      } else if (state.status?.session_error) {
+        wrap.appendChild(el('div', { class: 'note-box is-danger', style: { marginTop: '10px' } }, iconEl('alert'), el('span', { text: `Session error: ${textValue(state.status.session_error)}` })));
+      }
+      return wrap;
+    }
+
+    function renderPermissionsPanel() {
+      const wrap = el('div');
+      wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Local Agent permissions' }));
+      wrap.appendChild(el('p', { class: 'modal-copy', text: 'What the Local Agent may do in your folder without asking. The same switch sits under the message box.' }));
+      const controlsDisabled = anyGenerationRunning() || state.remoteBusy || state.pendingChanges > 0;
+      const cards = el('div', { class: 'radio-cards' });
+      PERMISSION_MODES.forEach((mode) => {
+        const selected = state.permissionMode === mode.id;
+        const label = el('label', { class: `radio-card${selected ? ' is-selected' : ''}${mode.danger ? ' is-danger-card' : ''}` });
+        const input = el('input', {
+          type: 'radio', name: 'permission-mode', value: mode.id,
+          checked: selected, disabled: controlsDisabled,
+          'aria-label': mode.label
+        });
+        input.addEventListener('change', async () => {
+          if (!input.checked) return;
+          input.disabled = true;
+          await changePermissionMode(mode.id);
+          refreshPanel();
+        });
+        label.append(input,
+          el('span', { class: 'radio-indicator', 'aria-hidden': 'true' }),
+          el('span', { class: 'radio-copy' },
+            el('span', { class: 'radio-title' }, el('span', { text: mode.label }), mode.danger ? el('span', { class: 'radio-tag', text: 'Dangerous' }) : null),
+            el('span', { class: 'radio-desc', text: mode.desc })
+          )
+        );
+        cards.appendChild(label);
+      });
+      wrap.appendChild(cards);
+      if (state.permissionMode === 'bypassPermissions') {
+        wrap.appendChild(el('div', { class: 'note-box is-danger', style: { marginTop: '8px' } }, iconEl('shield-alert'),
+          el('span', { text: 'Bypass is on: the Local Agent can change files and run commands in your folder without asking.' })));
+      }
+
+      wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Agent for new chats' }));
+      wrap.appendChild(el('p', { class: 'modal-copy', text: 'Which agent new Agent Mode chats use. A started chat keeps its own agent.' }));
+      const agentCards = el('div', { class: 'radio-cards' });
+      [
+        { id: 'native', label: 'Arena Agent', desc: 'Arena’s own agent: cloud workspace, search, files and Arena connectors. Recommended.' },
+        { id: 'local', label: 'Local Agent', desc: 'Works in the folder you pick, on this computer, under the permissions above.' }
+      ].forEach((kind) => {
+        const selected = state.agentKind === kind.id;
+        const label = el('label', { class: `radio-card${selected ? ' is-selected' : ''}` });
+        const input = el('input', {
+          type: 'radio', name: 'agent-kind', value: kind.id,
+          checked: selected, disabled: controlsDisabled, 'aria-label': kind.label
+        });
+        input.addEventListener('change', () => { if (input.checked) setAgentKind(kind.id); });
+        label.append(input,
+          el('span', { class: 'radio-indicator', 'aria-hidden': 'true' }),
+          el('span', { class: 'radio-copy' },
+            el('span', { class: 'radio-title' }, el('span', { text: kind.label })),
+            el('span', { class: 'radio-desc', text: kind.desc })));
+        agentCards.appendChild(label);
+      });
+      wrap.appendChild(agentCards);
+
+      if (state.pendingPermissions.length) {
+        wrap.appendChild(el('h3', { class: 'modal-section-title', text: `Waiting for your answer (${state.pendingPermissions.length})` }));
+        const pendingWrap = el('div', { class: 'permissions-list' });
+        state.pendingPermissions.forEach((permission) => {
+          const item = el('div', { class: 'permission-mini' },
+            el('div', { class: 'permission-mini-head' }, iconEl('shield-alert'), el('span', { text: permission.title || 'Permission request' })),
+            el('div', { class: 'permission-mini-detail', text: permissionDetail(permission) }),
+            el('div', { class: 'permission-mini-actions' },
+              el('button', { class: 'button button-small button-allow', type: 'button', disabled: state.decidingPermissions.has(String(permission.id) || ''), onclick: () => decidePermission(permission.id, 'allow') }, el('span', { text: 'Allow once' })),
+              el('button', { class: 'button button-small button-always', type: 'button', disabled: state.decidingPermissions.has(String(permission.id) || ''), onclick: () => decidePermission(permission.id, 'always') }, el('span', { text: 'Allow in this chat' })),
+              el('button', { class: 'button button-small button-deny', type: 'button', disabled: state.decidingPermissions.has(String(permission.id) || ''), onclick: () => decidePermission(permission.id, 'deny') }, el('span', { text: 'Deny' }))
+            )
+          );
+          pendingWrap.appendChild(item);
+        });
+        wrap.appendChild(pendingWrap);
+      }
+      return wrap;
+    }
+
+    function renderWorkspacePanel() {
+      const wrap = el('div');
+      wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Working folder' }));
+      wrap.appendChild(el('div', { class: 'setting-value', text: state.workspace || 'No folder selected.' }));
+      const actions = el('div', { class: 'setting-actions' },
+        settingsActionButton('Select folder…', 'folder',
+          async () => { await chooseNativeFolder(); refreshPanel(); },
+          { variant: 'primary', disabled: anyGenerationRunning() || state.remoteBusy || Boolean(state.serverError) || !state.nativeReady }),
+        settingsActionButton('Open', 'external', async () => { await openWorkspaceFolder(); }, { disabled: !state.workspace }),
+        settingsActionButton('Download ZIP', 'archive', async () => { await downloadWorkspaceZip(); }, { disabled: !state.workspace })
+      );
+      if (state.workspaceChosen) {
+        actions.appendChild(settingsActionButton('Use default folder', 'x', async () => {
+          const result = await API.clearWorkspace();
+          state.workspace = normalizeWorkspace(result?.workspace ?? result?.path) || state.workspace;
+          state.workspaceChosen = false;
+          state.workspacePanelRoot = '';
+          resetWorkspaceTree();
+          updateComposerState();
+          renderWorkspaceTreePanel();
+          refreshPanel();
+        }));
+      }
+      wrap.appendChild(actions);
+      wrap.appendChild(el('p', { class: 'setting-desc', text: 'The Local Agent reads and writes in this folder, and Code answers are saved here. Arena Agent uses its own cloud workspace.' }));
+
+      if (!state.nativeReady) {
+        wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Folder path' }));
+        const form = el('form', { novalidate: true });
+        const input = el('input', {
+          class: 'input mono', type: 'text', value: state.workspace,
+          placeholder: 'C:\\Projects\\My project', autocomplete: 'off', spellcheck: 'false',
+          'aria-label': 'Full folder path'
+        });
+        const error = el('p', { class: 'form-error', role: 'alert' });
+        const saveButton = el('button', { class: 'button button-small', type: 'submit' }, iconEl('check'), el('span', { text: 'Use this folder' }));
+        form.append(input, error, el('div', { class: 'setting-actions' }, saveButton));
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          error.textContent = '';
+          input.classList.remove('is-invalid');
+          saveButton.disabled = true;
+          try {
+            await applyWorkspacePath(input.value);
+            refreshPanel();
+          } catch (saveError) {
+            error.textContent = errorMessage(saveError);
+            input.classList.add('is-invalid');
+            input.focus();
+          } finally {
+            saveButton.disabled = false;
+          }
+        });
+        wrap.appendChild(form);
+      }
+      return wrap;
+    }
+
+    function renderAboutPanel() {
+      const wrap = el('div');
+      wrap.appendChild(el('div', { class: 'about-mark' }, iconEl('spark')));
+      wrap.appendChild(el('h3', { class: 'about-title', text: 'Arena Desktop' }));
+      wrap.appendChild(el('p', { class: 'about-sub', text: state.appVersion ? `Version ${state.appVersion}` : 'Desktop client' }));
+      wrap.appendChild(el('p', { class: 'modal-copy', text: 'An unofficial desktop client for arena.ai — not affiliated with Arena. Everything runs through your own Arena account.' }));
+      const bullets = [
+        'Battle, Agent, Side by Side and Direct work as on arena.ai; a started chat keeps its mode, work type and models.',
+        'The Local Agent works only inside the folder you pick, under the permission mode you choose.',
+        'Arena can rate-limit accounts per work type (Video especially); the app shows Arena’s reset time when it sends one.'
+      ];
+      wrap.appendChild(el('ul', { class: 'limits-list' }, bullets.map((text) => el('li', { text }))));
+      wrap.appendChild(el('div', { class: 'setting-actions' },
+        settingsActionButton('Terms of Use', 'external', async () => { window.open('https://help.arena.ai/articles/5629909088-terms-of-use', '_blank', 'noopener'); }),
+        settingsActionButton('Privacy Policy', 'external', async () => { window.open('https://help.arena.ai/articles/3765052346-privacy-policy', '_blank', 'noopener'); })
+      ));
+      return wrap;
+    }
+
+    function contentFor(tab) {
+      if (tab === 'permissions') return renderPermissionsPanel();
+      if (tab === 'workspace') return renderWorkspacePanel();
+      if (tab === 'about') return renderAboutPanel();
+      return renderConnectionPanel();
+    }
+
+    function hydrateTab(tab) {
+      if (hydrated[tab]) return;
+      hydrated[tab] = true;
+      if (state.serverError || state.networkOffline) return;
+      if (tab === 'permissions') {
+        Promise.allSettled([loadPermissionModeFromServer({ quiet: true }), loadPermissions({ quiet: true })])
+          .then(() => { if (state.settingsTab === 'permissions') refreshPanel(); });
+      } else if (tab === 'workspace') {
+        loadWorkspaceFromServer({ quiet: true }).then(() => { if (state.settingsTab === 'workspace') refreshPanel(); });
+      }
+    }
+
+    function refreshPanel() {
+      if (!panel.isConnected) return;
+      clear(panel);
+      panel.id = 'settings-panel';
+      panel.setAttribute('aria-labelledby', `settings-tab-${currentTab}`);
+      panel.appendChild(contentFor(currentTab));
+      tabDefs.forEach((tab) => {
+        const button = tabButtons[tab.id];
+        const selected = tab.id === currentTab;
+        button.setAttribute('aria-selected', String(selected));
+        button.tabIndex = selected ? 0 : -1;
+      });
+    }
+
+    function selectTab(tabId, moveFocus = false) {
+      if (!tabDefs.some((tab) => tab.id === tabId)) return;
+      currentTab = tabId;
+      state.settingsTab = tabId;
+      refreshPanel();
+      if (moveFocus) tabButtons[tabId]?.focus();
+      hydrateTab(tabId);
+    }
+
+    const mounted = mountModal({
+      title: 'Settings',
+      size: 'large',
+      content: layout,
+      actions: [
+        { label: 'Done', variant: 'primary' }
+      ],
+      onMount: () => {
+        selectTab(currentTab, false);
+      },
+      onClose: () => {
+        if (state.settingsRerender === refreshPanel) state.settingsRerender = null;
+      }
+    });
+    state.settingsRerender = refreshPanel;
+    state.settingsFetched = hydrated;
+    return mounted;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Right Workspace / Connectors panel                                    */
+  /* ---------------------------------------------------------------------- */
+  function formatBytes(bytes) {
+    const value = Number(bytes);
+    if (!Number.isFinite(value) || value <= 0) return '';
+    if (value < 1024) return `${Math.round(value)} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(value >= 10 * 1024 ? 0 : 1)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function normalizeWorkspaceEntry(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const path = String(raw.path ?? raw.rel_path ?? raw.name ?? '');
+    if (!path) return null;
+    return {
+      name: String(raw.name ?? baseName(path) ?? path),
+      path,
+      is_dir: Boolean(raw.is_dir ?? raw.isDir ?? raw.directory),
+      size: Number(raw.size ?? 0) || 0,
+      modified_at: raw.modified_at ?? raw.modifiedAt ?? null,
+      raw
+    };
+  }
+
+  function workspaceFileIcon(entry) {
+    if (entry.is_dir) return 'folder';
+    const name = String(entry.name || '').toLocaleLowerCase('en');
+    if (/\.(png|jpe?g|gif|webp|svg|bmp|ico)$/.test(name)) return 'image';
+    if (/\.(mp4|webm|mov|mkv)$/.test(name)) return 'video';
+    if (/\.(zip|7z|rar|tar|gz)$/.test(name)) return 'archive';
+    if (/\.(py|js|ts|tsx|jsx|html|css|json|md|txt|yml|yaml|toml|xml|csv|rs|go|java|c|cpp|h|sh|ps1|bat)$/.test(name)) return 'file-text';
+    return 'file';
+  }
+
+  function resetWorkspaceTree() {
+    state.workspaceTree = [];
+    state.workspaceTreeLoaded = false;
+    state.workspaceTreeError = null;
+    state.workspaceTreeTruncated = false;
+    state.workspaceChildren = {};
+    state.workspaceExpanded = new Set();
+    state.workspaceLoadingPaths = new Set();
+    state.workspaceRequest += 1;
+  }
+
+  function syncWorkspacePanelVisibility() {
+    const open = Boolean(state.workspacePanelOpen);
+    if (els.app) els.app.dataset.workspacePanel = open ? 'open' : 'closed';
+    if (els.workspacePanel) els.workspacePanel.hidden = !open;
+    if (els.workspacePanelTopButton) els.workspacePanelTopButton.setAttribute('aria-pressed', String(open));
+    if (els.workspacePanelNavBtn) els.workspacePanelNavBtn.setAttribute('aria-pressed', String(open));
+    if (els.workspacePanelRoot) {
+      const label = state.workspacePanelRoot || state.workspace || "Loading folder…";
+      els.workspacePanelRoot.textContent = label;
+      els.workspacePanelRoot.title = label;
+    }
+  }
+
+  function setWorkspacePanelOpen(open, { focusConnectors = false, persist = true, load = true } = {}) {
+    state.workspacePanelOpen = Boolean(open);
+    syncWorkspacePanelVisibility();
+    if (persist) {
+      try { localStorage.setItem('arenaPersonal.workspacePanelOpen.v4', state.workspacePanelOpen ? '1' : '0'); } catch { /* storage unavailable */ }
+    }
+    if (!state.workspacePanelOpen) return;
+    renderWorkspaceTreePanel();
+    renderConnectorsPanel();
+    if (load) void refreshWorkspacePanel();
+    if (focusConnectors) {
+      window.setTimeout(() => {
+        els.connectorsPane?.scrollIntoView({ block: 'nearest' });
+        try { els.addConnectorButton?.focus({ preventScroll: true }); } catch { els.addConnectorButton?.focus(); }
+      }, 40);
+    }
+  }
+
+  function restoreWorkspacePanelPreference() {
+    let open = window.innerWidth >= 1180;
+    try {
+      const stored = localStorage.getItem('arenaPersonal.workspacePanelOpen.v4');
+      if (stored === '1') open = true;
+      else if (stored === '0') open = false;
+    } catch { /* use width default */ }
+    setWorkspacePanelOpen(open, { persist: false, load: false });
+  }
+
+  const LAYOUT_LIMITS = {
+    sidebarWidth: { min: 220, max: 420, fallback: 276 },
+    workspaceWidth: { min: 260, max: 560, fallback: 332 },
+    connectorsShare: { min: 22, max: 68, fallback: 38 }
+  };
+
+  function clampLayoutValue(key, value) {
+    const limits = LAYOUT_LIMITS[key];
+    const number = Number(value);
+    if (!Number.isFinite(number)) return limits.fallback;
+    return Math.round(Math.min(limits.max, Math.max(limits.min, number)));
+  }
+
+  function applyLayout() {
+    const layout = state.layout || {};
+    state.layout = {
+      sidebarWidth: clampLayoutValue('sidebarWidth', layout.sidebarWidth),
+      workspaceWidth: clampLayoutValue('workspaceWidth', layout.workspaceWidth),
+      connectorsShare: clampLayoutValue('connectorsShare', layout.connectorsShare)
+    };
+    const root = document.documentElement.style;
+    // The grid reads --sidebar-w / --workspace-panel-w; setting differently
+    // named variables was why dragging the handles changed nothing.
+    root.setProperty('--sidebar-w', `${state.layout.sidebarWidth}px`);
+    root.setProperty('--sidebar-width', `${state.layout.sidebarWidth}px`);
+    root.setProperty('--workspace-panel-w', `${state.layout.workspaceWidth}px`);
+    root.setProperty('--workspace-width', `${state.layout.workspaceWidth}px`);
+    root.setProperty('--connectors-share', `${state.layout.connectorsShare}%`);
+    const syncHandle = (node, key) => {
+      if (!node) return;
+      const limits = LAYOUT_LIMITS[key];
+      node.setAttribute('aria-valuemin', String(limits.min));
+      node.setAttribute('aria-valuemax', String(limits.max));
+      node.setAttribute('aria-valuenow', String(state.layout[key]));
+    };
+    syncHandle(els.sidebarResize, 'sidebarWidth');
+    syncHandle(els.workspaceResize, 'workspaceWidth');
+    syncHandle(els.workspaceSplitResize, 'connectorsShare');
+    try { localStorage.setItem('arenaDesktop.layout.v1', JSON.stringify(state.layout)); } catch { /* storage unavailable */ }
+  }
+
+  function restoreLayoutFromCache() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('arenaDesktop.layout.v1') || 'null');
+      if (saved && typeof saved === 'object') state.layout = { ...state.layout, ...saved };
+    } catch { /* use defaults */ }
+    applyLayout();
+  }
+
+  let layoutSaveTimer = 0;
+  function persistLayout() {
+    applyLayout();
+    window.clearTimeout(layoutSaveTimer);
+    layoutSaveTimer = window.setTimeout(() => {
+      layoutSaveTimer = 0;
+      API.saveSettings({ layout: { ...state.layout } }).catch(() => {});
+    }, 320);
+  }
+
+  async function loadLayoutSettings() {
+    try {
+      const payload = await API.getSettings();
+      const layout = payload?.settings?.layout || payload?.layout;
+      if (layout && typeof layout === 'object') {
+        state.layout = { ...state.layout, ...layout };
+        applyLayout();
+      }
+      const off = payload?.arena_connectors_off ?? payload?.settings?.arena_connectors_off;
+      if (Array.isArray(off)) {
+        state.arenaConnectorsOff = new Set(off.map(String));
+        refreshConnectorSurfaces();
+      }
+    } catch { /* cached layout remains active */ }
+  }
+
+  function setupPanelResize(handle, { key, orientation = 'vertical', valueFromEvent, label }) {
+    if (!handle || handle.dataset.resizeReady === '1') return;
+    handle.dataset.resizeReady = '1';
+    handle.setAttribute('tabindex', '0');
+    handle.setAttribute('role', 'separator');
+    handle.setAttribute('aria-orientation', orientation);
+    if (label) handle.setAttribute('aria-label', label);
+    handle.addEventListener('pointerdown', (event) => {
+      if (event.button !== undefined && event.button !== 0) return;
+      event.preventDefault();
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const startValue = state.layout[key];
+      const panelRect = els.workspacePanel?.getBoundingClientRect();
+      document.body.classList.add('is-resizing');
+      handle.classList.add('is-dragging');
+      handle.setPointerCapture?.(event.pointerId);
+      const move = (pointerEvent) => {
+        state.layout[key] = clampLayoutValue(key, valueFromEvent({
+          startValue,
+          dx: pointerEvent.clientX - startX,
+          dy: pointerEvent.clientY - startY,
+          panelRect
+        }));
+        applyLayout();
+      };
+      const finish = () => {
+        document.body.classList.remove('is-resizing');
+        handle.classList.remove('is-dragging');
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', finish);
+        handle.removeEventListener('pointercancel', finish);
+        persistLayout();
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', finish);
+      handle.addEventListener('pointercancel', finish);
+    });
+    handle.addEventListener('keydown', (event) => {
+      const step = event.shiftKey ? 16 : 6;
+      let delta = 0;
+      if (orientation === 'vertical') {
+        if (event.key === 'ArrowLeft') delta = key === 'workspaceWidth' ? step : -step;
+        if (event.key === 'ArrowRight') delta = key === 'workspaceWidth' ? -step : step;
+      } else {
+        if (event.key === 'ArrowUp') delta = step;
+        if (event.key === 'ArrowDown') delta = -step;
+      }
+      if (!delta) return;
+      event.preventDefault();
+      state.layout[key] = clampLayoutValue(key, state.layout[key] + delta);
+      persistLayout();
+    });
+    handle.addEventListener('dblclick', () => {
+      state.layout[key] = LAYOUT_LIMITS[key].fallback;
+      persistLayout();
+    });
+  }
+
+  function setupLayoutResize() {
+    restoreLayoutFromCache();
+    setupPanelResize(els.sidebarResize, {
+      key: 'sidebarWidth', label: 'Resize sidebar',
+      valueFromEvent: ({ startValue, dx }) => startValue + dx
+    });
+    setupPanelResize(els.workspaceResize, {
+      key: 'workspaceWidth', label: 'Resize workspace panel',
+      valueFromEvent: ({ startValue, dx }) => startValue - dx
+    });
+    setupPanelResize(els.workspaceSplitResize, {
+      key: 'connectorsShare', orientation: 'horizontal', label: 'Resize connectors section',
+      valueFromEvent: ({ startValue, dy, panelRect }) => {
+        const height = Math.max(1, panelRect?.height || els.workspacePanel?.clientHeight || 1);
+        return startValue - (dy / height) * 100;
+      }
+    });
+  }
+
+  async function refreshWorkspacePanel({ force = false } = {}) {
+    const jobs = [];
+    if (force || !state.connectors) jobs.push(loadConnectors({ reload: force, silent: true }));
+    if (state.authenticated && (force || !state.arenaConnectors)) jobs.push(loadArenaConnectors({ silent: true }));
+    if (state.workspacePanelOpen && (force || !state.workspaceTreeLoaded)) jobs.push(loadWorkspaceTree('.', { force }));
+    await Promise.allSettled(jobs);
+  }
+
+  async function loadWorkspaceTree(path = '.', { force = false } = {}) {
+    const target = String(path || '.');
+    if (state.serverError) {
+      if (target === '.') state.workspaceTreeError = state.serverError;
+      renderWorkspaceTreePanel();
+      return [];
+    }
+    if (target !== '.') {
+      if (!force && Array.isArray(state.workspaceChildren[target])) {
+        renderWorkspaceTreePanel();
+        return state.workspaceChildren[target];
+      }
+      if (state.workspaceLoadingPaths.has(target)) return state.workspaceChildren[target] || [];
+      state.workspaceLoadingPaths.add(target);
+      renderWorkspaceTreePanel();
+      try {
+        const raw = await API.getWorkspaceTree(target);
+        const entries = (Array.isArray(raw?.entries) ? raw.entries : []).map(normalizeWorkspaceEntry).filter(Boolean);
+        state.workspaceChildren[target] = entries;
+        if (raw?.root) state.workspacePanelRoot = String(raw.root);
+        return entries;
+      } catch (error) {
+        state.workspaceExpanded.delete(target);
+        toast(errorMessage(error), 'error', "Folder not opened");
+        return [];
+      } finally {
+        state.workspaceLoadingPaths.delete(target);
+        syncWorkspacePanelVisibility();
+        renderWorkspaceTreePanel();
+      }
+    }
+
+    if (state.workspaceTreeLoading && !force) return state.workspaceTree;
+    const requestId = ++state.workspaceRequest;
+    state.workspaceTreeLoading = true;
+    if (force) state.workspaceTreeError = null;
+    renderWorkspaceTreePanel();
+    try {
+      const raw = await API.getWorkspaceTree('.');
+      if (requestId !== state.workspaceRequest) return state.workspaceTree;
+      const nextRoot = String(raw?.root || state.workspacePanelRoot || state.workspace || '');
+      if (state.workspacePanelRoot && nextRoot && state.workspacePanelRoot !== nextRoot) {
+        state.workspaceChildren = {};
+        state.workspaceExpanded = new Set();
+      }
+      state.workspacePanelRoot = nextRoot;
+      state.workspaceTree = (Array.isArray(raw?.entries) ? raw.entries : []).map(normalizeWorkspaceEntry).filter(Boolean);
+      state.workspaceTreeTruncated = Boolean(raw?.truncated);
+      state.workspaceTreeLoaded = true;
+      state.workspaceTreeError = null;
+      return state.workspaceTree;
+    } catch (error) {
+      if (requestId === state.workspaceRequest) state.workspaceTreeError = errorMessage(error);
+      return [];
+    } finally {
+      if (requestId === state.workspaceRequest) state.workspaceTreeLoading = false;
+      syncWorkspacePanelVisibility();
+      renderWorkspaceTreePanel();
+    }
+  }
+
+  function workspaceTreeNode(entry, depth = 0) {
+    const fragment = document.createDocumentFragment();
+    const expanded = entry.is_dir && state.workspaceExpanded.has(entry.path);
+    const loading = entry.is_dir && state.workspaceLoadingPaths.has(entry.path);
+    const activate = () => {
+      if (entry.is_dir) void toggleWorkspaceDirectory(entry);
+      else void openWorkspaceFilePreview(entry);
+    };
+    const row = el('div', {
+      class: `workspace-tree-row${entry.is_dir ? ' is-dir' : ''}`,
+      role: 'treeitem',
+      tabindex: '0',
+      'aria-expanded': entry.is_dir ? String(expanded) : false,
+      'aria-label': `${entry.is_dir ? "Folder" : "File"}: ${entry.path}`,
+      title: entry.path,
+      style: { paddingLeft: `${6 + depth * 13}px` },
+      onclick: activate,
+      onkeydown: (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          activate();
+        }
+      }
+    },
+      entry.is_dir
+        ? el('span', { class: 'workspace-tree-caret', 'aria-hidden': 'true' }, iconEl('chevron-right'))
+        : el('span', { class: 'workspace-tree-caret', 'aria-hidden': 'true' }),
+      iconEl(workspaceFileIcon(entry), entry.is_dir ? 'workspace-entry-icon is-folder' : 'workspace-entry-icon is-file'),
+      el('span', { class: 'workspace-tree-name', text: entry.name }),
+      loading ? el('span', { class: 'mini-spinner', 'aria-hidden': 'true' }) : null
+    );
+    fragment.appendChild(row);
+    if (entry.is_dir && expanded) {
+      const childrenWrap = el('div', { class: 'workspace-tree-children', role: 'group' });
+      const children = state.workspaceChildren[entry.path];
+      if (loading && !Array.isArray(children)) {
+        childrenWrap.appendChild(el('div', { class: 'workspace-tree-empty', text: "Loading…" }));
+      } else if (Array.isArray(children) && children.length) {
+        children.forEach((child) => childrenWrap.appendChild(workspaceTreeNode(child, depth + 1)));
+      } else if (Array.isArray(children)) {
+        childrenWrap.appendChild(el('div', { class: 'workspace-tree-empty', text: "Folder is empty" }));
+      }
+      fragment.appendChild(childrenWrap);
+    }
+    return fragment;
+  }
+
+  function renderWorkspaceTreePanel() {
+    syncWorkspacePanelVisibility();
+    const node = els.workspaceTree;
+    if (!node) return;
+    const scrollTop = node.scrollTop;
+    clear(node);
+    node.setAttribute('aria-busy', String(state.workspaceTreeLoading));
+    if (state.workspaceTreeLoading && !state.workspaceTreeLoaded) {
+      node.appendChild(el('div', { class: 'workspace-tree-empty' }, el('span', { class: 'mini-spinner' }), el('span', { text: " Loading files…" })));
+    } else if (state.workspaceTreeError && !state.workspaceTree.length) {
+      node.append(
+        el('div', { class: 'workspace-tree-error', text: state.workspaceTreeError }),
+        el('button', { class: 'button button-small button-quiet', type: 'button', onclick: () => void loadWorkspaceTree('.', { force: true }) },
+          iconEl('refresh'), el('span', { text: "Retry" }))
+      );
+    } else if (!state.workspaceTree.length) {
+      node.appendChild(el('div', { class: 'workspace-tree-empty', text: state.workspaceTreeLoaded ? "There are no files in this folder yet." : "Click refresh to load the file tree." }));
+    } else {
+      const rootName = baseName(state.workspacePanelRoot || state.workspace || '') || 'Workspace';
+      node.appendChild(el('div', {
+        class: 'workspace-tree-row workspace-tree-root is-dir',
+        role: 'treeitem', 'aria-expanded': 'true',
+        title: state.workspacePanelRoot || state.workspace || rootName
+      },
+        el('span', { class: 'workspace-tree-caret', 'aria-hidden': 'true' }, iconEl('chevron-right')),
+        iconEl('folder', 'workspace-entry-icon is-folder'),
+        el('span', { class: 'workspace-tree-name', text: rootName })));
+      state.workspaceTree.forEach((entry) => node.appendChild(workspaceTreeNode(entry, 1)));
+      if (state.workspaceTreeTruncated) node.appendChild(el('div', { class: 'workspace-tree-empty', text: "The first items of the folder are shown; the rest are hidden by the preview limit." }));
+      if (state.workspaceTreeError) node.appendChild(el('div', { class: 'workspace-tree-error', text: state.workspaceTreeError }));
+    }
+    node.scrollTop = scrollTop;
+  }
+
+  async function toggleWorkspaceDirectory(entry) {
+    if (!entry?.is_dir) return;
+    if (state.workspaceExpanded.has(entry.path)) {
+      state.workspaceExpanded.delete(entry.path);
+      renderWorkspaceTreePanel();
+      return;
+    }
+    state.workspaceExpanded.add(entry.path);
+    renderWorkspaceTreePanel();
+    await loadWorkspaceTree(entry.path);
+  }
+
+  async function openWorkspaceFilePreview(entry) {
+    if (!entry || entry.is_dir) return;
+    try {
+      const raw = await API.getWorkspaceFile(entry.path);
+      const content = String(raw?.content ?? '');
+      const shown = content.length > 250000 ? `${content.slice(0, 250000)}
+
+… [preview truncated]` : content;
+      const body = el('div', {},
+        el('div', { class: 'note-box' }, iconEl('info'), el('span', { text: "Preview is read-only. To modify the file, open the folder in your editor." })),
+        el('pre', { class: 'file-preview-pre', text: shown || "[empty file]" })
+      );
+      mountModal({
+        title: entry.name,
+        subtitle: `${raw?.path || entry.path}${entry.size ? ` · ${formatBytes(entry.size)}` : ''}`,
+        size: 'large',
+        content: body,
+        actions: [
+          {
+            label: "Copy", variant: 'quiet', icon: 'copy',
+            onClick: async () => {
+              const ok = await copyText(content);
+              toast(ok ? "File content copied." : "Failed to copy the file.", ok ? 'success' : 'error');
+              return false;
+            }
+          },
+          { label: "Close", variant: 'primary', autofocus: true }
+        ]
+      });
+    } catch (error) {
+      toast(errorMessage(error), 'error', "File is not open");
+    }
+  }
+
+  function connectorServersList() {
+    return Array.isArray(state.connectors?.servers) ? state.connectors.servers : [];
+  }
+
+  function connectorPresetsList() {
+    return Array.isArray(state.connectors?.presets) ? state.connectors.presets : [];
+  }
+
+  function applyConnectorsPayload(payload) {
+    if (payload && typeof payload === 'object' && (Array.isArray(payload.servers) || Array.isArray(payload.presets))) {
+      state.connectors = payload;
+      state.connectorsError = payload.config_error || null;
+    }
+    renderConnectorsPanel();
+    return state.connectors;
+  }
+
+  async function loadConnectors({ reload = false, silent = false } = {}) {
+    const requestId = ++state.connectorRequest;
+    state.connectorsLoading = true;
+    renderConnectorsPanel();
+    try {
+      const raw = reload ? await API.reloadConnectors() : await API.getConnectors();
+      if (requestId === state.connectorRequest) applyConnectorsPayload(raw);
+      return state.connectors;
+    } catch (error) {
+      if (requestId === state.connectorRequest) state.connectorsError = errorMessage(error);
+      if (!silent) toast(errorMessage(error), 'error', "Connectors are unavailable");
+      return null;
+    } finally {
+      if (requestId === state.connectorRequest) state.connectorsLoading = false;
+      renderConnectorsPanel();
+    }
+  }
+
+  /* Official Arena account connectors (live catalog from arena.ai) */
+  let addConnectorModalRender = null;
+
+  function arenaConnectorsList() {
+    return Array.isArray(state.arenaConnectors) ? state.arenaConnectors : [];
+  }
+
+  function refreshConnectorSurfaces() {
+    renderConnectorsPanel();
+    if (addConnectorModalRender) {
+      try { addConnectorModalRender(); } catch { /* modal already gone */ }
+    }
+  }
+
+  function applyArenaConnectorsPayload(payload) {
+    if (payload && typeof payload === 'object' && Array.isArray(payload.connectors)) {
+      state.arenaConnectors = payload.connectors;
+      state.arenaConnectorsError = null;
+    }
+    refreshConnectorSurfaces();
+    return state.arenaConnectors;
+  }
+
+  async function loadArenaConnectors({ silent = false } = {}) {
+    const requestId = ++state.arenaConnectorRequest;
+    state.arenaConnectorsLoading = true;
+    renderConnectorsPanel();
+    try {
+      const raw = await API.getArenaConnectors();
+      if (requestId === state.arenaConnectorRequest) applyArenaConnectorsPayload(raw);
+      return state.arenaConnectors;
+    } catch (error) {
+      if (requestId === state.arenaConnectorRequest) state.arenaConnectorsError = errorMessage(error);
+      if (!silent && error?.status !== 401) toast(errorMessage(error), 'error', "Arena connectors are unavailable");
+      return null;
+    } finally {
+      if (requestId === state.arenaConnectorRequest) state.arenaConnectorsLoading = false;
+      refreshConnectorSurfaces();
+    }
+  }
+
+  function arenaConnectorStatusLabel(item) {
+    if (item?.auth_status === 'connected' || item?.connected) {
+      return state.arenaConnectorsOff.has(item.slug) ? "Connected to account · Off" : "Connected to account";
+    }
+    if (item?.auth_status === 'unusable') return "Unavailable";
+    return "Not connected";
+  }
+
+  function setArenaConnectorEnabled(item, enabled) {
+    if (!item?.slug) return;
+    if (enabled) state.arenaConnectorsOff.delete(item.slug);
+    else state.arenaConnectorsOff.add(item.slug);
+    API.saveSettings({ arena_connectors_off: [...state.arenaConnectorsOff] }).catch(() => {});
+    refreshConnectorSurfaces();
+    toast(enabled ? `${item.name} will be available to Arena Agent.` : `${item.name} is off: Arena Agent will not use it.`, 'success');
+  }
+
+  function stopArenaConnectorPoll() {
+    if (state.arenaConnectorPoll) state.arenaConnectorPoll.cancelled = true;
+    state.arenaConnectorPoll = null;
+  }
+
+  async function pollArenaConnectorFlow(slug, name, token) {
+    const deadline = Date.now() + 5 * 60 * 1000;
+    while (!token.cancelled && Date.now() < deadline) {
+      await sleep(state.demo ? 600 : 2500);
+      if (token.cancelled) return;
+      let result = null;
+      try {
+        result = await API.pollArenaConnector(slug);
+      } catch {
+        continue;
+      }
+      if (Array.isArray(result?.connectors)) applyArenaConnectorsPayload(result);
+      if (result?.done) {
+        if (result.connected) toast(`Connector "${name}" is connected to the Arena account.`, 'success');
+        else if (result.outcome === 'exit') toast("The connection window was closed without confirmation.", 'info', name);
+        else if (result.outcome === 'timeout') toast("Timeout expired. Refresh the list to check the status.", 'warning', name);
+        void loadArenaConnectors({ silent: true });
+        void loadStatus({ quiet: true });
+        return;
+      }
+    }
+    if (!token.cancelled) toast("Connection is not yet complete. Check the status later with the refresh button.", 'warning', name);
+  }
+
+  async function connectArenaConnectorFlow(connector) {
+    const slug = String(connector?.slug || '');
+    if (!slug || state.arenaConnectorBusy.has(slug)) return;
+    stopArenaConnectorPoll();
+    state.arenaConnectorBusy.add(slug);
+    refreshConnectorSurfaces();
+    try {
+      const result = await API.connectArenaConnector(slug);
+      if (result?.pending) {
+        toast(state.demo
+          ? "Demo: connection is simulated without Arena window and OAuth."
+          : "Complete the connection in the opened Arena window. After confirmation, the window will close automatically.",
+          'info', connector.name || slug);
+        const token = { slug, cancelled: false };
+        state.arenaConnectorPoll = token;
+        await pollArenaConnectorFlow(slug, connector.name || slug, token);
+      } else {
+        await loadArenaConnectors({ silent: true });
+      }
+    } catch (error) {
+      const details = error?.details || {};
+      if (details.code === 'engine_required' && details.fallback_url && !state.desktop) {
+        toast(`${errorMessage(error)} Open arena.ai and connect the connector there — it will appear in this list after refreshing.`, 'warning', connector.name || slug);
+      } else {
+        toast(errorMessage(error), 'error', connector.name || slug);
+      }
+    } finally {
+      state.arenaConnectorBusy.delete(slug);
+      refreshConnectorSurfaces();
+    }
+  }
+
+  function disconnectArenaConnectorFlow(connector) {
+    const slug = String(connector?.slug || '');
+    if (!slug) return;
+    mountModal({
+      title: "Disconnect the Arena connector?",
+      subtitle: connector.name || slug,
+      size: 'small',
+      content: el('p', { class: 'modal-copy', text: 'The connector will be disconnected from your arena.ai account and will no longer be available to Arena Agent. You can connect it again at any time.' }),
+      actions: [
+        { label: "Cancel", variant: 'quiet' },
+        {
+          label: "Disconnect", variant: 'danger',
+          onClick: async () => {
+            if (state.arenaConnectorBusy.has(slug)) return;
+            state.arenaConnectorBusy.add(slug);
+            refreshConnectorSurfaces();
+            try {
+              const payload = await API.disconnectArenaConnector(slug);
+              if (Array.isArray(payload?.connectors) && payload.connectors.length) applyArenaConnectorsPayload(payload);
+              else await loadArenaConnectors({ silent: true });
+              toast(`Connector "${connector.name || slug}" is disconnected from the Arena account.`, 'success');
+            } catch (error) {
+              toast(errorMessage(error), 'error', connector.name || slug);
+            } finally {
+              state.arenaConnectorBusy.delete(slug);
+              refreshConnectorSurfaces();
+            }
+          }
+        }
+      ]
+    });
+  }
+
+  function arenaConnectorRow(item) {
+    const busy = state.arenaConnectorBusy.has(item.slug);
+    const connected = Boolean(item.connected || item.auth_status === 'connected');
+    const enabled = connected && !state.arenaConnectorsOff.has(item.slug);
+    const unusable = item.auth_status === 'unusable';
+    const logo = connectorLogoNode(item);
+    const main = el('div', { class: 'arena-connector-main' },
+      el('div', { class: 'connector-main' },
+        el('span', { class: 'connector-status-dot', 'aria-hidden': 'true' }),
+        el('span', { class: 'connector-name', title: item.name, text: item.name }),
+        el('span', { class: 'connector-meta', text: busy ? "Connecting…" : arenaConnectorStatusLabel(item) })
+      ),
+      item.description ? el('p', { class: 'connector-desc', text: item.description }) : null
+    );
+    const actions = el('div', { class: 'connector-actions' });
+    if (connected) {
+      const toggle = el('input', {
+        type: 'checkbox', class: 'switch-input', checked: enabled, disabled: busy,
+        'aria-label': `Use ${item.name} in Agent Mode`
+      });
+      toggle.addEventListener('change', () => setArenaConnectorEnabled(item, toggle.checked));
+      actions.appendChild(el('label', { class: 'switch-row', title: 'Available to Arena Agent in Agent Mode' },
+        el('span', { class: 'switch-label', text: enabled ? 'On' : 'Off' }),
+        el('span', { class: 'switch' }, toggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))
+      ));
+      actions.appendChild(el('button', {
+        class: 'button button-quiet', type: 'button', disabled: busy,
+        onclick: () => disconnectArenaConnectorFlow(item)
+      }, el('span', { text: busy ? "Turning off…" : "Disconnect" })));
+    } else {
+      actions.appendChild(el('button', {
+        class: 'button', type: 'button', disabled: busy || unusable,
+        onclick: () => void connectArenaConnectorFlow(item)
+      }, el('span', { text: busy ? "Connecting…" : (unusable ? "Unavailable" : "Connect") })));
+    }
+    return el('article', { class: `connector-card arena-connector-row${connected ? ' is-connected' : ''}${connected && !enabled ? ' is-off' : ''}` },
+      el('div', { class: 'arena-connector-head' }, logo, main),
+      actions
+    );
+  }
+
+  function renderArenaConnectorsInto(node) {
+    node.appendChild(el('div', { class: 'connector-group-title', text: "Official Arena Connectors" }));
+    node.appendChild(el('div', { class: 'connector-group-note', text: "Agent Mode only — these work with Arena Agent. The switch picks which connected ones it may use." }));
+    if (state.arenaConnectorsLoading && !state.arenaConnectors) {
+      node.appendChild(el('div', { class: 'connector-empty' }, el('span', { class: 'mini-spinner' }), el('span', { text: " Loading account connectors…" })));
+      return;
+    }
+    if (!state.authenticated) {
+      node.appendChild(el('div', { class: 'connector-empty', text: "Log in to Arena to see the official connectors of your account. New Arena connectors will appear here automatically." }));
+      return;
+    }
+    if (!state.arenaConnectors && state.arenaConnectorsError) {
+      node.append(
+        el('div', { class: 'connector-empty', text: state.arenaConnectorsError }),
+        el('button', { class: 'button button-small button-quiet', type: 'button', onclick: () => void loadArenaConnectors() },
+          iconEl('refresh'), el('span', { text: "Retry" }))
+      );
+      return;
+    }
+    if (!state.arenaConnectors) {
+      node.append(
+        el('div', { class: 'connector-empty', text: "The list of official connectors is taken from your arena.ai account." }),
+        el('button', { class: 'button button-small button-quiet', type: 'button', onclick: () => void loadArenaConnectors() },
+          iconEl('refresh'), el('span', { text: "Load Arena list" }))
+      );
+      return;
+    }
+    const list = arenaConnectorsList();
+    if (!list.length) {
+      node.appendChild(el('div', { class: 'connector-empty', text: "Arena did not return a list of connectors for this account." }));
+      return;
+    }
+    list.forEach((item) => node.appendChild(arenaConnectorRow(item)));
+    node.appendChild(el('div', { class: 'connector-note', text: 'The list and statuses come from your arena.ai account: new connectors appear automatically. The Local Agent uses the MCP servers below instead.' }));
+  }
+
+  function connectorStatusLabel(server) {
+    if (!server?.enabled) return "Off";
+    if (server.status === 'connected' || server.running) return "Connected";
+    if (server.status === 'unsupported') return "HTTP not supported.";
+    if (server.status === 'error') return "Error";
+    return "Not connected";
+  }
+
+  function renderConnectorsPanel() {
+    const servers = connectorServersList();
+    const arenaList = arenaConnectorsList();
+    const connected = servers.filter((server) => server.running || server.status === 'connected').length
+      + arenaList.filter((item) => item.connected || item.auth_status === 'connected').length;
+    const total = servers.length + arenaList.length;
+    if (els.connectorsNavCount) {
+      els.connectorsNavCount.textContent = (state.connectors || state.arenaConnectors) ? `${connected}/${total}` : '—';
+      els.connectorsNavCount.title = total ? `Connected connectors: ${connected} from ${total} (Arena and local MCP)` : "Connectors not added";
+    }
+    const node = els.connectorList;
+    if (!node) return;
+    const scrollTop = node.scrollTop;
+    clear(node);
+    node.setAttribute('aria-busy', String(state.connectorsLoading || state.arenaConnectorsLoading));
+    renderArenaConnectorsInto(node);
+    node.appendChild(el('div', { class: 'connector-group-title connector-group-row' },
+      el('span', { text: 'Local MCP servers' }),
+      el('button', {
+        class: 'button button-small', type: 'button',
+        onclick: () => openAddConnectorModal('local')
+      }, iconEl('plus'), el('span', { text: 'Add' }))
+    ));
+    if (state.connectorsLoading && !state.connectors) {
+      node.appendChild(el('div', { class: 'connector-empty' }, el('span', { class: 'mini-spinner' }), el('span', { text: " Loading connectors…" })));
+      return;
+    }
+    if (!state.connectors && state.connectorsError) {
+      node.append(
+        el('div', { class: 'connector-empty', text: state.connectorsError }),
+        el('button', { class: 'button button-small button-quiet', type: 'button', onclick: () => void loadConnectors({ reload: true }) },
+          iconEl('refresh'), el('span', { text: "Retry" }))
+      );
+      return;
+    }
+    if (state.connectors?.config_error) {
+      node.appendChild(el('div', { class: 'connector-card is-error' },
+        el('div', { class: 'connector-name', text: "Error in mcp.json" }),
+        el('p', { class: 'connector-error', text: state.connectors.config_error }),
+        el('p', { class: 'connector-desc', text: "Fix the JSON and click the reread button below." })
+      ));
+    }
+    if (!servers.length) {
+      node.appendChild(el('div', { class: 'connector-empty', text: "Local MCP not added yet. Click \"Add\": there are ready servers, a special JSON, and a CLI command." }));
+      return;
+    }
+    servers.forEach((server) => {
+      const name = String(server.name || server.id || '');
+      const busy = state.connectorBusy.has(name);
+      const isConnected = Boolean(server.running || server.status === 'connected');
+      const tools = Array.isArray(server.tools) ? server.tools : [];
+      const toolsLabel = tools.length
+        ? `${tools.slice(0, 6).map((tool) => tool.name).filter(Boolean).join(', ')}${tools.length > 6 ? ` and also ${tools.length - 6}` : ''}`
+        : '';
+      const unsupported = server.status === 'unsupported' || server.transport === 'http';
+      const card = el('article', {
+        class: `connector-card${isConnected ? ' is-connected' : ''}${server.status === 'error' || server.error ? ' is-error' : ''}${!server.enabled ? ' is-disabled' : ''}`
+      },
+        el('div', { class: 'connector-main' },
+          connectorLogoNode(server),
+          el('span', { class: 'connector-status-dot', 'aria-hidden': 'true' }),
+          el('span', { class: 'connector-name', title: name, text: name }),
+          el('span', { class: 'connector-meta', text: `${connectorStatusLabel(server)}${isConnected ? ` · ${tools.length} tools` : ''}` })
+        ),
+        server.description ? el('p', { class: 'connector-desc', text: server.description }) : null,
+        server.command_display ? el('div', { class: 'connector-command', title: server.command_display, text: server.command_display }) : null,
+        toolsLabel ? el('div', { class: 'connector-tools', title: tools.map((tool) => tool.name).join(', '), text: `Tools: ${toolsLabel}` }) : null,
+        unsupported ? el('p', { class: 'connector-error', text: "Remote HTTP/SSE MCP is not supported by this version yet. Add the same server as a local STDIO CLI command." }) : null,
+        server.error ? el('p', { class: 'connector-error', text: String(server.error) }) : null
+      );
+      const actions = el('div', { class: 'connector-actions' });
+      const addAction = (label, handler, { disabled = false, danger = false } = {}) => {
+        const button = el('button', {
+          class: `button${danger ? ' button-danger' : ' button-quiet'}`, type: 'button', disabled,
+          onclick: () => void handler()
+        }, el('span', { text: label }));
+        actions.appendChild(button);
+        return button;
+      };
+      addAction(busy ? "Connecting…" : (isConnected ? "Check" : (server.status === 'error' ? "Retry" : "Connect")),
+        () => runConnectorAction(name, () => API.connectConnector(name), `Connector ${name} connected.`),
+        { disabled: busy || !server.enabled || unsupported });
+      if (isConnected) {
+        addAction("Disconnect", () => runConnectorAction(name, () => API.disconnectConnector(name), `Connector ${name} stopped.`), { disabled: busy });
+      }
+      addAction(server.enabled ? "Turn off" : "Turn on",
+        () => runConnectorAction(name, () => API.setConnectorEnabled(name, !server.enabled), server.enabled ? `Connector ${name} off.` : `Connector ${name} on.`),
+        { disabled: busy });
+      addAction("Delete", () => confirmDeleteConnector(server), { disabled: busy, danger: true });
+      card.appendChild(actions);
+      node.appendChild(card);
+    });
+    node.scrollTop = scrollTop;
+  }
+
+  async function runConnectorAction(name, action, successMessage = '') {
+    if (!name || state.connectorBusy.has(name)) return null;
+    state.connectorBusy.add(name);
+    renderConnectorsPanel();
+    try {
+      const payload = await action();
+      if (payload && typeof payload === 'object' && (Array.isArray(payload.servers) || payload.server)) {
+        applyConnectorsPayload(payload);
+      } else {
+        await loadConnectors({ silent: true });
+      }
+      const server = payload?.server || connectorServersList().find((item) => String(item.name) === String(name));
+      if (server?.status === 'error') {
+        toast(server.error || "MCP server did not start. Check the command and installed dependencies.", 'warning', `Connector ${name}`);
+      } else if (server?.status === 'unsupported') {
+        toast("Remote HTTP/SSE MCP is not supported yet; a local STDIO server is needed.", 'warning', `Connector ${name}`);
+      } else if (successMessage) {
+        toast(successMessage, 'success');
+      }
+      return payload;
+    } catch (error) {
+      toast(errorMessage(error), 'error', `Connector ${name}`);
+      await loadConnectors({ silent: true });
+      return null;
+    } finally {
+      state.connectorBusy.delete(name);
+      renderConnectorsPanel();
+    }
+  }
+
+  function confirmDeleteConnector(server) {
+    const name = String(server?.name || server?.id || '');
+    if (!name) return;
+    mountModal({
+      title: "Delete the connector?",
+      subtitle: name,
+      size: 'small',
+      content: el('p', { class: 'modal-copy', text: "The entry will be deleted from ~/.arena-personal/mcp.json, and the running MCP process stopped. The installed software and its files will not be deleted." }),
+      actions: [
+        { label: "Cancel", variant: 'quiet' },
+        {
+          label: "Delete", variant: 'danger', icon: 'trash',
+          onClick: async () => { await runConnectorAction(name, () => API.deleteConnector(name), `Connector ${name} deleted.`); }
+        }
+      ]
+    });
+  }
+
+  async function openConnectorConfig({ silent = false } = {}) {
+    try {
+      const result = await API.openConnectorConfig();
+      const path = String(result?.path || state.connectors?.config_path || '~/.arena-personal/mcp.json');
+      if (!silent) toast(`File opened: ${path}. After saving, click reread list.`, 'success', 'MCP JSON');
+      return path;
+    } catch (error) {
+      toast(errorMessage(error), 'error', "MCP JSON is not open");
+      return null;
+    }
+  }
+
+  function parseEnvTextarea(value) {
+    const env = {};
+    String(value || '').split(/\r?\n/).forEach((line, index) => {
+      const clean = line.trim();
+      if (!clean || clean.startsWith('#')) return;
+      const eq = clean.indexOf('=');
+      if (eq <= 0) throw new ApiError(`env line ${index + 1}: required format NAME=value.`);
+      const key = clean.slice(0, eq).trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new ApiError(`env line ${index + 1}: incorrect variable name.`);
+      let item = clean.slice(eq + 1).trim();
+      if ((item.startsWith('"') && item.endsWith('"')) || (item.startsWith("'") && item.endsWith("'"))) item = item.slice(1, -1);
+      env[key] = item;
+    });
+    return env;
+  }
+
+  function openConnectorJsonOpenedModal(path) {
+    const content = el('div', {},
+      el('div', { class: 'note-box' }, iconEl('check'), el('span', { text: "The special MCP file is already open in the system editor." })),
+      el('p', { class: 'modal-copy', text: "Add servers to the mcpServers object, save the file, then come back here and click ‘Reload’. Local STDIO servers with command, args, env, and cwd are supported." }),
+      el('div', { class: 'permission-detail-label', text: "File path" }),
+      el('pre', { class: 'permission-detail', text: path })
+    );
+    mountModal({
+      title: "MCP JSON is open",
+      subtitle: 'Arena Desktop · ~/.arena-personal/mcp.json',
+      size: 'medium',
+      content,
+      actions: [
+        { label: "Close", variant: 'quiet' },
+        {
+          label: "I saved it — reload", variant: 'primary', icon: 'refresh', autofocus: true,
+          onClick: async () => {
+            await loadConnectors({ reload: true });
+            setWorkspacePanelOpen(true, { focusConnectors: true, load: false });
+            toast("MCP configuration reloaded.", 'success');
+          }
+        }
+      ]
+    });
+  }
+
+  function openAddConnectorModal(section = 'all') {
+    const localOnly = section === 'local';
+    const wrap = el('div');
+    const render = () => {
+      clear(wrap);
+      if (!localOnly) {
+      wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Official Arena connectors' }));
+      const arenaBox = el('div', { class: 'arena-connector-list' });
+      if (!state.authenticated) {
+        arenaBox.appendChild(el('div', { class: 'connector-empty', text: "Log in to Arena to connect official connectors to your account directly from the app." }));
+      } else if (state.arenaConnectorsLoading && !state.arenaConnectors) {
+        arenaBox.appendChild(el('div', { class: 'connector-empty' }, el('span', { class: 'mini-spinner' }), el('span', { text: " Loading Arena catalog…" })));
+      } else if (!state.arenaConnectors && state.arenaConnectorsError) {
+        arenaBox.append(
+          el('div', { class: 'connector-empty', text: state.arenaConnectorsError }),
+          el('button', { class: 'button button-small button-quiet', type: 'button', onclick: () => void loadArenaConnectors().then(render) },
+            iconEl('refresh'), el('span', { text: "Retry" }))
+        );
+      } else if (!arenaConnectorsList().length) {
+        arenaBox.appendChild(el('div', { class: 'connector-empty', text: "Arena did not return a list of connectors for this account." }));
+      } else {
+        arenaConnectorsList().forEach((item) => arenaBox.appendChild(arenaConnectorRow(item)));
+      }
+      wrap.appendChild(arenaBox);
+      wrap.appendChild(el('p', { class: 'field-help', text: 'The catalog and statuses come live from your arena.ai account: new official connectors appear automatically. Connected connectors are available to Arena Agent here.' }));
+      }
+
+      wrap.appendChild(el('div', { class: 'note-box' }, iconEl('plug'), el('span', {
+        text: "Local MCP servers run on your computer under your user rights. Their tools will appear in the local Agent; external and modifying actions still go through the permission mode."
+      })));
+      wrap.appendChild(el('h3', { class: 'modal-section-title', text: "Ready local MCP servers" }));
+      const grid = el('div', { class: 'connector-preset-grid' });
+      const presets = connectorPresetsList();
+      if (!presets.length) {
+        grid.appendChild(el('div', { class: 'connector-empty', text: state.connectorsLoading ? "Loading MCP list…" : (state.connectorsError || "MCP preset list not available.") }));
+      }
+      presets.forEach((preset) => {
+        const installed = Boolean(preset.installed || connectorServersList().some((server) => server.preset_id === preset.id || server.name === preset.id));
+        const docs = safeUrl(preset.docs || '');
+        const main = el('div', { class: 'connector-preset-main' },
+          el('div', { class: 'connector-preset-title', text: `${preset.name}${preset.vendor ? ` · ${preset.vendor}` : ''}` }),
+          el('p', { class: 'connector-preset-desc', text: preset.description || '' }),
+          preset.requirements ? el('p', { class: 'connector-preset-desc', text: `Required: ${preset.requirements}` }) : null,
+          docs ? el('a', { href: docs, target: '_blank', rel: 'noopener noreferrer', text: "Documentation" }) : null
+        );
+        const button = el('button', {
+          class: 'button button-small', type: 'button', disabled: installed,
+          onclick: () => openPresetConnectorModal(preset)
+        }, el('span', { text: installed ? "Added" : "Connect" }));
+        grid.appendChild(el('div', { class: `connector-preset${installed ? ' is-configured' : ''}` }, main, button));
+      });
+      wrap.appendChild(grid);
+
+      wrap.appendChild(el('h3', { class: 'modal-section-title', text: "Add MCP" }));
+      const methods = el('div', { class: 'connector-method-cards' },
+        el('button', {
+          class: 'connector-method-card', type: 'button',
+          onclick: async () => {
+            const path = await openConnectorConfig({ silent: true });
+            if (path) openConnectorJsonOpenedModal(path);
+          }
+        }, iconEl('braces'), el('span', {},
+          el('strong', { text: "Special JSON file" }),
+          el('span', { text: "~/.arena-personal/mcp.json will open automatically. Add mcpServers and save." }))),
+        el('button', {
+          class: 'connector-method-card', type: 'button',
+          onclick: () => openCliConnectorModal()
+        }, iconEl('terminal'), el('span', {},
+          el('strong', { text: "CLI command" }),
+          el('span', { text: "For example: npx -y @modelcontextprotocol/server-filesystem C:\\Projects or uvx mcp-server-fetch." })))
+      );
+      wrap.appendChild(methods);
+      if (state.connectors?.config_path) {
+        wrap.appendChild(el('p', { class: 'field-help', text: `Configuration file: ${state.connectors.config_path}` }));
+      }
+      const reloadRow = el('div', { class: 'setting-actions' },
+        el('button', {
+          class: 'button button-small button-quiet', type: 'button',
+          onclick: async () => { await loadConnectors({ reload: true }); render(); toast("MCP configuration reloaded.", 'success'); }
+        }, iconEl('refresh'), el('span', { text: "Reload mcp.json" }))
+      );
+      wrap.appendChild(reloadRow);
+    };
+    addConnectorModalRender = render;
+    render();
+    mountModal({
+      title: localOnly ? 'Add MCP server' : 'Add connector',
+      subtitle: localOnly ? 'Ready-made presets, JSON config or a CLI command' : 'Official Arena connectors and local MCP servers',
+      size: 'large',
+      content: wrap,
+      actions: [{ label: 'Close', variant: 'primary', autofocus: true }]
+    });
+    if (!state.connectors) void loadConnectors({ silent: true }).then(render);
+    if (!localOnly && state.authenticated && !state.arenaConnectors) void loadArenaConnectors({ silent: true }).then(render);
+  }
+
+  function connectorFieldInput(field) {
+    const type = String(field?.type || 'text');
+    if (type === 'checkbox') {
+      return el('input', { type: 'checkbox', checked: field.default !== false });
+    }
+    return el('input', {
+      class: `input${type === 'password' || field.key === 'path' ? ' mono' : ''}`,
+      type: type === 'password' ? 'password' : 'text',
+      value: field.default ?? '',
+      autocomplete: type === 'password' ? 'new-password' : 'off',
+      spellcheck: 'false'
+    });
+  }
+
+  function openPresetConnectorModal(preset) {
+    const Fields = Array.isArray(preset.Fields) ? preset.Fields : (Array.isArray(preset.fields) ? preset.fields : []);
+    const refs = {};
+    const wrap = el('div', {},
+      el('p', { class: 'modal-copy', text: preset.description || '' }),
+      preset.requirements ? el('div', { class: 'note-box' }, iconEl('info'), el('span', { text: `Before connecting, the following must be installed: ${preset.requirements}. Arena Desktop does not install Node.js, uv, or Docker automatically.` })) : null
+    );
+    Fields.forEach((field) => {
+      const input = connectorFieldInput(field);
+      refs[field.key] = { field, input };
+      const id = `connector-field-${preset.id}-${field.key}`;
+      input.id = id;
+      if (field.type === 'checkbox') {
+        wrap.appendChild(el('label', { class: 'field-label', for: id }, input, el('span', { text: ` ${field.label || field.key}` })));
+      } else {
+        wrap.append(
+          el('label', { class: 'field-label', for: id, text: field.label || field.key }),
+          input,
+          field.help ? el('p', { class: 'field-help', text: field.help }) : null
+        );
+      }
+    });
+    if (preset.id === 'github') {
+      wrap.appendChild(el('div', { class: 'note-box is-warning' }, iconEl('lock'), el('span', {
+        text: "If you insert the token here, it will be saved locally in ~/.arena-personal/mcp.json in plain text. It is safer to leave the field blank and set the system variable GITHUB_PERSONAL_ACCESS_TOKEN."
+      })));
+    }
+    const connectNow = el('input', { type: 'checkbox', checked: true, id: `connector-connect-${preset.id}` });
+    wrap.appendChild(el('label', { class: 'field-label', for: connectNow.id }, connectNow, el('span', { text: " Connect and check immediately" })));
+    mountModal({
+      title: preset.name,
+      subtitle: preset.vendor ? `Ready local MCP · ${preset.vendor}` : "Ready local MCP",
+      size: 'medium',
+      content: wrap,
+      actions: [
+        { label: "Cancel", variant: 'quiet' },
+        {
+          label: "Add", variant: 'primary', icon: 'plug', autofocus: !Fields.length,
+          onClick: async () => {
+            const values = {};
+            for (const [key, ref] of Object.entries(refs)) {
+              const value = ref.field.type === 'checkbox' ? Boolean(ref.input.checked) : String(ref.input.value || '').trim();
+              if (ref.field.required && !value) throw new ApiError(`Fill in the field "${ref.field.label || key}».`);
+              values[key] = value;
+            }
+            const payload = await API.installConnectorPreset(preset.id, values, Boolean(connectNow.checked));
+            applyConnectorsPayload(payload);
+            setWorkspacePanelOpen(true, { focusConnectors: true, load: false });
+            const server = payload?.server;
+            if (connectNow.checked && server?.status === 'error') toast(server.error || "Server added, but did not start.", 'warning', preset.name);
+            else if (connectNow.checked) toast(`Connector ${preset.name} connected.`, 'success');
+            else toast(`Connector ${preset.name} added. Click 'Connect' when you are ready.`, 'success');
+          }
+        }
+      ]
+    });
+  }
+
+  function openCliConnectorModal() {
+    const nameInput = el('input', { class: 'input mono', type: 'text', placeholder: 'my-server', autocomplete: 'off', spellcheck: 'false' });
+    const commandInput = el('textarea', { class: 'input mono', rows: '3', placeholder: 'npx -y @modelcontextprotocol/server-filesystem C:\\Projects', spellcheck: 'false' });
+    const cwdInput = el('input', { class: 'input mono', type: 'text', placeholder: "Optional — default Workspace", autocomplete: 'off', spellcheck: 'false' });
+    const envInput = el('textarea', { class: 'input mono', rows: '4', placeholder: 'API_KEY=${MY_API_KEY}\nDEBUG=0', spellcheck: 'false' });
+    const descInput = el('input', { class: 'input', type: 'text', placeholder: "What this server does (optional)", autocomplete: 'off' });
+    const connectNow = el('input', { type: 'checkbox', checked: true });
+    const wrap = el('div', {},
+      el('div', { class: 'note-box is-warning' }, iconEl('shield-alert'), el('span', {
+        text: "This command will run locally when connected and when using the Agent. Add only MCP servers you trust."
+      })),
+      el('label', { class: 'field-label', text: "Name" }), nameInput,
+      el('p', { class: 'field-help', text: "Latin letters, numbers, period, hyphen, and underscore." }),
+      el('label', { class: 'field-label', text: "MCP STDIO CLI command" }), commandInput,
+      el('p', { class: 'field-help', text: "The command must communicate via MCP through stdin/stdout. Remote URL is not suitable here." }),
+      el('label', { class: 'field-label', text: "Working folder (optional)" }), cwdInput,
+      el('label', { class: 'field-label', text: "Environment variables (one per line)" }), envInput,
+      el('p', { class: 'field-help', text: "For secrets, links of the form ${VARIABLE_NAME} are preferable: the value will be taken from the system environment and will not appear in mcp.json." }),
+      el('label', { class: 'field-label', text: "Description" }), descInput,
+      el('label', { class: 'field-label' }, connectNow, el('span', { text: " Connect and check immediately" }))
+    );
+    mountModal({
+      title: "Add MCP via CLI",
+      subtitle: "Local STDIO server in ~/.arena-personal/mcp.json",
+      size: 'large',
+      content: wrap,
+      actions: [
+        { label: "Cancel", variant: 'quiet' },
+        {
+          label: "Add", variant: 'primary', icon: 'plug',
+          onClick: async () => {
+            const name = nameInput.value.trim();
+            const command = commandInput.value.trim();
+            if (!name) throw new ApiError("Enter the connector name.");
+            if (!command) throw new ApiError("Enter the CLI command.");
+            const payload = await API.addConnectorCli({
+              name,
+              command,
+              cwd: cwdInput.value.trim(),
+              env: parseEnvTextarea(envInput.value),
+              description: descInput.value.trim(),
+              connect: Boolean(connectNow.checked)
+            });
+            applyConnectorsPayload(payload);
+            setWorkspacePanelOpen(true, { focusConnectors: true, load: false });
+            const server = payload?.server;
+            if (connectNow.checked && server?.status === 'error') toast(server.error || "Server added, but did not start.", 'warning', name);
+            else if (connectNow.checked) toast(`Connector ${name} connected.`, 'success');
+            else toast(`Connector ${name} added.`, 'success');
+          }
+        }
+      ]
+    });
+    window.setTimeout(() => nameInput.focus(), 30);
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Elements and event wiring                                             */
+  /* ---------------------------------------------------------------------- */
+  function cacheElements() {
+    els.app = $('#app');
+    els.sidebar = $('#sidebar');
+    els.collapseSidebar = $('#collapseSidebar');
+    els.newChatBtn = $('#newChatBtn');
+    els.modelsNavBtn = $('#modelsNavBtn');
+    els.modelsNavCount = $('#modelsNavCount');
+    els.searchNavBtn = $('#searchNavBtn');
+    els.workspacePanelNavBtn = $('#workspacePanelNavBtn');
+    els.connectorsNavBtn = $('#connectorsNavBtn');
+    els.connectorsNavCount = $('#connectorsNavCount');
+    els.recentsToggle = $('#recentsToggle');
+    els.recentsBody = $('#recentsBody');
+    els.chatCount = $('#chatCount');
+    els.refreshChats = $('#refreshChats');
+    els.chatSearchWrap = $('#chatSearchWrap');
+    els.chatSearch = $('#chatSearch');
+    els.clearChatSearch = $('#clearChatSearch');
+    els.chatList = $('#chatList');
+    els.accountButton = $('#accountButton');
+    els.accountAvatar = $('#accountAvatar');
+    els.accountName = $('#accountName');
+    els.accountState = $('#accountState');
+    els.accountDot = $('#accountDot');
+    els.sidebarScrim = $('#sidebarScrim');
+    els.mobileMenuBtn = $('#mobileMenuBtn');
+    els.topbarTitle = $('#topbarTitle');
+    els.crumbTitle = $('.crumb-title');
+    els.demoChip = $('#demoChip');
+    els.workspacePanelTopButton = $('#workspacePanelTopButton');
+    els.engineTopButton = $('#engineTopButton');
+    els.connectionBanner = $('#connectionBanner');
+    els.bannerTitle = $('#bannerTitle');
+    els.bannerText = $('#bannerText');
+    els.bannerRetry = $('#bannerRetry');
+    els.bannerDemo = $('#bannerDemo');
+    els.demoBanner = $('#demoBanner');
+    els.demoExitBtn = $('#demoExitBtn');
+    els.footerConnectionDot = $('#footerConnectionDot');
+    els.footerConnectionText = $('#footerConnectionText');
+    els.content = $('#content');
+    els.welcomeView = $('#welcomeView');
+    els.chatView = $('#chatView');
+    els.chatEyebrow = $('#chatEyebrow');
+    els.chatTitle = $('#chatTitle');
+    els.chatMeta = $('#chatMeta');
+    els.chatSettingsButton = $('#chatSettingsButton');
+    els.challengeSlot = $('#challengeSlot');
+    els.messageList = $('#messageList');
+    els.composerForm = $('#composerForm');
+    els.composerCard = $('.composer-card');
+    els.composerShell = $('.composer-shell');
+    els.welcomeComposerSlot = $('#welcomeComposerSlot');
+    els.mainArea = $('.main-area');
+    els.prompt = $('#prompt');
+    els.attachButton = $('#attachButton');
+    els.fileInput = $('#fileInput');
+    els.attachmentStrip = $('#attachmentStrip');
+    els.dropOverlay = $('#dropOverlay');
+    els.modelStrip = $('#modelStrip');
+    els.modeBar = $('#modeBar');
+    els.modalityBar = $('#modalityBar');
+    els.composerContext = $('#composerContext');
+    els.contextMode = $('#contextMode');
+    els.contextModality = $('#contextModality');
+    els.contextModel = $('#contextModel');
+    els.contextPending = $('#contextPending');
+    els.workspaceButton = $('#workspaceButton');
+    els.workspaceLabel = $('#workspaceLabel');
+    els.modeButton = $('#modeButton');
+    els.modeLabel = $('#modeLabel');
+    els.modalityButton = $('#modalityButton');
+    els.modalityLabel = $('#modalityLabel');
+    els.sidebarResize = $('#sidebarResize');
+    els.workspaceResize = $('#workspaceResize');
+    els.workspaceSplitResize = $('#workspaceSplitResize');
+    els.permissionButton = $('#permissionButton');
+    els.workspaceSyncChip = $('#workspaceSyncChip');
+    els.workspaceSyncToggle = $('#workspaceSyncToggle');
+    els.permissionLabel = $('#permissionLabel');
+    els.pendingPermissionsBadge = $('#pendingPermissionsBadge');
+    els.sendButton = $('#sendButton');
+    els.stopButton = $('#stopButton');
+    els.composerHint = $('#composerHint');
+    els.composerSecondaryHint = $('#composerSecondaryHint');
+    els.workspacePanel = $('#workspacePanel');
+    els.workspacePanelRoot = $('#workspacePanelRoot');
+    els.workspacePanelClose = $('#workspacePanelClose');
+    els.workspaceTree = $('#workspaceTree');
+    els.workspaceOpenButton = $('#workspaceOpenButton');
+    els.workspaceRefreshButton = $('#workspaceRefreshButton');
+    els.connectorsPane = $('#connectorsPane');
+    els.connectorList = $('#connectorList');
+    els.addConnectorButton = $('#addConnectorButton');
+    els.openMcpJsonButton = $('#openMcpJsonButton');
+    els.reloadConnectorsButton = $('#reloadConnectorsButton');
+    els.dockPane = $('#dockPane');
+    els.dockTitle = $('#dockTitle');
+    els.dockSubtitle = $('#dockSubtitle');
+    els.dockCloseButton = $('#dockCloseButton');
+    els.dockRefreshButton = $('#dockRefreshButton');
+    els.dockHideButton = $('#dockHideButton');
+    els.dockDescription = $('#dockDescription');
+    els.dockNote = $('#dockNote');
+    els.popoverRoot = $('#popoverRoot');
+    els.modalRoot = $('#modalRoot');
+    els.toastRoot = $('#toastRoot');
+    els.liveRegion = $('#liveRegion');
+    els.helpButton = $('#helpTopButton');
+  }
+
+  function ensureBypassWarning() {
+    if (!els.composerContext || !els.composerContext.parentNode) return null;
+    let warning = $('#permissionDangerBanner');
+    if (!warning) {
+      warning = el('div', { class: 'composer-warning', id: 'permissionDangerBanner', role: 'alert', hidden: true });
+      warning.append(iconEl('shield-alert'), el('span', { text: "Permission bypass enabled: backend can perform actions without confirmation. This is dangerous outside an isolated environment." }));
+      els.composerContext.insertAdjacentElement('afterend', warning);
+    }
+    warning.hidden = state.permissionMode !== 'bypassPermissions';
+    return warning;
+  }
+
+  function restoreSidebarPreference() {
+    try {
+      const stored = localStorage.getItem('arenaPersonal.sidebarCollapsed.v4');
+      if (stored === '1') setSidebarCollapsed(true);
+      else setSidebarCollapsed(false);
+    } catch {
+      setSidebarCollapsed(false);
+    }
+  }
+
+  function setupNativeBridge() {
+    const markReady = () => {
+      const api = window.pywebview?.api;
+      if (!api) return;
+      if (state.nativeReady) return;
+      state.nativeReady = true;
+      if (state.settingsTab === 'workspace') state.settingsRerender?.();
+      announce("Native pywebview integration is ready. Folder selection is available.");
+    };
+    window.addEventListener('pywebviewready', markReady);
+    document.addEventListener('pywebviewready', markReady);
+    if (window.pywebview?.api) window.setTimeout(markReady, 0);
+  }
+
+  function bindEvents() {
+    els.composerForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      void sendMessage();
+    });
+    els.prompt?.addEventListener('input', () => {
+      state.draft = els.prompt.value;
+      resizePrompt();
+      updateComposerState();
+    });
+    els.prompt?.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+      event.preventDefault();
+      void sendMessage();
+    });
+    els.prompt?.addEventListener('focus', () => {
+      els.prompt?.parentElement?.classList.add('is-focused');
+    });
+    els.prompt?.addEventListener('blur', () => {
+      els.prompt?.parentElement?.classList.remove('is-focused');
+    });
+
+    els.newChatBtn?.addEventListener('click', () => { void createNewChat(); });
+    els.collapseSidebar?.addEventListener('click', () => setSidebarCollapsed(!state.sidebarCollapsed));
+    els.mobileMenuBtn?.addEventListener('click', () => {
+      if (els.app?.classList.contains('mobile-sidebar-open')) closeMobileSidebar();
+      else openMobileSidebar();
+    });
+    els.sidebarScrim?.addEventListener('click', closeMobileSidebar);
+    els.refreshChats?.addEventListener('click', async () => {
+      if (state.chatsLoading) return;
+      els.refreshChats.classList.add('is-spinning');
+      await loadChats();
+      els.refreshChats.classList.remove('is-spinning');
+    });
+    els.recentsToggle?.addEventListener('click', () => {
+      const expanded = els.recentsToggle.getAttribute('aria-expanded') !== 'false';
+      els.recentsToggle.setAttribute('aria-expanded', String(!expanded));
+      els.recentsBody.hidden = expanded;
+    });
+    els.searchNavBtn?.addEventListener('click', () => {
+      setChatSearchVisible(true);
+      if (els.recentsToggle.getAttribute('aria-expanded') === 'false') {
+        els.recentsToggle.setAttribute('aria-expanded', 'true');
+        els.recentsBody.hidden = false;
+      }
+    });
+    els.modelsNavBtn?.addEventListener('click', () => {
+      if (!allowsManualModels()) {
+        toast("In this mode, model selection is disabled.", 'info');
+        return;
+      }
+      if (state.generating) {
+        toast("Models can be changed after generation is complete.", 'info');
+        return;
+      }
+      openModelPicker('a', els.modelsNavBtn);
+    });
+    els.chatSearch?.addEventListener('input', () => {
+      state.chatFilter = els.chatSearch.value;
+      els.clearChatSearch.hidden = !state.chatFilter;
+      renderChats();
+    });
+    els.clearChatSearch?.addEventListener('click', () => {
+      if (!els.chatSearch) return;
+      els.chatSearch.value = '';
+      state.chatFilter = '';
+      els.clearChatSearch.hidden = true;
+      els.chatSearch.focus();
+      renderChats();
+    });
+    els.accountButton?.addEventListener('click', () => openAccountMenu());
+    els.bannerRetry?.addEventListener('click', () => { void retryConnection(); });
+    els.demoExitBtn?.addEventListener('click', () => { window.location.href = window.location.pathname; });
+    els.bannerDemo?.addEventListener('click', () => { /* Navigation to ?demo=1 is the explicit opt-in. */ });
+
+    els.workspaceButton?.addEventListener('click', () => openWorkspacePopover(els.workspaceButton));
+    els.workspaceOpenButton?.addEventListener('click', () => { void openWorkspaceFolder(state.workspacePanelRoot || state.workspace); });
+    els.workspaceRefreshButton?.addEventListener('click', async () => {
+      els.workspaceRefreshButton.classList.add('is-spinning');
+      try { await loadWorkspaceTree('.', { force: true }); }
+      finally { els.workspaceRefreshButton.classList.remove('is-spinning'); }
+    });
+    els.addConnectorButton?.addEventListener('click', () => openAddConnectorModal());
+    els.openMcpJsonButton?.addEventListener('click', async () => {
+      const path = await openConnectorConfig({ silent: true });
+      if (path) openConnectorJsonOpenedModal(path);
+    });
+    els.reloadConnectorsButton?.addEventListener('click', async () => {
+      els.reloadConnectorsButton.classList.add('is-spinning');
+      try {
+        await Promise.allSettled([
+          loadConnectors({ reload: true }),
+          state.authenticated ? loadArenaConnectors({ silent: true }) : Promise.resolve()
+        ]);
+        toast("Connectors updated: MCP reread, Arena list pulled from the account.", 'success');
+      } finally {
+        els.reloadConnectorsButton.classList.remove('is-spinning');
+      }
+    });
+    els.modeButton?.addEventListener('click', () => {
+      if (!els.modeButton.disabled) openModePopover();
+    });
+    els.modalityButton?.addEventListener('click', () => {
+      if (!els.modalityButton.disabled) openModalityPopover();
+    });
+    els.permissionButton?.addEventListener('click', () => {
+      if (!els.permissionButton.disabled) openPermissionModePopover();
+    });
+    els.workspaceSyncToggle?.addEventListener('change', () => setWorkspaceSync(els.workspaceSyncToggle.checked));
+    els.sendButton?.setAttribute('type', 'submit');
+    els.stopButton?.addEventListener('click', () => { void stopGeneration(); });
+    els.chatSettingsButton?.addEventListener('click', () => openSettings('permissions'));
+
+    /* Attachments: +, file picker, paste, drag & drop */
+    els.attachButton?.addEventListener('click', () => {
+      if (!els.attachButton.disabled) els.fileInput?.click();
+    });
+    els.fileInput?.addEventListener('change', () => {
+      addFiles(els.fileInput.files);
+      els.fileInput.value = '';
+      focusComposer();
+    });
+    els.prompt?.addEventListener('paste', (event) => {
+      const files = event.clipboardData?.files;
+      if (files && files.length) {
+        event.preventDefault();
+        addFiles(files);
+      }
+    });
+    const dropCard = els.composerCard;
+    if (dropCard) {
+      const hasFiles = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
+      const showOverlay = () => { if (els.dropOverlay) els.dropOverlay.hidden = false; };
+      const hideOverlay = () => { if (els.dropOverlay) els.dropOverlay.hidden = true; };
+      dropCard.addEventListener('dragenter', (event) => {
+        if (!hasFiles(event)) return;
+        event.preventDefault();
+        showOverlay();
+      });
+      dropCard.addEventListener('dragover', (event) => {
+        if (!hasFiles(event)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+        showOverlay();
+      });
+      dropCard.addEventListener('dragleave', (event) => {
+        if (event.currentTarget === dropCard && !dropCard.contains(event.relatedTarget)) hideOverlay();
+      });
+      dropCard.addEventListener('drop', (event) => {
+        event.preventDefault();
+        hideOverlay();
+        addFiles(event.dataTransfer?.files);
+      });
+    }
+    window.addEventListener('dragover', (event) => event.preventDefault());
+    window.addEventListener('drop', (event) => event.preventDefault());
+
+    els.dockCloseButton?.addEventListener('click', () => { void hideEngine(); });
+    els.dockHideButton?.addEventListener('click', () => { void hideEngine(); });
+    els.dockRefreshButton?.addEventListener('click', () => { void showEngine(); });
+
+    document.addEventListener('click', handleDelegatedClick);
+    document.addEventListener('keydown', handleGlobalKeydown);
+    window.addEventListener('resize', () => {
+      closePopover(false);
+      if (!window.matchMedia('(max-width: 900px)').matches) closeMobileSidebar();
+    });
+    window.addEventListener('offline', () => {
+      state.networkOffline = true;
+      updateConnectionUI();
+      updateComposerState();
+      toast("Network unavailable. Local interface remains open, but sending is blocked.", 'warning', "Offline");
+    });
+    window.addEventListener('online', () => {
+      state.networkOffline = false;
+      updateConnectionUI();
+      updateComposerState();
+      toast("Connection to the network restored. Check the local server.", 'info');
+    });
+    window.addEventListener('beforeunload', (event) => {
+      if (!anyGenerationRunning()) return;
+      event.preventDefault();
+      event.returnValue = "Generation is still in progress.";
+      return event.returnValue;
+    });
+  }
+
+  function handleDelegatedClick(event) {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+
+    const actionNode = target.closest('[data-action]');
+    if (actionNode) {
+      const action = actionNode.dataset.action;
+      if (action) event.preventDefault();
+      switch (action) {
+        case 'home':
+          if (state.generating) {
+            toast("Stop generation before going to the main page.", 'warning');
+          } else {
+            state.historyRequest = (state.historyRequest || 0) + 1;
+            state.activeChatId = null;
+            state.activeChatTitle = '';
+            state.messages = [];
+            state.artifacts = [];
+            state.historyError = null;
+            state.historyLoading = false;
+            state.challenge = null;
+            updateArtifactCount();
+            updateComposerState();
+            renderChats();
+            renderWelcomeState();
+            closeMobileSidebar();
+          }
+          break;
+        case 'new-chat':
+          void createNewChat();
+          break;
+        case 'models':
+          openModelPicker('a', actionNode);
+          break;
+        case 'workspace':
+          openWorkspacePopover(els.workspaceButton || actionNode);
+          break;
+        case 'workspace-panel':
+          setWorkspacePanelOpen(!state.workspacePanelOpen);
+          closeMobileSidebar();
+          break;
+        case 'connectors-panel':
+          setWorkspacePanelOpen(true, { focusConnectors: true });
+          closeMobileSidebar();
+          break;
+        case 'workspace-panel-close':
+          setWorkspacePanelOpen(false);
+          break;
+        case 'settings':
+        case 'account':
+        case 'settings-connection':
+          openSettings('connection');
+          break;
+        case 'help':
+          openHelp();
+          break;
+        case 'about':
+        case 'limits':
+        case 'transfer':
+          openSettings('about');
+          break;
+        case 'engine-show':
+          void showEngine();
+          break;
+        case 'engine-hide':
+          void hideEngine();
+          break;
+        case 'retry-connection':
+          void retryConnection();
+          break;
+        case 'retry-chats':
+          void loadChats();
+          break;
+        case 'retry-arena-chats':
+          void loadArenaChats();
+          break;
+        case 'retry-models':
+          void loadModels(state.modality);
+          break;
+        case 'retry-history':
+          void retryPendingHistory();
+          break;
+        default:
+          break;
+      }
+      return;
+    }
+
+    const cloudChatDelete = target.closest('[data-cloud-chat-delete]');
+    if (cloudChatDelete) {
+      event.preventDefault();
+      event.stopPropagation();
+      const id = cloudChatDelete.dataset.cloudChatDelete;
+      const entry = (state.cloudChats || []).find((item) => String(item.eval_id || item.id || '') === String(id));
+      if (entry) confirmArchiveCloudChat(entry);
+      return;
+    }
+
+    const cloudChatOpen = target.closest('[data-cloud-chat-open]');
+    if (cloudChatOpen) {
+      const id = cloudChatOpen.dataset.cloudChatOpen;
+      const entry = state.cloudChats.find((item) => String(item.eval_id || item.id) === String(id))
+        || { eval_id: id, id, type: cloudChatOpen.dataset.cloudChatType || 'evaluation' };
+      void openArenaChat(entry);
+      return;
+    }
+    const chatOpen = target.closest('[data-chat-open]');
+    if (chatOpen) {
+      void openChat(chatOpen.dataset.chatOpen);
+      return;
+    }
+    const chatDelete = target.closest('[data-chat-delete]');
+    if (chatDelete) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (chatIsGenerating(chatDelete.dataset.chatDelete)) {
+        toast("First stop generation in this chat.", 'warning');
+        return;
+      }
+      confirmDeleteChat(chatDelete.dataset.chatDelete);
+      return;
+    }
+
+    const codeCopy = target.closest('[data-copy-code]');
+    if (codeCopy) {
+      const pre = codeCopy.closest('.code-block')?.querySelector('pre');
+      if (!pre) return;
+      void copyText(pre.textContent || '').then((ok) => {
+        if (!ok) {
+          toast("Failed to copy code.", 'error');
+          return;
+        }
+        const label = codeCopy.querySelector('span:last-child');
+        if (label) {
+          const previous = label.textContent;
+          label.textContent = "Copied and copied";
+          window.setTimeout(() => { if (label.isConnected) label.textContent = previous; }, 1500);
+        }
+        announce("Code copied.");
+      });
+      return;
+    }
+
+    const answerCopy = target.closest('[data-copy-answer]');
+    if (answerCopy) {
+      const lane = answerCopy.closest('.assistant-lane');
+      const answerText = lane?.querySelector('.markdown')?.textContent || '';
+      if (!answerText) return;
+      void copyText(answerText).then((ok) => {
+        toast(ok ? "Response text copied to clipboard." : "Failed to copy the response.", ok ? 'success' : 'error');
+      });
+      return;
+    }
+
+    const modelPicker = target.closest('[data-model-picker]');
+    if (modelPicker) {
+      openModelPicker(modelPicker.dataset.modelPicker || 'a', modelPicker);
+      return;
+    }
+
+    const permissionButton = target.closest('[data-permission-decision]');
+    if (permissionButton) {
+      const id = permissionButton.dataset.permissionId;
+      const decision = permissionButton.dataset.permissionDecision;
+      if (id && decision) void decidePermission(id, decision);
+      return;
+    }
+
+    const mediaSave = target.closest('[data-save-media]');
+    if (mediaSave) {
+      void saveMediaFromEvent(mediaSave.dataset.saveMedia, mediaSave);
+    }
+  }
+
+  function handleGlobalKeydown(event) {
+    if (event.key === 'F1') {
+      event.preventDefault();
+      openHelp();
+      return;
+    }
+    if (event.key === 'Escape') {
+      if (state.activeModal) return;
+      if (activePopover) {
+        closePopover();
+        return;
+      }
+      if (window.matchMedia('(max-width: 900px)').matches) closeMobileSidebar();
+      if (!els.chatSearchWrap?.hidden) setChatSearchVisible(false);
+      return;
+    }
+    if (state.activeModal) return;
+    const modifier = event.ctrlKey || event.metaKey;
+    if (!modifier || event.altKey) return;
+    const key = event.key.toLowerCase();
+    if (key === 'k') {
+      event.preventDefault();
+      setChatSearchVisible(true);
+      if (els.recentsToggle.getAttribute('aria-expanded') === 'false') {
+        els.recentsToggle.setAttribute('aria-expanded', 'true');
+        els.recentsBody.hidden = false;
+      }
+    } else if (key === 'n') {
+      event.preventDefault();
+      void createNewChat();
+    } else if (event.key === '/') {
+      event.preventDefault();
+      focusComposer();
+    }
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Boot                                                                  */
+  /* ---------------------------------------------------------------------- */
+  async function boot() {
+    loadUnreadDone();
+    cacheElements();
+    hydrateIcons();
+    ensureBypassWarning();
+    setupNativeBridge();
+    restoreSidebarPreference();
+    restoreWorkspacePanelPreference();
+    setupLayoutResize();
+    bindEvents();
+    state.view = 'welcome';
+    if (state.engineOpen) syncDock(false);
+    if (state.demo) {
+      document.documentElement.dataset.demo = 'true';
+      document.body.classList.add('demo-mode');
+      document.title = "Demo · Arena Desktop";
+      if (els.demoChip) els.demoChip.hidden = false;
+      if (els.demoBanner) els.demoBanner.hidden = false;
+    }
+    updateConnectionUI();
+    updateAccountUI();
+    renderChats();
+    renderWorkspaceTreePanel();
+    renderConnectorsPanel();
+    renderModelStrip();
+    renderModelsNavCount();
+    updatePendingPermissionsBadge();
+    updateComposerState();
+    setView('welcome');
+    resizePrompt();
+
+    try {
+      const status = await loadStatus({ initial: true });
+      if (status) {
+        await Promise.allSettled([
+          loadChats(),
+          loadModels(state.modality, { quiet: true }),
+          refreshWorkspacePanel(),
+          loadLayoutSettings()
+        ]);
+        await loadPermissions({ quiet: true });
+        if (status.engine && normalizeEngine(status.engine).open) syncDock(false);
+        updateComposerState();
+      } else {
+        state.chatsLoading = false;
+        state.chatsError = state.serverError || "Local server is unavailable.";
+        state.modelsLoading = false;
+        state.modelsError = state.serverError || "Model list unavailable.";
+        state.chats = [];
+        state.models = [];
+        renderChats();
+        renderModelStrip();
+        renderModelsNavCount();
+        updateComposerState();
+        updateConnectionUI();
+      }
+    } catch (error) {
+      state.serverError = errorMessage(error);
+      state.phase = 'offline';
+      state.chatsLoading = false;
+      state.modelsLoading = false;
+      state.chatsError = state.serverError;
+      state.modelsError = state.serverError;
+      updateAllUI();
+    } finally {
+      state.booted = true;
+      state.phase = state.serverError ? 'offline' : 'ready';
+      ensureBypassWarning();
+      updateAllUI();
+      if (!state.demo) {
+        document.documentElement.classList.remove('demo-mode');
+      }
+      // Nothing fake is inserted when status/API loading failed.
+      if (state.serverError) {
+        announce("Local server unavailable. The interface shows the actual status and offers demo separately.");
+      }
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => { void boot(); }, { once: true });
+  } else {
+    void boot();
+  }
+})();

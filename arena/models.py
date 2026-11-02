@@ -18,7 +18,7 @@ from arena.console import con
 from arena.config import BASE_URL, API_PREFIX, CONFIG_DIR, load_config, save_config
 
 CACHE_FILE = CONFIG_DIR / "models_cache.json"
-CACHE_TTL_SECONDS = 300  # models are added/removed often; revalidate every 5 minutes
+CACHE_TTL_SECONDS = 3600  # 1 hour cache TTL
 
 # Special Router Model ID
 MAX_ROUTER_ID = "019b24bb-5caf-71c3-b854-37d0c7086f21"
@@ -86,6 +86,33 @@ MODALITIES = {
 }
 
 
+def _first_icon_url(*sources) -> Optional[str]:
+    """First plausible icon/logo URL in a catalog entry, if Arena sends one.
+
+    The current public catalog schema has no per-model icon (the website
+    renders organization logos from the org name), but keep any icon field
+    Arena adds later instead of silently dropping it during sync.
+    """
+    keys = ("iconUrl", "icon_url", "logoUrl", "logo_url", "imageUrl", "image_url",
+            "avatarUrl", "avatar_url", "icon", "logo")
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        for key in keys:
+            value = src.get(key)
+            if isinstance(value, dict):
+                value = value.get("url") or value.get("src")
+            if isinstance(value, str) and value.strip():
+                url = value.strip()
+                if url.startswith("//"):
+                    return "https:" + url
+                if url.startswith("/"):
+                    return BASE_URL + url
+                if url.startswith(("https://", "http://", "data:image/")):
+                    return url
+    return None
+
+
 def get_org_color(org_name: str) -> str:
     """Return distinct color for known org or dynamically generate one from palette."""
     clean = (org_name or "unknown").strip().lower()
@@ -150,7 +177,10 @@ def sync_models(cookie: Optional[str] = None, force: bool = False) -> List[Dict[
                 org = m.get("organization", "community")
                 provider = m.get("provider", "")
                 rank = m.get("rank")
-                user_selectable = bool(m.get("userSelectable", True))
+                # Arena's catalog schema defines this as a boolean.  Do not
+                # default a missing flag to selectable: model catalogs also
+                # contain Battle/leaderboard entries that users may not pick.
+                user_selectable = m.get("userSelectable") is True
                 capabilities = m.get("capabilities", {})
 
                 # Tag router model
@@ -167,6 +197,8 @@ def sync_models(cookie: Optional[str] = None, force: bool = False) -> List[Dict[
                     "user_selectable": user_selectable,
                     "capabilities": capabilities,
                     "is_router": is_router,
+                    "icon_url": _first_icon_url(m, org if isinstance(org, dict) else None,
+                                                provider if isinstance(provider, dict) else None),
                 })
 
     try:
@@ -195,66 +227,134 @@ def get_popular_models(all_models: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return sorted(selectable, key=lambda x: (x.get("rank") is None, x.get("rank", 9999), x.get("name", "")))
 
 
-def get_models_for_modality(all_models: List[Dict[str, Any]], modality: str = "chat") -> List[Dict[str, Any]]:
-    """Filter models that support a given modality (chat, webdev, search, image)."""
-    mod_info = MODALITIES.get(modality, MODALITIES["chat"])
-    target_arena = mod_info["arena"]
+def _capability_maps(model: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    caps = model.get("capabilities") if isinstance(model.get("capabilities"), dict) else {}
+    inputs = caps.get("inputCapabilities") if isinstance(caps.get("inputCapabilities"), dict) else {}
+    outputs = caps.get("outputCapabilities") if isinstance(caps.get("outputCapabilities"), dict) else {}
+    return inputs, outputs
 
-    matches = []
+
+def _truthy_capability(value: Any) -> bool:
+    return value is True or (isinstance(value, dict) and bool(value))
+
+
+def _video_input_required(model: Dict[str, Any]) -> bool:
+    inputs, _ = _capability_maps(model)
+    video = inputs.get("video")
+    return isinstance(video, dict) and video.get("required") is True
+
+
+def _supports_modality(model: Dict[str, Any], modality: str) -> bool:
+    """Match Arena's own capability predicates, with an arena fallback.
+
+    New catalog entries carry input/output capabilities.  Older cached
+    entries used by this project may only know which Arena block they came
+    from, so use that block only when capability data is absent.
+    """
+    inputs, outputs = _capability_maps(model)
+    if inputs or outputs:
+        if modality == "chat":
+            return _truthy_capability(inputs.get("text")) and _truthy_capability(outputs.get("text"))
+        if modality == "webdev":
+            return _truthy_capability(outputs.get("web"))
+        if modality == "search":
+            return _truthy_capability(inputs.get("text")) and _truthy_capability(outputs.get("search"))
+        if modality == "image":
+            return _truthy_capability(inputs.get("text")) and _truthy_capability(outputs.get("image"))
+        if modality == "video":
+            return (_truthy_capability(inputs.get("text")) and _truthy_capability(outputs.get("video"))
+                    and not _video_input_required(model))
+        return False
+    target_arena = MODALITIES.get(modality, MODALITIES["chat"])["arena"]
+    return model.get("arena") == target_arena
+
+
+def get_router_model(all_models: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return live Max Router only when Arena marks it user-selectable."""
+    for model in all_models or []:
+        if not model.get("user_selectable"):
+            continue
+        if not (model.get("is_router") or model.get("id") == MAX_ROUTER_ID
+                or model.get("provider") == "boss-bandit" or model.get("org") == "boss-bandit"):
+            continue
+        # Current catalog data identifies Max with text input/output.  Very
+        # old test/cache rows may have no capabilities; their arena is text.
+        if _supports_modality(model, "chat"):
+            return model
+    return None
+
+
+def get_auto_agent_model(all_models: List[Dict[str, Any]], preferred_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Pick an internal model for Agent without exposing a model choice.
+
+    Max/routers are deliberately excluded: Agent must keep working when the
+    router is absent from an account's catalog.  A previously used non-router
+    model is retained when it is still selectable, otherwise the best-ranked
+    selectable text model is used.
+    """
+    candidates = []
+    for model in get_models_for_modality(all_models, "chat", mode="direct"):
+        model_id = model.get("id")
+        is_router = bool(model.get("is_router") or model_id == MAX_ROUTER_ID
+                         or model.get("provider") == "boss-bandit" or model.get("org") == "boss-bandit")
+        if model_id and not is_router:
+            candidates.append(model)
+    if preferred_id:
+        for model in candidates:
+            if str(model.get("id")) == str(preferred_id):
+                return model
+    return candidates[0] if candidates else None
+
+
+def get_models_for_modality(all_models: List[Dict[str, Any]], modality: str = "chat",
+                            mode: str = "direct") -> List[Dict[str, Any]]:
+    """Return models the user may actually pick for a UI mode/modality.
+
+    Battle and Video are server-selected.  Agent has no visible or selectable
+    model at all; its internal assignment is handled by
+    ``get_auto_agent_model``.  Manual model selection exists only for Direct
+    and Side by Side.  Max Router is a Direct-only, text-only entry and is
+    never offered for Side by Side.
+    """
+    if mode in ("battle", "agent") or modality == "video":
+        return []
+    if mode not in ("direct", "direct-battle", "side-by-side"):
+        return []
+
+    matches: List[Dict[str, Any]] = []
     seen_ids = set()
-
-    # Always ensure Max Router is included if present
-    for m in all_models:
-        if m.get("is_router") and m["id"] not in seen_ids:
-            seen_ids.add(m["id"])
-            matches.append(m)
-
-    for m in all_models:
-        if not m.get("user_selectable"):
+    for model in all_models or []:
+        model_id = model.get("id")
+        if not model_id or model_id in seen_ids or not model.get("user_selectable"):
             continue
-        if m["id"] in seen_ids:
+        is_router = bool(model.get("is_router") or model_id == MAX_ROUTER_ID
+                         or model.get("provider") == "boss-bandit" or model.get("org") == "boss-bandit")
+        if is_router and not (mode in ("direct", "direct-battle") and modality == "chat"):
             continue
-        # Direct arena match
-        if m.get("arena") == target_arena:
-            seen_ids.add(m["id"])
-            matches.append(m)
-        # Search capabilities check
-        elif modality == "search" and m.get("capabilities", {}).get("outputCapabilities", {}).get("search"):
-            seen_ids.add(m["id"])
-            matches.append(m)
-        # Webdev / code capabilities check
-        elif modality == "webdev" and m.get("capabilities", {}).get("outputCapabilities", {}).get("web"):
-            seen_ids.add(m["id"])
-            matches.append(m)
-        # Video capability check (catalog usually tags these as text-to-video already)
-        elif modality == "video" and m.get("capabilities", {}).get("outputCapabilities", {}).get("video"):
-            seen_ids.add(m["id"])
-            matches.append(m)
+        if _supports_modality(model, modality):
+            seen_ids.add(model_id)
+            matches.append(model)
 
-    # Sort: Router first, then by rank, then name
-    return sorted(matches, key=lambda x: (not x.get("is_router"), x.get("rank") is None, x.get("rank", 9999), x.get("name", "")))
+    # Max first in its one legal picker (Direct + Text), then rank/name.
+    return sorted(matches, key=lambda x: (not x.get("is_router"), x.get("rank") is None,
+                                          x.get("rank", 9999), x.get("name", "")))
 
 
-def check_model_capability(model: Dict[str, Any], modality: str) -> bool:
-    """Verify if a selected model can execute the requested modality."""
-    if model.get("is_router") or model.get("id") == MAX_ROUTER_ID:
-        return True  # Max Router handles all modalities
-
-    target_arena = MODALITIES.get(modality, {}).get("arena", "text")
-    if model.get("arena") == target_arena:
-        return True
-
-    caps = model.get("capabilities", {}).get("outputCapabilities", {})
-    if modality == "search" and caps.get("search"):
-        return True
-    if modality == "webdev" and caps.get("web"):
-        return True
-    if modality == "image" and ("image" in caps or model.get("arena") == "text-to-image"):
-        return True
-    if modality == "video" and ("video" in caps or model.get("arena") == "text-to-video"):
-        return True
-
-    return False
+def check_model_capability(model: Dict[str, Any], modality: str, mode: str = "direct") -> bool:
+    """Verify whether a model may be selected for this mode and modality."""
+    if not model or not model.get("user_selectable"):
+        return False
+    if mode == "battle" or modality == "video":
+        return False
+    is_router = bool(model.get("is_router") or model.get("id") == MAX_ROUTER_ID
+                     or model.get("provider") == "boss-bandit" or model.get("org") == "boss-bandit")
+    if mode == "agent":
+        return False
+    if is_router:
+        return mode in ("direct", "direct-battle") and modality == "chat" and _supports_modality(model, "chat")
+    if mode not in ("direct", "direct-battle", "side-by-side"):
+        return False
+    return _supports_modality(model, modality)
 
 
 def display_available_models(
@@ -294,7 +394,7 @@ def display_available_models(
         if m.get("is_router"):
             rank_str = "ROUTER"
             name_display = f"[bold #EAB308]⚡ {m['name']} (Auto-Router)[/bold #EAB308]{marker}"
-            caps_str = "All Modalities"
+            caps_str = "Text router"
         else:
             rank_str = f"#{m['rank']}" if m.get("rank") is not None else "-"
             name_display = f"[{org_color}]{m['name']}[/{org_color}]{marker}"

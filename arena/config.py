@@ -8,7 +8,8 @@ import atexit
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-CONFIG_DIR = Path.home() / ".arena-cli"
+# Keep this personal fork's credentials and chats separate from the upstream app.
+CONFIG_DIR = Path.home() / ".arena-personal"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 COOKIE_FILE = CONFIG_DIR / "cookies.txt"
 HIST_FILE = CONFIG_DIR / "history.txt"

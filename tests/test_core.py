@@ -1,22 +1,19 @@
 """Unit, edge-case and route tests for the desktop core: contracts, permissions,
 agent tools, workspace mirroring, engine stream ordering and the Flask API."""
 
-import base64
 import json
 import queue
 import sys
 import threading
 import time
-import uuid
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from arena import accounts, agent, contracts, permissions, workspace  # noqa: E402
+from arena import agent, contracts, permissions, workspace  # noqa: E402
 from arena.api import generate_uuidv7  # noqa: E402
-from arena.auth import parse_cookie_input  # noqa: E402
 from arena.engine import BrowserEngine, EngineResponse  # noqa: E402
 
 KEY = "6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0"
@@ -78,12 +75,57 @@ def test_message_ids_sort_after_eval_id():
 def test_ui_maps():
     assert contracts.api_mode("agent") == "direct-battle" and contracts.api_mode("direct") == "direct-battle"
     assert contracts.api_mode("battle") == "battle"
-    assert contracts.api_modality("code") == "webdev" and contracts.api_modality("auto") == "chat"
+    assert contracts.api_modality("code") == "webdev" and contracts.api_modality("auto") == "auto"
     assert contracts.api_modality("video") == "video"
     with pytest.raises(ValueError):
         contracts.api_mode("nope")
     with pytest.raises(ValueError):
         contracts.api_modality("nope")
+
+
+def test_ui_selection_matrix_and_legacy_normalization():
+    assert contracts.validate_ui_selection("battle", "video") == ("battle", "video")
+    assert contracts.validate_ui_selection("agent", "text") == ("direct-battle", "chat")
+    for mode, modality in [("direct", "video"), ("side-by-side", "video"), ("agent", "image")]:
+        with pytest.raises(ValueError):
+            contracts.validate_ui_selection(mode, modality)
+    assert contracts.normalize_ui_selection("direct", "video") == ("battle", "video")
+    assert contracts.normalize_ui_selection("agent", "code") == ("agent", "text")
+
+
+def test_auto_is_battle_only_and_picker_matches_arena_reference():
+    assert contracts.validate_ui_selection("battle", "auto") == ("battle", "auto")
+    for mode in ("direct", "side-by-side", "agent"):
+        with pytest.raises(ValueError, match="Auto is available only in Battle"):
+            contracts.validate_ui_selection(mode, "auto")
+
+    # Agent wins over every stale work type; no Text-first ordering is needed.
+    for modality in ("auto", "video", "image", "code"):
+        assert contracts.normalize_ui_selection("agent", modality) == ("agent", "text")
+    assert contracts.normalize_ui_selection("direct", "auto") == ("direct", "text")
+
+    pick = contracts.pick_auto_modality
+    assert pick(None) == "chat"
+    assert pick({"text": 0.7, "image": 0.2}) == "chat"
+    assert pick({"text": 0.2, "code": 0.2, "image": 0.1}) == "chat"  # Text wins ties.
+    assert pick({"text": 0.1, "code": 0.25, "image": 0.65}) == "webdev"
+    assert pick({"text": 0.1, "search": 0.7, "image": 0.2}) == "search"
+    # With an image, Arena disables Search and renormalizes before the Code
+    # threshold: 0.20 / (0.10 + 0.20) crosses the 0.25 Code threshold.
+    assert pick({"text": 0.10, "code": 0.20, "search": 0.70}, has_image=True) == "webdev"
+    assert pick({"text": 0.30, "search": 0.90, "image": 0.50}, has_image=True) == "image"
+    assert pick({"text": "bad", "video": "0.9"}) == "video"
+
+
+def test_build_chat_rejects_server_selected_or_duplicate_models():
+    with pytest.raises(ValueError):
+        contracts.build_chat(eval_id="E", new=True, mode="battle", modality="chat", content="x", ids=counter(), model_a="A")
+    with pytest.raises(ValueError):
+        contracts.build_chat(eval_id="E", new=True, mode="side-by-side", modality="chat", content="x", ids=counter(),
+                             model_a="A", model_b="A")
+    with pytest.raises(ValueError):
+        contracts.build_chat(eval_id="E", new=True, mode="direct-battle", modality="chat", content="x", ids=counter(),
+                             model_a="A", model_b="B")
 
 
 # ---------- stream parsing and errors ----------
@@ -113,7 +155,6 @@ def test_line_splitter_handles_split_chunks():
     (403, "<title>Just a moment...</title>", "cloudflare"),
     (401, "", "auth"),
     (429, "", "rate_limit"),
-    (403, '{"error":"recaptcha rejected: too many requests"}', "rate_limit"),
     (400, '{"error":"Cannot pass model for battle mode"}', "bad_request"),
     (404, "", "eval_gone"),
     (500, "", "server"),
@@ -126,6 +167,47 @@ def test_classify_error(status, text, code):
 
 def test_rate_limit_suggests_wait():
     assert contracts.classify_error(429, "")["wait"] >= 30
+
+
+def test_rate_limit_kinds_from_arena_body_and_headers():
+    import time as _time
+
+    daily = contracts.classify_error(
+        429, json.dumps({"error": "daily spend limit reached"}),
+        {"retry-after": "7200"})
+    assert daily["code"] == "rate_limit" and "daily usage limit" in daily["message"]
+    assert 7000 < daily["wait"] <= 7200
+
+    video = contracts.classify_error(
+        429, json.dumps({"error": "rate limit reached"}),
+        {"ratelimit-modality": "video",
+         "ratelimit-reset": str(int(_time.time()) + 3600)})
+    assert "Video rate limit" in video["message"] and 3500 < video["wait"] <= 3600
+
+    model = contracts.classify_error(
+        429, json.dumps({"error": "rate limit reached", "modelId": "m-1"}), {})
+    assert "model is rate-limited" in model["message"]
+
+
+def test_account_too_new_for_video():
+    err = contracts.classify_error(403, json.dumps({
+        "error": "account_too_new_for_video",
+        "minAccountAgeHours": 24, "accountAgeHours": 2}))
+    assert err["code"] == "forbidden" and err["retry"] is False
+    assert "24 hours" in err["message"] and "2 hour" in err["message"]
+
+
+def test_build_chat_attachments_passthrough():
+    atts = [{"name": "a.png", "contentType": "image/png",
+             "url": "https://storage.example/a.png"}]
+    _, body = contracts.build_chat(
+        eval_id="eval-1", new=True, mode="battle", modality="chat",
+        content="hi", ids=lambda: "id-x", attachments=atts)
+    assert body["userMessage"]["experimental_attachments"] == atts
+    _, clean = contracts.build_chat(
+        eval_id="eval-1", new=True, mode="battle", modality="chat",
+        content="hi", ids=lambda: "id-x")
+    assert clean["userMessage"]["experimental_attachments"] == []
 
 
 def test_discover_site_keys():
@@ -423,10 +505,20 @@ def web(tmp_path, monkeypatch):
     cfg = {}
     monkeypatch.setattr(appmod, "load_config", lambda: dict(cfg))
     monkeypatch.setattr(appmod, "save_config", lambda c: cfg.update(c))
+    catalog = [
+        {"id": "max-router", "name": "Arena Max", "arena": "text", "org": "boss-bandit",
+         "provider": "boss-bandit", "is_router": True, "user_selectable": True,
+         "capabilities": {"inputCapabilities": {"text": True}, "outputCapabilities": {"text": True}}},
+        {"id": "m1", "name": "Model One", "arena": "text", "org": "test", "user_selectable": True,
+         "capabilities": {"inputCapabilities": {"text": True},
+                          "outputCapabilities": {"text": True, "web": True, "search": True, "image": True}}},
+        {"id": "m2", "name": "Model Two", "arena": "text", "org": "test", "user_selectable": True,
+         "capabilities": {"inputCapabilities": {"text": True},
+                          "outputCapabilities": {"text": True, "web": True, "search": True, "image": True}}},
+    ]
+    monkeypatch.setattr(appmod, "sync_models", lambda force=False: [dict(m) for m in catalog])
     monkeypatch.setattr(workspace, "PROJECTS_DIR", tmp_path / "projects")
     monkeypatch.setattr(appmod, "COOKIE_FILE", tmp_path / "cookies.txt")
-    monkeypatch.setattr(accounts, "ACCOUNTS_FILE", tmp_path / "accounts.json")
-    monkeypatch.setattr(accounts, "COOKIE_FILE", tmp_path / "accounts-cookies.txt")
     monkeypatch.setattr(appmod, "CHATS_DIR", tmp_path / "chats")
     monkeypatch.setattr(appmod.ENGINE, "window", None)
     monkeypatch.setattr(appmod, "_client", FakeClient())
@@ -434,6 +526,14 @@ def web(tmp_path, monkeypatch):
     monkeypatch.setattr(appmod, "_ui_modality", "auto")
     monkeypatch.setattr(appmod, "_current_chat_id", None)
     monkeypatch.setattr(appmod, "BROKER", permissions.PermissionBroker())
+    monkeypatch.setattr(
+        appmod,
+        "CONNECTORS",
+        appmod.connectors.ConnectorManager(
+            lambda: tmp_path / "projects", config_path=tmp_path / "mcp.json"
+        ),
+    )
+    monkeypatch.setattr(appmod, "_active_generations", 0)
     appmod._me_cache.update(t=0.0, user=None, err=None)
     sent = []
 
@@ -461,7 +561,7 @@ def test_login_rejects_garbage_and_empty_clipboard(web, monkeypatch):
     r = c.post("/api/login", json={"method": "clipboard"})
     assert r.status_code == 400 and "clipboard is empty" in r.get_json()["error"]
     r = c.post("/api/login", json={"method": "window"})
-    assert r.status_code == 400 and "desktop app" in r.get_json()["error"]
+    assert r.status_code == 400 and "Arena Desktop" in r.get_json()["error"]
     assert c.get("/api/login/poll").get_json()["done"] is True
 
 
@@ -478,186 +578,6 @@ def test_status_without_engine(web):
     s = c.get("/api/status").get_json()
     assert s["authenticated"] is True and s["email"] == "t@e.st" and s["desktop"] is False
     assert s["permission_mode"] == "default" and s["workspace"].endswith("workspace")
-
-
-def _session_cookie(email, user_id, token):
-    payload = {"user": {"id": user_id, "email": email, "user_metadata": {}}, "access_token": token}
-    return "arena-auth-prod-v1.0=base64-" + base64.b64encode(json.dumps(payload).encode()).decode()
-
-
-def _fake_arena(monkeypatch, appmod):
-    class FakeArena:
-        def __init__(self, cookie_str=None):
-            self.cookie_str = cookie_str
-            self.eval_id = None
-            self.sources = []
-            self.active_mode = "battle"
-            self.active_modality = "chat"
-
-        def get_me(self):
-            info = parse_cookie_input(self.cookie_str or "")[2] or {}
-            return ({"email": info.get("email")}, None) if info.get("email") else (None, "bad session")
-
-        def sync_cookies(self):
-            pass
-
-    monkeypatch.setattr(appmod, "ArenaClient", FakeArena)
-
-
-def test_accounts_switch_route_and_chat_scoping(web, monkeypatch):
-    appmod, c, cfg, *_ = web
-    _fake_arena(monkeypatch, appmod)
-    a_cookie = _session_cookie("a@example.com", "ua", "ta")
-    b_cookie = _session_cookie("b@example.com", "ub", "tb")
-    accounts.remember(a_cookie)
-    chat_a = str(uuid.uuid4())
-    appmod._save_chat(chat_a, "A chat", [], mode="battle", modality="auto")
-    accounts.remember(b_cookie)
-    chat_b = str(uuid.uuid4())
-    appmod._save_chat(chat_b, "B chat", [], mode="battle", modality="auto")
-
-    listed = c.get("/api/accounts").get_json()
-    assert [a["email"] for a in listed["accounts"]] == ["a@example.com", "b@example.com"]
-    assert all("cookie" not in a for a in listed["accounts"])
-    assert [x["id"] for x in appmod._list_chats()] == [chat_b]
-    assert c.get(f"/api/chats/{chat_a}").status_code == 404
-
-    a_id = next(a["id"] for a in listed["accounts"] if a["email"] == "a@example.com")
-    r = c.post("/api/accounts/switch", json={"id": a_id})
-    assert r.status_code == 200 and r.get_json()["ok"]
-    assert accounts.active_account()["email"] == "a@example.com"
-    assert [x["id"] for x in appmod._list_chats()] == [chat_a]
-    assert c.get(f"/api/chats/{chat_a}").status_code == 200
-
-
-def test_login_with_a_second_cookie_adds_an_account(web, monkeypatch):
-    appmod, c, *_ = web
-    _fake_arena(monkeypatch, appmod)
-    a_cookie = _session_cookie("a@example.com", "ua", "ta")
-    b_cookie = _session_cookie("b@example.com", "ub", "tb")
-    accounts.remember(a_cookie)
-    r = c.post("/api/login", json={"method": "manual", "cookie": b_cookie})
-    assert r.status_code == 200 and r.get_json()["email"] == "b@example.com"
-    assert [a["email"] for a in accounts.list_accounts()] == ["a@example.com", "b@example.com"]
-    assert accounts.active_account()["email"] == "b@example.com"
-
-
-def test_account_switch_imports_the_cookie_into_the_engine(web, monkeypatch):
-    appmod, c, *_ = web
-    a_cookie = _session_cookie("a@example.com", "ua", "ta")
-    b_cookie = _session_cookie("b@example.com", "ub", "tb")
-    accounts.remember(a_cookie)
-    accounts.remember(b_cookie)
-
-    class FakeEngine:
-        window = object()
-        challenge = None
-        imported = []
-
-        def import_cookies(self, cookie):
-            self.imported.append(cookie)
-            return True
-
-        def wait_ready(self, timeout):
-            return True
-
-        def get_me(self):
-            info = parse_cookie_input(self.imported[-1] if self.imported else "")[2] or {}
-            return {"email": info.get("email")}, None
-
-        def sync_to(self, client):
-            pass
-
-    eng = FakeEngine()
-    monkeypatch.setattr(appmod, "ENGINE", eng)
-    _fake_arena(monkeypatch, appmod)
-    a_id = next(a["id"] for a in accounts.list_accounts() if a["email"] == "a@example.com")
-    r = c.post("/api/accounts/switch", json={"id": a_id})
-    assert r.status_code == 200 and r.get_json()["ok"]
-    assert eng.imported[-1] == a_cookie
-    assert accounts.active_account()["email"] == "a@example.com"
-
-
-def test_account_switch_rejects_a_different_engine_session(web, monkeypatch):
-    appmod, c, *_ = web
-    a_cookie = _session_cookie("a@example.com", "ua", "ta")
-    b_cookie = _session_cookie("b@example.com", "ub", "tb")
-    accounts.remember(a_cookie)
-    a_id = accounts.active_id()
-    accounts.remember(b_cookie)
-    accounts.set_active(a_id)
-
-    class StuckEngine:
-        window = object()
-        challenge = None
-        imported = []
-
-        def import_cookies(self, cookie):
-            self.imported.append(cookie)
-            return True
-
-        def wait_ready(self, timeout):
-            return True
-
-        def get_me(self):
-            return {"email": "a@example.com"}, None
-
-        def sync_to(self, client):
-            pass
-
-    eng = StuckEngine()
-    monkeypatch.setattr(appmod, "ENGINE", eng)
-    _fake_arena(monkeypatch, appmod)
-    b_id = next(a["id"] for a in accounts.list_accounts() if a["email"] == "b@example.com")
-    r = c.post("/api/accounts/switch", json={"id": b_id})
-    assert r.status_code == 401
-    assert accounts.active_id() == a_id
-    assert eng.imported[-1] == a_cookie  # it put the previous session back
-
-
-def test_logout_switches_to_the_next_saved_account(web, monkeypatch):
-    appmod, c, *_ = web
-    _fake_arena(monkeypatch, appmod)
-    a_cookie = _session_cookie("a@example.com", "ua", "ta")
-    b_cookie = _session_cookie("b@example.com", "ub", "tb")
-    accounts.remember(a_cookie)
-    accounts.remember(b_cookie)
-
-    r = c.post("/api/logout", json={})
-    data = r.get_json()
-    a_id = next(a["id"] for a in accounts.list_accounts() if a["email"] == "a@example.com")
-    assert r.status_code == 200 and data["active"] == a_id and data["switched_to"] == "a@example.com"
-    assert [a["email"] for a in accounts.list_accounts()] == ["a@example.com"] and accounts.active_id() == a_id
-
-    r = c.post("/api/logout", json={})
-    assert r.status_code == 200 and r.get_json()["active"] is None
-    assert accounts.list_accounts() == []
-
-
-def test_models_refresh_query_forces_the_catalog(web, monkeypatch):
-    appmod, c, *_ = web
-    calls = []
-
-    def fake_models(force=False):
-        calls.append(force)
-        return []
-
-    monkeypatch.setattr(appmod, "sync_models", fake_models)
-    assert c.get("/api/models?modality=chat").status_code == 200
-    assert calls[-1] is False
-    assert c.get("/api/models?modality=chat&refresh=1").status_code == 200
-    assert calls[-1] is True
-
-
-def test_agent_mode_is_auto_only(web):
-    appmod, c, *_ = web
-    r = c.post("/api/mode", json={"mode": "agent"}).get_json()
-    assert r["mode"] == "agent" and r["modality"] == "auto"
-    assert appmod._ui_modality == "auto"
-    assert c.post("/api/modality", json={"modality": "video"}).status_code == 400
-    assert c.post("/api/modality", json={"modality": "auto"}).status_code == 200
-    c.post("/api/mode", json={"mode": "direct"})
-    assert c.post("/api/modality", json={"modality": "video"}).get_json()["modality"] == "video"
 
 
 def test_permission_mode_and_answers(web):
@@ -680,86 +600,35 @@ def test_chat_validation(web):
     assert c.post("/api/chat", json={"message": "hi", "model_id": "m"}).status_code == 401
 
 
-def test_file_only_message_is_allowed(web):
-    appmod, c, _, use, sent = web
-    use(FakeResp(['a0:"seen"']))
-    ev = events(c.post("/api/chat", json={"message": "", "attachments": [
-        {"name": "shot.png", "contentType": "image/png", "url": "https://cdn.example/x.png"}]}))
-    assert ev[-1]["type"] == "done"
-    assert sent[0][1]["userMessage"]["experimental_attachments"][0]["name"] == "shot.png"
-    assert appmod._load_chat(ev[0]["chat_id"])["title"] == "shot.png"
-
-
-def test_chat_forwards_clean_attachments(web):
-    _, c, _, use, sent = web
-    use(FakeResp(['a0:"ok"']))
-    events(c.post("/api/chat", json={"message": "look", "attachments": [
-        {"name": "shot.png", "contentType": "image/png", "url": "https://cdn.example/x.png", "evil": "drop me"},
-        {"name": "local.png", "contentType": "image/png", "url": "http://127.0.0.1/x.png"},
-        {"name": "bad.txt", "contentType": "text/plain", "url": "javascript:alert(1)"},
-        "not-a-dict",
-    ]}))
-    assert sent[0][1]["userMessage"]["experimental_attachments"] == [
-        {"name": "shot.png", "contentType": "image/png", "url": "https://cdn.example/x.png"},
-        {"name": "local.png", "contentType": "image/png", "url": "http://127.0.0.1/x.png"}]
-
-
-def test_upload_route_inlines_text_and_uploads_binary(web, monkeypatch):
+def test_selection_endpoints_reject_unsupported_arena_pairs(web):
     appmod, c, *_ = web
-    json_calls, puts = [], []
+    assert c.get("/api/models?mode=battle&modality=video").get_json() == []
+    assert c.get("/api/models?mode=direct&modality=video").status_code == 400
+    assert c.get("/api/models?mode=battle&modality=auto").get_json() == []
+    assert c.get("/api/models?mode=direct&modality=auto").status_code == 400
+    assert c.get("/api/models?mode=agent&modality=auto").status_code == 400
+    assert c.get("/api/models?mode=agent&modality=text").get_json() == []
+    assert [m["id"] for m in c.get("/api/models?mode=direct&modality=text").get_json()] == ["max-router", "m1", "m2"]
+    assert [m["id"] for m in c.get("/api/models?mode=side-by-side&modality=text").get_json()] == ["m1", "m2"]
 
-    def fake_json(client, path, payload, timeout=60):
-        json_calls.append((path, payload))
-        if path == contracts.PATHS["storage_upload"]:
-            return {"uploadUrl": "https://upload.example/abc", "key": "/files/abc.png"}
-        if path == contracts.PATHS["storage_signed"]:
-            return {"url": "https://cdn.example/files/abc.png"}
-        raise AssertionError(path)
-
-    class Put:
-        ok, status_code = True, 200
-
-    monkeypatch.setattr(appmod, "_arena_json", fake_json)
-    monkeypatch.setattr(appmod.requests, "put",
-                        lambda url, data=None, headers=None, **kw: puts.append((url, data, headers)) or Put())
-    r = c.post("/api/upload", json={"files": [
-        {"name": "notes.txt", "type": "text/plain", "data": "hello", "binary": False},
-        {"name": "tricky.txt", "type": "text/plain", "data": "data:not-a-url,hello", "binary": False},
-        {"name": "shot.png", "type": "image/png", "data": "data:image/png;base64,iVBORw0KGgo=", "binary": True},
-    ]})
-    assert r.status_code == 200
-    files = r.get_json()["files"]
-    assert files[0]["text"] == "hello" and "attachment" not in files[0]
-    assert files[1]["text"] == "data:not-a-url,hello"
-    assert files[2]["attachment"] == {
-        "name": "shot.png", "contentType": "image/png", "url": "https://cdn.example/files/abc.png"}
-    assert json_calls == [
-        (contracts.PATHS["storage_upload"], {"fileName": "shot.png", "contentType": "image/png"}),
-        (contracts.PATHS["storage_signed"], {"key": "files/abc.png"}),
-    ]
-    assert puts[0][0] == "https://upload.example/abc" and puts[0][1].startswith(b"\x89PNG")
-    assert puts[0][2] == {"Content-Type": "image/png"}
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    assert c.post("/api/modality", json={"modality": "video"}).status_code == 400
+    assert appmod._ui_modality == "text"
+    assert c.post("/api/modality", json={"modality": "code"}).status_code == 200
+    r = c.post("/api/mode", json={"mode": "agent"})
+    assert r.status_code == 200 and r.get_json()["modality"] == "text"
+    assert appmod._ui_mode == "agent" and appmod._ui_modality == "text"
+    assert c.post("/api/modality", json={"modality": "text"}).status_code == 200
 
 
-def test_upload_route_reads_native_files_and_rejects_big_ones(web, monkeypatch, tmp_path):
+def test_chat_rejects_manual_models_where_arena_disables_them(web):
     appmod, c, *_ = web
-    native = tmp_path / "notes.md"
-    native.write_text("# hi")
-    monkeypatch.setattr(appmod, "_arena_upload", lambda client, name, ctype, blob: {
-        "name": name, "contentType": ctype, "url": "https://cdn.example/" + name})
-    r = c.post("/api/upload", json={"files": [{"name": "notes.md", "path": str(native), "size": 0}]})
-    assert r.status_code == 200 and r.get_json()["files"][0]["text"] == "# hi"
-    big = tmp_path / "big.bin"
-    big.write_bytes(b"x" * (appmod.ATTACHMENT_MAX_BYTES + 1))
-    r = c.post("/api/upload", json={"files": [{"name": "big.bin", "path": str(big)}]})
-    assert r.status_code == 400 and "15 MB" in r.get_json()["error"]
-
-
-def test_upload_route_needs_a_session(web):
-    appmod, c, *_ = web
-    appmod._client.cookie_str = None
-    assert c.post("/api/upload", json={"files": [{"name": "a.txt", "data": "x"}]}).status_code == 401
-    assert c.post("/api/upload", json={}).status_code == 400
+    appmod._ui_mode, appmod._ui_modality = "battle", "video"
+    assert c.post("/api/chat", json={"message": "hi", "model_id": "m1"}).status_code == 400
+    appmod._ui_mode, appmod._ui_modality = "agent", "text"
+    assert c.post("/api/chat", json={"message": "hi", "model_id": "m1"}).status_code == 400
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    assert c.post("/api/chat", json={"message": "hi", "model_id": "not-in-catalog"}).status_code == 400
 
 
 def test_battle_chat_streams_both_lanes_and_saves(web):
@@ -771,25 +640,32 @@ def test_battle_chat_streams_both_lanes_and_saves(web):
     assert done["type"] == "done" and done["text_a"] == "Hello there" and done["text_b"] == "Hi"
     path, body = sent[0]
     assert path == contracts.PATHS["create"] and body["mode"] == "battle" and "modelAId" not in body
-    assert appmod._client.eval_id == body["id"]
+    # The Arena session id now lives on the chat itself (parallel chats),
+    # not on the shared client.
+    saved = appmod._load_chat(ev[0]["chat_id"])
+    assert saved and saved["eval_id"] == body["id"]
     use(FakeResp(['a0:"again"']))
     events(c.post("/api/chat", json={"message": "more", "chat_id": ev[0]["chat_id"]}))
     assert sent[1][0] == contracts.PATHS["post"].format(eval_id=body["id"]) and "mode" not in sent[1][1]
 
 
-def test_direct_video_sends_video_modality_and_emits_media(web):
-    appmod, c, _, use, sent = web
-    appmod._ui_mode = "direct"
-    appmod._ui_modality = "video"
-    use(FakeResp(['a2:' + json.dumps([
-        {"type": "video", "url": "https://cdn.example/clip.mp4", "mimeType": "video/mp4"}
-    ])]))
-    ev = events(c.post("/api/chat", json={"message": "make a clip", "model_id": "video-model"}))
-    assert sent[0][1]["modality"] == "video"
-    assert sent[0][1]["modelAId"] == "video-model"
-    media = [e for e in ev if e["type"] == "media"]
-    assert media and media[0]["kind"] == "video"
-    assert media[0]["url"] == "https://cdn.example/clip.mp4"
+def test_battle_lane_error_does_not_stop_or_pollute_other_lane(web):
+    appmod, c, _, use, _sent = web
+    appmod._ui_mode, appmod._ui_modality = "battle", "text"
+    use(FakeResp([
+        'a3:"account rate limit"',
+        'b0:"Surviving answer"',
+        'bd:{"finishReason":"stop"}',
+    ]))
+    ev = events(c.post("/api/chat", json={"message": "compare"}))
+    errors = [e for e in ev if e["type"] == "error"]
+    assert len(errors) == 1 and errors[0]["model"] == "a"
+    assert ev[-1]["type"] == "done" and ev[-1]["text_a"] == "" and ev[-1]["text_b"] == "Surviving answer"
+
+    saved = appmod._load_chat(ev[0]["chat_id"])["messages"][-1]
+    assert saved["text"] == "" and saved["text_b"] == "Surviving answer"
+    assert saved["lane_errors"] == {"a": ["Model A stopped with an error: account rate limit"]}
+    assert "error" not in saved  # not a whole-turn/global error
 
 
 def test_challenge_without_engine_explains(web):
@@ -797,7 +673,7 @@ def test_challenge_without_engine_explains(web):
     use(FakeResp(status=403, text='{"error":"recaptcha validation failed"}'))
     ev = events(c.post("/api/chat", json={"message": "hi"}))
     err = [e for e in ev if e["type"] == "error"][0]
-    assert err["code"] == "challenge" and "arena-ai.exe" in err["message"]
+    assert err["code"] == "challenge" and "Arena-Desktop.exe" in err["message"]
     assert ev[-1]["type"] == "done"
 
 
@@ -822,7 +698,7 @@ def test_agent_writes_file_in_accept_edits(web):
     appmod._ui_mode = "agent"
     use(FakeResp([_tool_line('Writing.<tool name="write_file"><path>hello.txt</path><content>\nhi\n</content></tool>')]),
         FakeResp(['a0:"Done."']))
-    ev = events(c.post("/api/chat", json={"message": "make hello", "model_id": "m1"}))
+    ev = events(c.post("/api/chat", json={"message": "make hello"}))
     root = workspace.PROJECTS_DIR / "workspace"
     assert (root / "hello.txt").read_text() == "hi\n"
     result = [e for e in ev if e["type"] == "tool_result"][0]
@@ -836,7 +712,7 @@ def test_agent_plan_mode_blocks_writes(web):
     cfg["permission_mode"] = "plan"
     appmod._ui_mode = "agent"
     use(FakeResp([_tool_line('<tool name="write_file"><path>x.txt</path><content>a</content></tool>')]), FakeResp(['a0:"Plan: 1. write x"']))
-    ev = events(c.post("/api/chat", json={"message": "plan", "model_id": "m1"}))
+    ev = events(c.post("/api/chat", json={"message": "plan"}))
     assert not (workspace.PROJECTS_DIR / "workspace" / "x.txt").exists()
     assert [e for e in ev if e["type"] == "tool_result"][0]["status"].startswith("blocked: plan mode")
 
@@ -857,46 +733,10 @@ def test_agent_asks_and_user_denies(web):
                 return
             time.sleep(0.05)
     threading.Thread(target=answer, daemon=True).start()
-    ev = events(c.post("/api/chat", json={"message": "clean", "model_id": "m1"}))
+    ev = events(c.post("/api/chat", json={"message": "clean"}))
     assert (root / "keep.txt").exists()
     assert any(e["type"] == "permission" for e in ev)
     assert [e for e in ev if e["type"] == "tool_result"][0]["status"] == "denied by the user"
-
-
-def test_agent_has_no_tool_round_cap(web):
-    appmod, c, cfg, use, sent = web
-    cfg["permission_mode"] = "acceptEdits"
-    appmod._ui_mode = "agent"
-    rounds = [FakeResp([_tool_line(f'<tool name="write_file"><path>f{i}.txt</path><content>{i}</content></tool>')])
-              for i in range(12)]
-    use(*rounds, FakeResp(['a0:"All done."']))
-    ev = events(c.post("/api/chat", json={"message": "write twelve files", "model_id": "m1"}))
-    root = workspace.PROJECTS_DIR / "workspace"
-    assert all((root / f"f{i}.txt").read_text() == str(i) for i in range(12))
-    assert len([e for e in ev if e["type"] == "tool_result"]) == 12
-    assert not any("Stopped after" in (e.get("text") or "") for e in ev)
-    assert ev[-1]["type"] == "done" and "All done." in ev[-1]["text_a"]
-
-
-def test_agent_resumes_after_rate_limit(web, monkeypatch):
-    appmod, c, cfg, use, sent = web
-    cfg["permission_mode"] = "acceptEdits"
-    appmod._ui_mode = "agent"
-    monkeypatch.setattr(appmod.time, "sleep", lambda seconds: None)  # the real wait is 60s
-    use(FakeResp([_tool_line('<tool name="write_file"><path>ok.txt</path><content>yes</content></tool>')]),
-        FakeResp(status=429, text="slow down"),
-        FakeResp(['a0:"Finished after the limit."']))
-    ev = events(c.post("/api/chat", json={"message": "write ok.txt", "model_id": "m1"}))
-    assert (workspace.PROJECTS_DIR / "workspace" / "ok.txt").read_text() == "yes"
-    assert any(e["type"] == "notice" and "rate-limited" in (e.get("text") or "") for e in ev)
-    assert ev[-1]["type"] == "done" and "Finished after the limit." in ev[-1]["text_a"]
-    assert len(sent) == 3
-
-
-def test_tool_results_keep_the_full_read(web):
-    output = "x" * 30_000
-    lines = agent._result_lines([({"name": "read_file", "params": {"path": "big.txt"}}, "ok", output)])
-    assert len(lines[1]) == len(output)
 
 
 def _webdev_line(lane, content):
@@ -1118,3 +958,1153 @@ def test_code_answer_is_copied_into_the_picked_folder_and_local_edits_go_back(we
     content = sent[-1][1]["userMessage"]["content"]
     assert "--- src/App.tsx ---\nhello\nmine\n" in content and content.endswith("My message:\nnext")
 
+
+# ---------- v4: automatic Agent, generation state, cloud history, panel API ----------
+
+def test_status_reports_only_real_generation_as_generating(web):
+    appmod, c, *_ = web
+    status = c.get("/api/status").get_json()
+    assert status["loading"] is False and status["engine_loading"] is False
+    assert status["generating"] is False
+    appmod._generation_started()
+    try:
+        assert c.get("/api/status").get_json()["generating"] is True
+    finally:
+        appmod._generation_finished()
+    assert c.get("/api/status").get_json()["generating"] is False
+
+
+def test_agent_runs_when_catalog_is_empty_and_never_names_a_model(web, monkeypatch):
+    appmod, c, _, use, sent = web
+    monkeypatch.setattr(appmod, "sync_models", lambda force=False: [])
+    appmod._ui_mode, appmod._ui_modality = "agent", "text"
+    use(FakeResp(['a0:"Automatic answer"']))
+    ev = events(c.post("/api/chat", json={"message": "hello"}))
+    assert ev[0]["names"] == {"a": "Agent", "b": None}
+    assert ev[-1]["text_a"] == "Automatic answer"
+    assert sent[0][1]["mode"] == "direct-battle" and "modelAId" not in sent[0][1]
+    saved = appmod._load_chat(ev[0]["chat_id"])
+    assert saved["model_a"] is None and saved["messages"][-1]["names"] == {"a": "Agent", "b": None}
+
+
+def test_agent_history_sanitizes_internal_model_and_lists_source(web):
+    appmod, c, *_ = web
+    chat_id = "11111111-1111-4111-8111-111111111111"
+    eval_id = "22222222-2222-4222-8222-222222222222"
+    appmod._save_chat(
+        chat_id, title="Agent work", mode="agent", modality="text", model_a="max-router",
+        eval_id=eval_id, source="arena",
+        messages=[
+            {"role": "user", "text": "hi"},
+            {"role": "assistant", "text": "done", "text_b": "", "names": {"a": "Arena Max", "b": None}},
+        ],
+    )
+    loaded = c.get(f"/api/chats/{chat_id}").get_json()
+    assert loaded["model_a"] is None and loaded["model_b"] is None
+    assert loaded["messages"][-1]["names"] == {"a": "Agent", "b": None}
+    listed = {item["id"]: item for item in c.get("/api/chats").get_json()}[chat_id]
+    assert listed["eval_id"] == eval_id and listed["source"] == "arena"
+
+
+def test_reasoning_deltas_are_saved_verbatim_for_both_lanes(web):
+    appmod, c, _, use, _ = web
+    use(FakeResp([
+        'ag:"First "', 'ag:"thought continues"',
+        'bg:"Bee "', 'bg:"thought continues"',
+        'a0:"A"', 'b0:"B"',
+    ]))
+    ev = events(c.post("/api/chat", json={"message": "think"}))
+    reasoning = [(e["model"], e["text"]) for e in ev if e["type"] == "reasoning"]
+    assert reasoning == [("a", "First "), ("a", "thought continues"), ("b", "Bee "), ("b", "thought continues")]
+    reply = appmod._load_chat(ev[0]["chat_id"])["messages"][-1]
+    assert reply["reasoning"] == "First thought continues"
+    assert reply["reasoning_b"] == "Bee thought continues"
+    assert "\n" not in reply["reasoning"] + reply["reasoning_b"]
+
+
+def test_arena_cloud_history_lists_dedupes_and_imports(web, monkeypatch):
+    appmod, c, *_ = web
+    local_id = "11111111-1111-4111-8111-111111111111"
+    known_eval = "22222222-2222-4222-8222-222222222222"
+    import_eval = "33333333-3333-4333-8333-333333333333"
+    agent_eval = "44444444-4444-4444-8444-444444444444"
+    appmod._save_chat(local_id, title="Already local", messages=[], eval_id=known_eval)
+    calls = []
+
+    def fake_arena_get(path, timeout=30):
+        calls.append(path)
+        if path.startswith(appmod.contracts.PATHS["history_unified"]):
+            return {
+                "entries": [
+                    {"id": known_eval, "type": "evaluation", "title": "Known", "mode": "direct-battle",
+                     "modality": "chat", "updatedAt": "2026-01-03T00:00:00Z", "createdAt": "2026-01-03T00:00:00Z"},
+                    {"id": import_eval, "type": "evaluation", "title": "Cloud import", "mode": "side-by-side",
+                     "modality": "chat", "updatedAt": "2026-01-02T00:00:00Z", "createdAt": "2026-01-02T00:00:00Z"},
+                    {"id": agent_eval, "type": "agentic", "title": "Native agent",
+                     "updatedAt": "2026-01-01T00:00:00Z", "createdAt": "2026-01-01T00:00:00Z"},
+                ],
+                "pagination": {"limit": 50},
+            }, None, 200
+        if import_eval in path:
+            return {
+                "id": import_eval, "title": "Cloud import", "mode": "side-by-side",
+                "maskedEvaluations": [{"modality": "chat"}],
+                "messages": [
+                    {"role": "user", "content": "Question", "createdAt": "2026-01-02T00:00:00Z"},
+                    {"role": "assistant", "participantPosition": "a", "modelId": "m1",
+                     "parentMessageIds": ["u1"], "createdAt": "2026-01-02T00:00:01Z",
+                     "content": [{"type": "reasoning", "text": "A "}, {"type": "reasoning", "text": "thought"},
+                                 {"type": "text", "text": "Answer A"}]},
+                    {"role": "assistant", "participantPosition": "b", "modelId": "m2",
+                     "parentMessageIds": ["u1"], "createdAt": "2026-01-02T00:00:02Z",
+                     "reasoning": "B thought", "content": "Answer B"},
+                ],
+            }, None, 200
+        if agent_eval in path:
+            return {
+                "id": agent_eval, "title": "Native agent", "lastEventId": "88",
+                "messages": [
+                    {"role": "user", "parts": [{"type": "text", "text": "Agent question"}],
+                     "createdAt": "2026-01-01T00:00:00Z"},
+                    {"role": "assistant", "parts": [
+                        {"type": "step-start"},
+                        {"type": "text", "text": "Agent answer"},
+                    ], "createdAt": "2026-01-01T00:00:01Z"},
+                ],
+            }, None, 200
+        raise AssertionError(f"unexpected Arena path: {path}")
+
+    monkeypatch.setattr(appmod, "_arena_get_json", fake_arena_get)
+    payload = c.get("/api/arena-chats").get_json()
+    entries = {item["eval_id"]: item for item in payload["entries"]}
+    assert entries[known_eval]["local_chat_id"] == local_id
+    assert entries[known_eval]["mode"] == "direct" and entries[known_eval]["modality"] == "text"
+    assert entries[import_eval]["local_chat_id"] is None
+    assert entries[agent_eval]["mode"] == "agent"
+    assert entries[agent_eval]["local_chat_id"] is None
+
+    imported = c.post(f"/api/arena-chats/{import_eval}/open", json={"type": "evaluation"}).get_json()
+    assert imported == {"ok": True, "chat_id": import_eval, "imported": True}
+    saved = appmod._load_chat(import_eval)
+    assert saved["source"] == "arena" and saved["mode"] == "side-by-side"
+    assert saved["messages"][-1]["text"] == "Answer A"
+    assert saved["messages"][-1]["text_b"] == "Answer B"
+    assert saved["messages"][-1]["reasoning"] == "A thought"
+    assert saved["messages"][-1]["reasoning_b"] == "B thought"
+
+    before = len(calls)
+    known = c.post(f"/api/arena-chats/{known_eval}/open", json={"type": "evaluation"}).get_json()
+    assert known == {"ok": True, "chat_id": local_id, "imported": False}
+    assert len(calls) == before  # already-local chats are not downloaded again
+
+    # A cloud Arena Agent session imports as a local, continuable chat: the
+    # native coordinates are the session id, the unknown stream cursor is
+    # marked for draining on the first continuation.
+    agent_response = c.post(f"/api/arena-chats/{agent_eval}/open", json={"type": "agentic"})
+    assert agent_response.status_code == 200
+    assert agent_response.get_json() == {"ok": True, "chat_id": agent_eval, "imported": True}
+    agent_saved = appmod._load_chat(agent_eval)
+    assert agent_saved["source"] == "arena"
+    assert agent_saved["mode"] == "agent" and agent_saved["agent_backend"] == "arena"
+    assert agent_saved["title"] == "Native agent"
+    assert [(m["role"], m["text"]) for m in agent_saved["messages"]] == [
+        ("user", "Agent question"), ("assistant", "Agent answer")]
+    # The snapshot's lastEventId becomes the resume cursor: no draining.
+    assert agent_saved["native"] == {"backend": "arena", "session_id": agent_eval,
+                                     "trigger_address": agent_eval, "last_event_id": "88",
+                                     "needs_drain": False}
+    # Re-opening is a local hit (no download), and the cloud list now links
+    # the agentic entry to the imported chat.
+    before = len(calls)
+    again = c.post(f"/api/arena-chats/{agent_eval}/open", json={"type": "agentic"}).get_json()
+    assert again == {"ok": True, "chat_id": agent_eval, "imported": False}
+    assert len(calls) == before
+    relisted = {item["eval_id"]: item for item in c.get("/api/arena-chats").get_json()["entries"]}
+    assert relisted[agent_eval]["local_chat_id"] == agent_eval
+    assert relisted[agent_eval]["local_mode"] == "agent"
+
+
+def test_workspace_panel_tree_and_file_are_scoped_to_panel_root(web):
+    appmod, c, *_ = web
+    root = workspace.PROJECTS_DIR
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    (root / "README.md").write_text("# Demo\n", encoding="utf-8")
+    (root / "blob.bin").write_bytes(b"a\x00b")
+
+    tree = c.get("/api/workspace/tree").get_json()
+    assert tree["root"] == str(root.resolve())
+    assert [entry["name"] for entry in tree["entries"]] == ["src", "blob.bin", "README.md"]
+    child = c.get("/api/workspace/tree?path=src").get_json()
+    assert child["entries"][0]["path"] == "src/app.py"
+    assert c.get("/api/workspace/tree?path=..%2F").status_code == 403
+    assert c.get("/api/workspace/file?path=%2Fetc%2Fpasswd").status_code == 403
+    assert c.get("/api/workspace/file?path=src%2Fapp.py").get_json()["content"] == "print('ok')\n"
+    assert c.get("/api/workspace/file?path=blob.bin").status_code == 415
+    assert appmod._panel_workspace_root() == root.resolve()
+
+
+def test_connector_routes_use_isolated_config_and_mask_secrets(web, tmp_path, monkeypatch):
+    appmod, c, *_ = web
+    payload = c.get("/api/connectors").get_json()
+    assert payload["config_path"] == str(tmp_path / "mcp.json")
+    assert {preset["id"] for preset in payload["presets"]} >= {"filesystem", "git", "github", "playwright"}
+
+    assert c.post("/api/connectors/cli", json={"name": "bad name", "command": "demo", "connect": False}).status_code == 400
+    created = c.post("/api/connectors/cli", json={
+        "name": "demo-server", "command": "python -m demo_mcp", "connect": False,
+        "env": {"API_TOKEN": "secret-value", "PLAIN": "visible"},
+    })
+    assert created.status_code == 200
+    assert "secret-value" not in created.get_data(as_text=True)
+    server = {item["name"]: item for item in created.get_json()["servers"]}["demo-server"]
+    assert server["env"]["API_TOKEN"] == "••••••" and server["env"]["PLAIN"] == "visible"
+
+    preset = c.post("/api/connectors/preset", json={"preset_id": "time", "values": {}, "connect": False}).get_json()
+    assert {item["name"] for item in preset["servers"]} == {"demo-server", "time"}
+    disabled = c.post("/api/connectors/time/enabled", json={"enabled": False}).get_json()
+    assert {item["name"]: item for item in disabled["servers"]}["time"]["enabled"] is False
+
+    monkeypatch.setattr(appmod.connectors, "open_config_file", lambda path: Path(path))
+    opened = c.post("/api/connectors/config/open", json={}).get_json()
+    assert opened == {"ok": True, "path": str(tmp_path / "mcp.json")}
+    removed = c.post("/api/connectors/demo-server/delete", json={}).get_json()
+    assert {item["name"] for item in removed["servers"]} == {"time"}
+
+
+class _FakeConnectorManager:
+    def __init__(self, appmod, annotations):
+        self.appmod = appmod
+        self.calls = []
+        self.tools = {
+            "mcp__demo__echo": {
+                "alias": "mcp__demo__echo", "server": "demo", "tool": "echo",
+                "description": "Echo text", "annotations": annotations,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"}, "count": {"type": "integer"},
+                        "enabled": {"type": "boolean"},
+                    },
+                    "required": ["text"],
+                },
+            }
+        }
+
+    def ensure_started(self, timeout=30):
+        return dict(self.tools)
+
+    def guide(self, tool_map):
+        return self.appmod.connectors.ConnectorManager.guide(tool_map)
+
+    def call(self, alias, arguments):
+        self.calls.append((alias, arguments))
+        return f"echo {arguments['text']} x{arguments['count']}"
+
+
+def test_agent_calls_mcp_tool_with_schema_coerced_json(web, monkeypatch):
+    appmod, c, cfg, use, sent = web
+    cfg["permission_mode"] = "bypassPermissions"
+    fake = _FakeConnectorManager(appmod, {"readOnlyHint": True})
+    monkeypatch.setattr(appmod, "CONNECTORS", fake)
+    appmod._ui_mode, appmod._ui_modality = "agent", "text"
+    tool = '<tool name="mcp__demo__echo"><arguments>{"text":"hello","count":"2","enabled":"true"}</arguments></tool>'
+    use(FakeResp([_tool_line(tool)]), FakeResp(['a0:"Done"']))
+    ev = events(c.post("/api/chat", json={"message": "echo it"}))
+    assert "mcp__demo__echo" in sent[0][1]["userMessage"]["content"]
+    assert fake.calls == [("mcp__demo__echo", {"text": "hello", "count": 2, "enabled": True})]
+    result = [e for e in ev if e["type"] == "tool_result"][0]
+    assert result["ok"] and result["output"] == "echo hello x2"
+    assert "echo hello x2" in sent[1][1]["userMessage"]["content"]
+
+
+def test_agent_plan_mode_blocks_non_readonly_mcp_tool(web, monkeypatch):
+    appmod, c, cfg, use, _ = web
+    cfg["permission_mode"] = "plan"
+    fake = _FakeConnectorManager(appmod, {})
+    monkeypatch.setattr(appmod, "CONNECTORS", fake)
+    appmod._ui_mode, appmod._ui_modality = "agent", "text"
+    tool = '<tool name="mcp__demo__echo"><arguments>{"text":"hello","count":1}</arguments></tool>'
+    use(FakeResp([_tool_line(tool)]), FakeResp(['a0:"Plan only"']))
+    ev = events(c.post("/api/chat", json={"message": "echo it"}))
+    assert fake.calls == []
+    assert [e for e in ev if e["type"] == "tool_result"][0]["status"].startswith("blocked: plan mode")
+
+
+
+
+# ---------- v4.1: explicit chat selection + Arena account connectors ----------
+
+def test_chat_body_mode_agent_overrides_direct_global(web):
+    appmod, c, _, use, sent = web
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    use(FakeResp(['a0:"Agent answer"']))
+    ev = events(c.post("/api/chat", json={"message": "hi", "mode": "agent", "modality": "text"}))
+    assert ev[0]["mode"] == "agent" and ev[0]["names"] == {"a": "Agent", "b": None}
+    assert sent[0][1]["mode"] == "direct-battle" and sent[0][1]["modelAId"] == "m1"
+    saved = appmod._load_chat(ev[0]["chat_id"])
+    assert saved["mode"] == "agent" and saved["modality"] == "text"
+    assert appmod._ui_mode == "agent"
+
+
+def test_chat_body_mode_direct_overrides_agent_global(web):
+    appmod, c, _, use, sent = web
+    appmod._ui_mode, appmod._ui_modality = "agent", "text"
+    use(FakeResp(['a0:"Direct answer"']))
+    ev = events(c.post("/api/chat", json={
+        "message": "hi", "mode": "direct", "modality": "text", "model_id": "m2"}))
+    assert ev[0]["names"] == {"a": "Model Two", "b": None}
+    assert sent[0][1]["modelAId"] == "m2"
+    saved = appmod._load_chat(ev[0]["chat_id"])
+    assert saved["mode"] == "direct" and saved["model_a"] == "m2"
+
+
+def test_chat_body_invalid_selection_is_rejected(web):
+    appmod, c, *_ = web
+    r = c.post("/api/chat", json={"message": "hi", "mode": "direct", "modality": "video"})
+    assert r.status_code == 400 and r.get_json()["code"] == "unsupported_selection"
+    r = c.post("/api/chat", json={"message": "hi", "mode": "nope", "modality": "text"})
+    assert r.status_code == 400 and r.get_json()["code"] == "unsupported_selection"
+    # The global selection is not clobbered by a rejected request.
+    assert appmod._ui_mode == "battle"
+
+
+def _arena_connectors_fake(appmod, monkeypatch, state):
+    def fake(path, timeout=30, method="GET"):
+        state.setdefault("calls", []).append((method, path))
+        if path == appmod.contracts.PATHS["connectors"]:
+            return {"connectors": [
+                {"slug": "github", "displayName": "GitHub", "description": "Repos",
+                 "logoUrl": "https://cdn.test/github.png", "authStatus": "disconnected"},
+                {"slug": "notion", "displayName": "Notion", "description": "Docs",
+                 "authStatus": "connected"},
+                {"slug": "bad slug!", "displayName": "Bad", "authStatus": "connected"},
+                {"slug": "drive", "authStatus": "weird", "logoUrl": "javascript:alert(1)"},
+            ]}, None, 200
+        if path == appmod.contracts.PATHS["connectors_status"]:
+            return {"connectors": [
+                {"slug": "github", "authStatus": "connected" if state.get("github_on") else "disconnected"},
+            ]}, None, 200
+        if path == appmod.contracts.PATHS["connectors_sync"] and method == "POST":
+            state["github_on"] = True
+            return {"connectors": [{"slug": "github", "authStatus": "connected"}]}, None, 200
+        if path.endswith("/link-token") and method == "POST":
+            return {"linkToken": "tok-123"}, None, 200
+        if method == "DELETE":
+            return {"success": True}, None, 200
+        raise AssertionError(f"unexpected Arena call: {method} {path}")
+    monkeypatch.setattr(appmod, "_arena_get_json", fake)
+
+
+def test_arena_connectors_list_normalizes_and_merges_status(web, monkeypatch):
+    appmod, c, *_ = web
+    state = {"github_on": True}
+    _arena_connectors_fake(appmod, monkeypatch, state)
+    payload = c.get("/api/arena-connectors").get_json()
+    assert payload["ok"] is True
+    items = {item["slug"]: item for item in payload["connectors"]}
+    assert set(items) == {"github", "notion", "drive"}  # invalid slug dropped
+    assert items["github"]["connected"] is True  # status endpoint wins over catalog
+    assert items["github"]["logo_url"] == "https://cdn.test/github.png"
+    assert items["notion"]["connected"] is True
+    assert items["drive"]["name"] == "drive"  # displayName fallback
+    assert items["drive"]["auth_status"] == "disconnected"  # unknown status coerced
+    assert items["drive"]["logo_url"] is None  # non-http logo dropped
+
+
+def test_arena_connector_disconnect_uses_delete(web, monkeypatch):
+    appmod, c, *_ = web
+    state = {}
+    _arena_connectors_fake(appmod, monkeypatch, state)
+    r = c.post("/api/arena-connectors/notion/disconnect", json={})
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+    assert ("DELETE", "/api/connectors/notion") in state["calls"]
+    assert c.post("/api/arena-connectors/bad%20slug/disconnect", json={}).status_code in (400, 404)
+
+
+def test_arena_connector_connect_requires_engine(web, monkeypatch):
+    appmod, c, *_ = web
+    _arena_connectors_fake(appmod, monkeypatch, {})
+    r = c.post("/api/arena-connectors/github/connect", json={})
+    assert r.status_code == 400
+    payload = r.get_json()
+    assert payload["code"] == "engine_required" and payload["fallback_url"].endswith("/agent")
+
+
+class _FakeLinkEngine:
+    def __init__(self):
+        self.window = object()
+        self.challenge = None
+        self.shown = False
+        self.hidden = False
+        self.scripts = []
+        self.link_state = '{"state": "open", "error": null}'
+
+    def ready(self):
+        return True
+
+    def wait_ready(self, timeout=30):
+        return True
+
+    def show(self):
+        self.shown = True
+
+    def hide(self):
+        self.hidden = True
+
+    def run_script(self, script):
+        self.scripts.append(script)
+        if "JSON.stringify(window.__apLink)" in script:
+            return self.link_state
+        return "started"
+
+
+def test_arena_connector_connect_opens_widget_and_polls_to_connected(web, monkeypatch):
+    appmod, c, *_ = web
+    state = {}
+    _arena_connectors_fake(appmod, monkeypatch, state)
+    engine = _FakeLinkEngine()
+    monkeypatch.setattr(appmod, "ENGINE", engine)
+    appmod._connector_link_pending = None
+
+    r = c.post("/api/arena-connectors/github/connect", json={})
+    assert r.status_code == 200 and r.get_json() == {"ok": True, "pending": True, "slug": "github"}
+    assert engine.shown is True
+    widget = next(s for s in engine.scripts if "AgentHandlerLink" in s)
+    assert "tok-123" in widget and "ah-cdn.merge.dev/initialize.js" in widget
+
+    poll = c.get("/api/arena-connectors/github/connect/poll").get_json()
+    assert poll["done"] is False and poll["connected"] is False
+
+    engine.link_state = '{"state": "success", "error": null}'
+    poll = c.get("/api/arena-connectors/github/connect/poll").get_json()
+    assert poll["done"] is True and poll["connected"] is True
+    assert ("POST", "/api/connectors/sync") in state["calls"]
+    assert engine.hidden is True
+    assert appmod._connector_link_pending is None
+
+
+# ---------- v4.2: Direct tools toggle, native Arena Agent, cloud labels ----------
+
+def _sent_content(sent, index=-1):
+    return sent[index][1]["userMessage"]["content"]
+
+
+def test_direct_tools_toggle_controls_agent_loop(web, monkeypatch, tmp_path):
+    appmod, c, _, use, sent = web
+    monkeypatch.setattr(appmod, "_chosen_ws", lambda: tmp_path)
+
+    # Tools off: plain turn, no agent stage event, no tool guide.
+    use(FakeResp(['a0:"plain"']))
+    ev = events(c.post("/api/chat", json={
+        "message": "hi", "mode": "direct", "modality": "text", "model_id": "m2", "tools": False}))
+    chat_id = ev[0]["chat_id"]
+    assert not any(e.get("type") == "agent" for e in ev)
+    assert "run_cmd" not in _sent_content(sent)
+
+    # Enabling tools mid-conversation sends the guide exactly once.
+    use(FakeResp(['a0:"with tools"']))
+    ev = events(c.post("/api/chat", json={
+        "message": "again", "chat_id": chat_id, "mode": "direct", "modality": "text",
+        "model_id": "m2", "tools": True}))
+    assert any(e.get("type") == "agent" for e in ev)
+    assert "run_cmd" in _sent_content(sent)
+
+    use(FakeResp(['a0:"third"']))
+    ev = events(c.post("/api/chat", json={
+        "message": "third", "chat_id": chat_id, "mode": "direct", "modality": "text",
+        "model_id": "m2", "tools": True}))
+    assert any(e.get("type") == "agent" for e in ev)
+    assert "run_cmd" not in _sent_content(sent)
+
+    saved = appmod._load_chat(chat_id)
+    assert saved["mode"] == "direct" and saved["tools_guide"] is True
+
+
+def test_direct_tools_without_folder_stay_off(web, monkeypatch):
+    appmod, c, _, use, sent = web
+    monkeypatch.setattr(appmod, "_chosen_ws", lambda: None)
+    use(FakeResp(['a0:"plain"']))
+    ev = events(c.post("/api/chat", json={
+        "message": "hi", "mode": "direct", "modality": "text", "model_id": "m2", "tools": True}))
+    assert not any(e.get("type") == "agent" for e in ev)
+
+
+class _FakeNativeEngine:
+    def __init__(self):
+        self.window = object()
+        self.challenge = None
+        self.paths = []
+        self.scripts = []
+        self.shown = False
+
+    def ready(self):
+        return True
+
+    def wait_ready(self, timeout=30):
+        return True
+
+    def show(self):
+        self.shown = True
+
+    def open_path(self, path):
+        self.paths.append(path)
+        return True
+
+    def run_script(self, script):
+        self.scripts.append(script)
+        return "scheduled"
+
+
+def test_native_agent_requires_engine_and_message(web):
+    appmod, c, *_ = web
+    r = c.post("/api/agent/native", json={"message": "do it"})
+    assert r.status_code == 400
+    payload = r.get_json()
+    assert payload["code"] == "engine_required" and payload["fallback_url"].endswith("/agent")
+    r = c.post("/api/agent/native", json={"message": "  "})
+    assert r.status_code == 400
+
+
+def test_native_agent_opens_site_and_fills_prompt(web, monkeypatch):
+    import time as _time
+    appmod, c, *_ = web
+    engine = _FakeNativeEngine()
+    monkeypatch.setattr(appmod, "ENGINE", engine)
+    r = c.post("/api/agent/native", json={"message": "Сделай исследование рынка"})
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+    assert engine.paths == ["/agent"] and engine.shown is True
+    deadline = _time.time() + 3
+    while _time.time() < deadline and not engine.scripts:
+        _time.sleep(0.05)
+    assert engine.scripts and "Сделай исследование рынка" in engine.scripts[0]
+
+
+def test_arena_chats_annotates_local_agent_mode(web, monkeypatch):
+    appmod, c, *_ = web
+    eval_id = "12345678-1234-1234-1234-123456789abc"
+    chat_id = "87654321-4321-4321-4321-cba987654321"
+    appmod._save_chat(chat_id, title="Local agent chat",
+                      messages=[{"role": "user", "text": "hi"}],
+                      mode="agent", modality="text", eval_id=eval_id)
+
+    def fake(path, timeout=30, method="GET"):
+        assert path.startswith(appmod.contracts.PATHS["history_unified"])
+        return {"entries": [
+            {"id": eval_id, "type": "evaluation", "title": "Local agent chat",
+             "mode": "direct-battle", "modality": "chat", "modelAId": "m1",
+             "createdAt": "2026-11-01T10:00:00Z", "updatedAt": "2026-11-01T10:05:00Z"},
+            {"id": "99999999-8888-7777-6666-555555555555", "type": "evaluation",
+             "title": "Plain direct", "mode": "direct-battle", "modality": "chat",
+             "modelAId": "m2", "createdAt": "2026-11-01T09:00:00Z",
+             "updatedAt": "2026-11-01T09:05:00Z"},
+        ]}, None, 200
+
+    monkeypatch.setattr(appmod, "_arena_get_json", fake)
+    payload = c.get("/api/arena-chats").get_json()
+    first, second = payload["entries"]
+    assert first["local_chat_id"] == chat_id and first["local_mode"] == "agent"
+    assert first["mode"] == "direct"  # Arena-side truth stays visible in the payload
+    assert second["local_chat_id"] is None and second["local_mode"] is None
+
+
+def test_status_reports_app_version_and_no_store_ui(web):
+    appmod, c, *_ = web
+    payload = c.get("/api/status").get_json()
+    assert payload["app_version"] == appmod.APP_VERSION
+    assert c.get("/").headers.get("Cache-Control") == "no-store"
+    assert c.get("/static/app.js").headers.get("Cache-Control") == "no-store"
+
+
+# ---------- v4.3: native Arena Agent (in-app) ----------
+
+_NATIVE_SESSION_ID = "11111111-1111-1111-1111-111111111111"
+_NATIVE_TRIGGER = "22222222-2222-2222-2222-222222222222"
+
+
+class _FakeEngineResp:
+    def __init__(self, status, text):
+        self.status_code = status
+        self.text = text
+        self.error = None
+
+
+class _FakeNativeChatEngine:
+    preflight_cx = "fake-genuine-cx"
+
+    def __init__(self):
+        self.window = object()
+        self.challenge = None
+        self.calls = []
+        self.preflights = []
+
+    def ready(self):
+        return True
+
+    def wait_ready(self, timeout=30):
+        return True
+
+    def sync_to(self, client):
+        pass
+
+    def native_preflight(self, action, timeout=45):
+        self.preflights.append(action)
+        return {"cx": self.preflight_cx, "token_len": 111, "trace": ["fake"]}
+
+    def request(self, path, body=None, method=None, timeout=180, v3_action=None, headers=None):
+        import json as _json
+        self.calls.append((path, body, v3_action))
+        self.last_headers = headers
+        if path == "/nextjs-api/stream/create-chat":
+            return _FakeEngineResp(200, _json.dumps({
+                "id": _NATIVE_SESSION_ID,
+                "bootstrap": {
+                    "version": 1, "sessionId": _NATIVE_SESSION_ID, "userId": "u1",
+                    "inputId": "i1", "taskId": "chat-agent",
+                    "triggerAddress": _NATIVE_TRIGGER,
+                    "publicAccessToken": "pat-1", "ttlMs": 60000,
+                    "feedbackType": "check_in", "customFeedbackArm": None}}))
+        if path == "/api/chat/trigger-session":
+            return _FakeEngineResp(200, _json.dumps({"publicAccessToken": "pat-2"}))
+        if path == "/api/chat/trigger-token":
+            return _FakeEngineResp(200, _json.dumps({"token": "pat-3"}))
+        if path.startswith("/api/connectors"):
+            return _FakeEngineResp(200, _json.dumps({"connectors": [
+                {"slug": "github", "displayName": "GitHub", "description": "d",
+                 "authStatus": "connected"}]}))
+        return _FakeEngineResp(404, "{}")
+
+
+class _FakeStreamResp:
+    def __init__(self, lines, status=200, headers=None):
+        self.status_code = status
+        self.headers = dict(headers or {})
+        self._lines = lines
+
+    def iter_lines(self, decode_unicode=False):
+        yield from self._lines
+
+    def close(self):
+        pass
+
+
+def _native_lines(text):
+    return [
+        "id: 41",
+        f'data: {{"type": "text-delta", "delta": "{text}"}}',
+        "",
+        "id: 42",
+        'data: {"type": "tool-input-available", "toolCallId": "c1", '
+        '"toolName": "web_search", "input": {"q": "x"}}',
+        "",
+        'data: {"type": "tool-output-available", "toolCallId": "c1", "output": {"hits": 2}}',
+        "",
+        'data: {"type": "trigger:turn-complete"}',
+        "",
+    ]
+
+
+def _native_create_and_stream(web, monkeypatch):
+    appmod, c, *_ = web
+    engine = _FakeNativeChatEngine()
+    monkeypatch.setattr(appmod, "ENGINE", engine)
+    appends = []
+    monkeypatch.setattr(appmod.requests, "get",
+                        lambda url, headers=None, stream=False, timeout=None:
+                        _FakeStreamResp(_native_lines("Привет")))
+    monkeypatch.setattr(appmod.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None:
+                        (appends.append((url, json)), _FakeStreamResp([], 200))[1])
+
+    class _AppendResp:
+        status_code = 200
+        def json(self):
+            return {"seq": 7}
+    monkeypatch.setattr(appmod.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None:
+                        (appends.append((url, json)), _AppendResp())[1])
+
+    ev = events(c.post("/api/chat", json={
+        "message": "Сделай обзор", "mode": "agent", "modality": "text",
+        "agent_backend": "arena", "timezone": "Europe/Moscow"}))
+    chat_id = ev[0]["chat_id"]
+    assert ev[0]["names"] == {"a": "Agent", "b": None}
+    assert any(e.get("type") == "text" and e.get("text") == "Привет" for e in ev)
+    assert any(e.get("type") == "tool_call" and e.get("tool") == "web_search" for e in ev)
+    assert any(e.get("type") == "tool_result" and e.get("ok") is True for e in ev)
+    assert ev[-1]["type"] == "done" and ev[-1]["text_a"] == "Привет"
+
+    # Direct API creation (like Direct sends); cx is the page-minted blob.
+    create = next(call for call in engine.calls if call[0] == "/nextjs-api/stream/create-chat")
+    assert create[2] == "agentic_chat_submit"
+    assert create[1]["message"]["parts"][0]["text"] == "Сделай обзор"
+    assert create[1]["message"]["id"][14] == "7"  # UUIDv7, like the website
+    assert create[1]["cx"] == "fake-genuine-cx"
+    assert create[1]["enabledConnectors"] == ["github"]
+    assert engine.last_headers and engine.last_headers.get("X-Agent-Browser-Attempt-Id")
+    assert engine.preflights and engine.preflights[0] == "agentic_chat_submit"
+    assert appends == []  # first message rides inside create-chat
+
+    saved = appmod._load_chat(chat_id)
+    assert saved["mode"] == "agent" and saved["agent_backend"] == "arena"
+    assert saved["native"]["session_id"] == _NATIVE_SESSION_ID
+    assert saved["native"]["trigger_address"] == _NATIVE_TRIGGER
+    assert saved["native"]["last_event_id"] == "42"
+    assert saved["eval_id"] == _NATIVE_SESSION_ID
+    assert saved["messages"][-1]["tools"][0]["status"] == "ok"
+    return chat_id, engine, appends
+
+
+def test_native_agent_create_and_stream(web, monkeypatch):
+    _native_create_and_stream(web, monkeypatch)
+
+
+def test_native_agent_followup_appends_without_recreate(web, monkeypatch):
+    chat_id, engine, appends = _native_create_and_stream(web, monkeypatch)
+    appmod, c, *_ = web
+    creates_before = len([1 for call in engine.calls if call[0].endswith("create-chat")])
+    monkeypatch.setattr(appmod.requests, "get",
+                        lambda url, headers=None, stream=False, timeout=None:
+                        _FakeStreamResp(_native_lines("Продолжаю")))
+
+    ev = events(c.post("/api/chat", json={
+        "message": "Дальше", "chat_id": chat_id, "mode": "agent", "modality": "text",
+        "agent_backend": "arena", "timezone": "Europe/Moscow"}))
+    assert ev[-1]["text_a"] == "Продолжаю"
+    assert len([1 for call in engine.calls if call[0].endswith("create-chat")]) == creates_before
+    assert any(call[0] == "/api/chat/trigger-session" for call in engine.calls)
+    assert len(appends) == 1
+    url, payload = appends[0]
+    assert url.endswith(f"/ai-proxy/realtime/v1/sessions/{_NATIVE_TRIGGER}/in/append")
+    assert payload["kind"] == "message"
+    assert payload["payload"]["chatId"] == _NATIVE_TRIGGER
+    assert payload["payload"]["message"]["parts"][0]["text"] == "Дальше"
+    assert payload["payload"]["metadata"]["cx"] == "fake-genuine-cx"
+
+
+def test_native_agent_requires_engine_for_create(web):
+    appmod, c, *_ = web
+    ev = events(c.post("/api/chat", json={
+        "message": "hi", "mode": "agent", "modality": "text", "agent_backend": "arena"}))
+    errors = [e for e in ev if e.get("type") == "error"]
+    assert errors and errors[0]["code"] == "engine_required"
+    saved = appmod._load_chat(ev[0]["chat_id"])
+    assert saved["agent_backend"] == "arena"
+
+
+class _FakeLadderEngine(_FakeNativeChatEngine):
+    """Rejects create bodies that still carry enabledConnectors (HTTP 400)."""
+
+    def request(self, path, body=None, method=None, timeout=180, v3_action=None, headers=None):
+        if path == "/nextjs-api/stream/create-chat" and body and "enabledConnectors" in body:
+            self.calls.append((path, body, v3_action))
+            return _FakeEngineResp(400, '{"error": "Message validation failed. Please refresh and try again."}')
+        return super().request(path, body=body, method=method, timeout=timeout,
+                               v3_action=v3_action, headers=headers)
+
+
+def test_native_agent_create_ladder_keeps_cx_drops_connectors(web, monkeypatch):
+    appmod, c, *_ = web
+    engine = _FakeLadderEngine()
+    monkeypatch.setattr(appmod, "ENGINE", engine)
+    monkeypatch.setattr(appmod.requests, "get",
+                        lambda url, headers=None, stream=False, timeout=None:
+                        _FakeStreamResp(_native_lines("Ок")))
+    ev = events(c.post("/api/chat", json={
+        "message": "hi", "mode": "agent", "modality": "text",
+        "agent_backend": "arena", "timezone": "Europe/Moscow"}))
+    assert ev[-1]["type"] == "done" and ev[-1]["text_a"] == "Ок"
+    creates = [call for call in engine.calls if call[0] == "/nextjs-api/stream/create-chat"]
+    assert len(creates) == 2
+    assert creates[0][1]["cx"] == "fake-genuine-cx" and "enabledConnectors" in creates[0][1]
+    assert creates[1][1]["cx"] == "fake-genuine-cx" and "enabledConnectors" not in creates[1][1]
+
+
+class _FakeNoCxEngine(_FakeNativeChatEngine):
+    preflight_cx = None
+
+
+def test_native_agent_create_without_cx_when_page_cannot_mint(web, monkeypatch):
+    appmod, c, *_ = web
+    engine = _FakeNoCxEngine()
+    monkeypatch.setattr(appmod, "ENGINE", engine)
+    monkeypatch.setattr(appmod.requests, "get",
+                        lambda url, headers=None, stream=False, timeout=None:
+                        _FakeStreamResp(_native_lines("Ок")))
+    ev = events(c.post("/api/chat", json={
+        "message": "hi", "mode": "agent", "modality": "text",
+        "agent_backend": "arena", "timezone": "Europe/Moscow"}))
+    assert ev[-1]["type"] == "done" and ev[-1]["text_a"] == "Ок"
+    creates = [call for call in engine.calls if call[0] == "/nextjs-api/stream/create-chat"]
+    assert len(creates) == 1 and "cx" not in creates[0][1]
+
+
+def _native_batch_lines(text):
+    import json as _json
+    body = _json.dumps({"id": "51", "data": {"type": "text-delta", "delta": text}})
+    payload = {"records": [
+        {"seq_num": 51, "headers": [["x-trigger-msgtype", "chunk"]], "body": body},
+        {"seq_num": 52, "headers": [["trigger-control", "turn-complete"],
+                                    ["session-in-event-id", "9"]], "body": ""},
+    ]}
+    return ["event: batch", f"data: {_json.dumps(payload)}", ""]
+
+
+def test_native_agent_batch_control_record_ends_turn(web, monkeypatch):
+    # The website ends a batch (v2) turn with a record whose HEADERS carry
+    # trigger-control: turn-complete and whose body is empty — there is no
+    # trigger:turn-complete chunk. v4.5.0 only checked the chunk type, so
+    # the turn never ended by itself and the user had to press Stop.
+    appmod, c, *_ = web
+    engine = _FakeNativeChatEngine()
+    monkeypatch.setattr(appmod, "ENGINE", engine)
+    monkeypatch.setattr(appmod.requests, "get",
+                        lambda url, headers=None, stream=False, timeout=None:
+                        _FakeStreamResp(_native_batch_lines("Готово")))
+    ev = events(c.post("/api/chat", json={
+        "message": "hi", "mode": "agent", "modality": "text",
+        "agent_backend": "arena", "timezone": "Europe/Moscow"}))
+    assert ev[-1]["type"] == "done" and ev[-1]["text_a"] == "Готово"
+    saved = appmod._load_chat(ev[0]["chat_id"])
+    assert saved["native"]["last_event_id"] == "52"
+
+
+def test_native_agent_settled_stream_ends_turn_without_signal(web, monkeypatch):
+    # Fallback: the explicit signal was missed, but the session reports
+    # itself settled and a whole cycle brings nothing new after activity.
+    appmod, c, *_ = web
+    engine = _FakeNativeChatEngine()
+    monkeypatch.setattr(appmod, "ENGINE", engine)
+    responses = [
+        _FakeStreamResp(["id: 61", 'data: {"type": "text-delta", "delta": "Финал"}', ""]),
+        _FakeStreamResp([], headers={"X-Session-Settled": "true"}),
+    ]
+    monkeypatch.setattr(appmod.requests, "get",
+                        lambda url, headers=None, stream=False, timeout=None: responses.pop(0))
+    ev = events(c.post("/api/chat", json={
+        "message": "hi", "mode": "agent", "modality": "text",
+        "agent_backend": "arena", "timezone": "Europe/Moscow"}))
+    assert ev[-1]["type"] == "done" and ev[-1]["text_a"] == "Финал"
+    assert not [e for e in ev if e.get("type") == "error"]
+
+
+def test_native_agent_result_is_published_before_stream_ends(web, monkeypatch):
+    # The SSE generator can be closed at any moment (Stop, client
+    # disconnect); the caller persists the chat from a finally-block, so
+    # the shared result must already carry the session coordinates, the
+    # cursor and the partial text mid-stream. Losing them made every next
+    # message open a brand-new chat.
+    appmod, c, *_ = web
+    engine = _FakeNativeChatEngine()
+    monkeypatch.setattr(appmod, "ENGINE", engine)
+    monkeypatch.setattr(appmod.requests, "get",
+                        lambda url, headers=None, stream=False, timeout=None:
+                        _FakeStreamResp(_native_lines("Часть")))
+    result = {"text": "", "reasoning": "", "tools": [], "native": None, "error": None}
+    gen = appmod._native_agent_run(appmod.get_client(), "Вопрос", {},
+                                   "Europe/Moscow", result=result)
+    for raw in gen:
+        if "Часть" in raw:
+            break
+    gen.close()
+    assert result["text"] == "Часть"
+    assert result["native"]["session_id"] == _NATIVE_SESSION_ID
+    assert result["native"]["last_event_id"] == "41"
+
+
+def test_native_agent_imported_chat_drains_backlog_then_continues(web, monkeypatch):
+    appmod, c, *_ = web
+    engine = _FakeNativeChatEngine()
+    monkeypatch.setattr(appmod, "ENGINE", engine)
+    appmod._save_chat(_NATIVE_SESSION_ID, title="Импорт",
+                      messages=[{"role": "user", "text": "Раньше"}],
+                      mode="agent", modality="text", eval_id=_NATIVE_SESSION_ID,
+                      source="arena", agent_backend="arena",
+                      native={"backend": "arena", "session_id": _NATIVE_SESSION_ID,
+                              "trigger_address": _NATIVE_SESSION_ID,
+                              "last_event_id": None, "needs_drain": True})
+    responses = [
+        _FakeStreamResp(["id: 10", 'data: {"type": "text-delta", "delta": "Старый ответ"}', ""]),
+        _FakeStreamResp([]),
+        _FakeStreamResp(_native_lines("Новый ответ")),
+    ]
+    monkeypatch.setattr(appmod.requests, "get",
+                        lambda url, headers=None, stream=False, timeout=None: responses.pop(0))
+    appends = []
+
+    class _AppendResp:
+        status_code = 200
+
+        def json(self):
+            return {"seq": 3}
+    monkeypatch.setattr(appmod.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None:
+                        (appends.append((url, json)), _AppendResp())[1])
+
+    ev = events(c.post("/api/chat", json={
+        "message": "Продолжи", "chat_id": _NATIVE_SESSION_ID, "mode": "agent",
+        "modality": "text", "agent_backend": "arena", "timezone": "Europe/Moscow"}))
+    assert ev[-1]["type"] == "done" and ev[-1]["text_a"] == "Новый ответ"
+    assert not any("Старый" in (e.get("text") or "") for e in ev)
+    assert len(appends) == 1
+    assert not any(call[0].endswith("create-chat") for call in engine.calls)
+    saved = appmod._load_chat(_NATIVE_SESSION_ID)
+    assert saved["native"]["needs_drain"] is False
+    assert saved["native"]["last_event_id"] == "42"
+    assert [m["text"] for m in saved["messages"]] == ["Раньше", "Продолжи", "Новый ответ"]
+
+
+# ---------- v4.6: chat lock, battle vote, snapshot cursor ----------
+
+def test_started_chat_keeps_mode_modality_and_model(web):
+    # After the first message a chat is locked to its stored selection:
+    # a follow-up asking for another mode/model continues the very same
+    # Arena conversation with the original parameters instead.
+    appmod, c, _, use, sent = web
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    use(FakeResp(['a0:"First"']))
+    ev = events(c.post("/api/chat", json={
+        "message": "hi", "mode": "direct", "modality": "text", "model_id": "m1"}))
+    chat_id = ev[0]["chat_id"]
+    eval_id = appmod._load_chat(chat_id)["eval_id"]
+    use(FakeResp(['a0:"Second"']))
+    ev = events(c.post("/api/chat", json={
+        "message": "again", "chat_id": chat_id, "mode": "battle",
+        "modality": "image", "model_id": "m2"}))
+    assert ev[0]["mode"] == "direct" and ev[-1]["text_a"] == "Second"
+    assert sent[-1][0].endswith(f"/post-to-evaluation/{eval_id}")
+    assert sent[-1][1]["modelAId"] == "m1"
+    saved = appmod._load_chat(chat_id)
+    assert saved["mode"] == "direct" and saved["modality"] == "text"
+    assert saved["model_a"] == "m1" and saved["eval_id"] == eval_id
+    assert [m["text"] for m in saved["messages"] if m["role"] == "user"] == ["hi", "again"]
+
+
+class _FakeVoteEngine(_FakeNativeChatEngine):
+    def __init__(self):
+        super().__init__()
+        self.votes = []
+
+    def pairwise_vote(self, args, timeout=45):
+        self.votes.append(args)
+        return {"ok": True, "error": None, "trace": [],
+                "result": {"success": True, "error": None,
+                           "modelAId": "mid-a", "modelBId": "mid-b", "arenaId": "arena-1",
+                           "revealed": [{"id": "mid-a", "name": "Alpha Model"},
+                                        {"id": "mid-b", "name": "Beta Model"}]}}
+
+
+_BATTLE_CHAT_ID = "55555555-5555-4555-8555-555555555555"
+_BATTLE_EVAL_ID = "66666666-6666-4666-8666-666666666666"
+
+
+def _save_battle_chat(appmod, with_ids=True):
+    message = {"role": "assistant", "text": "Ответ A", "text_b": "Ответ B",
+               "names": {"a": None, "b": None}}
+    if with_ids:
+        message["arena_message_ids"] = {"a": "msg-a", "b": "msg-b"}
+    appmod._save_chat(_BATTLE_CHAT_ID, title="Бой", mode="battle", modality="text",
+                      eval_id=_BATTLE_EVAL_ID,
+                      messages=[{"role": "user", "text": "Вопрос"}, message])
+
+
+def test_battle_vote_reveals_models_and_persists(web, monkeypatch):
+    appmod, c, *_ = web
+    engine = _FakeVoteEngine()
+    monkeypatch.setattr(appmod, "ENGINE", engine)
+    _save_battle_chat(appmod)
+    r = c.post(f"/api/chats/{_BATTLE_CHAT_ID}/vote", json={
+        "value": "model_a", "pair_index": 0, "message_a_id": "msg-a", "message_b_id": "msg-b"})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] and body["vote"] == "model_a"
+    assert body["names"] == {"a": "Alpha Model", "b": "Beta Model"}
+    assert body["model_a"] == "mid-a" and body["model_b"] == "mid-b"
+    assert engine.votes == [{"evaluationSessionId": _BATTLE_EVAL_ID,
+                             "messageAId": "msg-a", "messageBId": "msg-b", "value": "model_a"}]
+    saved = appmod._load_chat(_BATTLE_CHAT_ID)
+    assert saved["messages"][1]["vote"] == "model_a"
+    assert saved["messages"][1]["names"] == {"a": "Alpha Model", "b": "Beta Model"}
+    assert saved["model_a"] == "mid-a" and saved["model_b"] == "mid-b"
+    again = c.post(f"/api/chats/{_BATTLE_CHAT_ID}/vote", json={"value": "tie", "pair_index": 0})
+    assert again.status_code == 409
+    assert len(engine.votes) == 1
+
+
+def test_battle_vote_resolves_message_ids_from_session(web, monkeypatch):
+    appmod, c, *_ = web
+    engine = _FakeVoteEngine()
+    monkeypatch.setattr(appmod, "ENGINE", engine)
+    _save_battle_chat(appmod, with_ids=False)
+
+    def fake_get(path, timeout=30):
+        assert _BATTLE_EVAL_ID in path
+        return {"messages": [
+            {"id": "u1", "role": "user", "content": "Q", "createdAt": "2026-01-01T00:00:00Z"},
+            {"id": "srv-b", "role": "assistant", "participantPosition": "b",
+             "parentMessageIds": ["u1"], "createdAt": "2026-01-01T00:00:02Z", "content": "B"},
+            {"id": "srv-a", "role": "assistant", "participantPosition": "a",
+             "parentMessageIds": ["u1"], "createdAt": "2026-01-01T00:00:01Z", "content": "A"},
+        ]}, None, 200
+
+    monkeypatch.setattr(appmod, "_arena_get_json", fake_get)
+    r = c.post(f"/api/chats/{_BATTLE_CHAT_ID}/vote", json={"value": "tie", "pair_index": 0})
+    assert r.status_code == 200
+    assert engine.votes[0]["messageAId"] == "srv-a"
+    assert engine.votes[0]["messageBId"] == "srv-b"
+    saved = appmod._load_chat(_BATTLE_CHAT_ID)
+    assert saved["messages"][1]["arena_message_ids"] == {"a": "srv-a", "b": "srv-b"}
+    assert saved["messages"][1]["vote"] == "tie"
+
+
+def test_battle_vote_rejects_bad_requests(web):
+    appmod, c, *_ = web
+    _save_battle_chat(appmod)
+    bad_value = c.post(f"/api/chats/{_BATTLE_CHAT_ID}/vote", json={"value": "c"})
+    assert bad_value.status_code == 400
+    # Without the desktop engine the vote cannot be cast honestly.
+    no_engine = c.post(f"/api/chats/{_BATTLE_CHAT_ID}/vote", json={"value": "model_a", "pair_index": 0})
+    assert no_engine.status_code == 503
+    direct_id = "77777777-7777-4777-8777-777777777777"
+    appmod._save_chat(direct_id, title="D", mode="direct", modality="text", eval_id=_BATTLE_EVAL_ID,
+                      messages=[{"role": "user", "text": "Q"},
+                                {"role": "assistant", "text": "A", "text_b": "", "names": {"a": "M", "b": None}}])
+    wrong_mode = c.post(f"/api/chats/{direct_id}/vote", json={"value": "model_a"})
+    assert wrong_mode.status_code == 400
+
+
+def test_native_agent_resume_uses_session_snapshot_cursor(web, monkeypatch):
+    # Old/imported session with no stored cursor: the snapshot's
+    # lastEventId lets the turn subscribe at the head directly — no
+    # backlog draining cycles at all.
+    appmod, c, *_ = web
+    engine = _FakeNativeChatEngine()
+    monkeypatch.setattr(appmod, "ENGINE", engine)
+    monkeypatch.setattr(appmod, "_arena_get_json",
+                        lambda path, timeout=30: ({"messages": [], "lastEventId": "500"}, None, 200))
+    appmod._save_chat(_NATIVE_SESSION_ID, title="Старый",
+                      messages=[{"role": "user", "text": "Раньше"}],
+                      mode="agent", modality="text", eval_id=_NATIVE_SESSION_ID,
+                      agent_backend="arena",
+                      native={"backend": "arena", "session_id": _NATIVE_SESSION_ID,
+                              "trigger_address": _NATIVE_SESSION_ID,
+                              "last_event_id": None, "needs_drain": True})
+    seen_headers = []
+
+    def fake_get(url, headers=None, stream=False, timeout=None):
+        seen_headers.append(headers or {})
+        return _FakeStreamResp(_native_lines("Продолжили"))
+    monkeypatch.setattr(appmod.requests, "get", fake_get)
+
+    class _AppendResp:
+        status_code = 200
+
+        def json(self):
+            return {"seq": 9}
+    monkeypatch.setattr(appmod.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None: _AppendResp())
+
+    ev = events(c.post("/api/chat", json={
+        "message": "Дальше", "chat_id": _NATIVE_SESSION_ID, "mode": "agent",
+        "modality": "text", "agent_backend": "arena", "timezone": "Europe/Moscow"}))
+    assert ev[-1]["type"] == "done" and ev[-1]["text_a"] == "Продолжили"
+    assert len(seen_headers) == 1
+    assert seen_headers[0].get("Last-Event-ID") == "500"
+    saved = appmod._load_chat(_NATIVE_SESSION_ID)
+    assert saved["native"]["needs_drain"] is False
+    assert saved["native"]["last_event_id"] == "42"
+
+
+def test_iter_records_idle_bounds_a_silent_stream(web):
+    appmod, *_ = web
+
+    class _SlowResp:
+        status_code = 200
+        headers = {}
+
+        def iter_lines(self, decode_unicode=False):
+            yield 'data: {"type": "text-delta", "delta": "x"}'
+            yield ""
+            time.sleep(3)
+            yield 'data: {"type": "trigger:turn-complete"}'
+            yield ""
+
+        def close(self):
+            pass
+
+    started = time.monotonic()
+    records = list(appmod._iter_records_idle(_SlowResp(), 0.3))
+    assert len(records) == 1
+    assert time.monotonic() - started < 2.0
+
+
+class HangingResp:
+    """Stream that delivers its lines, then never closes (half-open)."""
+
+    status_code = 200
+    headers = {}
+    error = None
+
+    def __init__(self, lines, gate):
+        self._lines = list(lines)
+        self._gate = gate
+        self._text = ""
+
+    def iter_text(self):
+        for line in self._lines:
+            yield line + "\n"
+        self._gate.wait(timeout=30)
+        yield 'a0:"too late"\n'
+
+    @property
+    def text(self):
+        return self._text
+
+
+def test_stream_ends_on_finish_record_without_waiting_for_close(web):
+    import threading as _threading
+    appmod, c, _, use, _sent = web
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    gate = _threading.Event()
+    use(HangingResp(['a0:"Hello"', 'ad:{"finishReason":"stop"}'], gate))
+    result = {}
+
+    def run():
+        with appmod.app.test_client() as client:
+            result["ev"] = events(client.post(
+                "/api/chat", json={"message": "hi", "mode": "direct", "modality": "text",
+                                   "model_id": "m1", "tools": False}))
+
+    thread = _threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    try:
+        assert not thread.is_alive(), "generation hung on a half-open stream"
+        assert result["ev"][-1]["type"] == "done"
+        assert result["ev"][-1]["text_a"] == "Hello"
+    finally:
+        gate.set()
+        thread.join(timeout=5)
+
+
+def test_agent_empty_final_round_leaves_explaining_text(web):
+    appmod, c, cfg, use, _sent = web
+    cfg["permission_mode"] = "bypassPermissions"
+    appmod._ui_mode = "agent"
+    use(FakeResp([_tool_line('<tool name="ls"><path>.</path></tool>')]),
+        FakeResp(['ad:{"finishReason":"stop"}']))
+    ev = events(c.post("/api/chat", json={"message": "look around"}))
+    done = ev[-1]
+    assert done["type"] == "done"
+    assert "finished without a final message" in done["text_a"]
+    saved = appmod._load_chat(ev[0]["chat_id"])
+    assert "finished without a final message" in saved["messages"][-1]["text"]
+
+
+def test_invoke_style_tool_calls_are_parsed_and_stripped():
+    text = ('Working.\n<function_calls><invoke name="write_file">'
+            '<parameter name="path">a.txt</parameter>'
+            '<parameter name="content">hi</parameter></invoke></function_calls>\nDone.')
+    calls = agent.parse_tool_calls(text)
+    assert calls == [{"name": "write_file", "params": {"path": "a.txt", "content": "hi"}}]
+    assert agent.strip_tool_calls(text) == "Working.\n\nDone."

@@ -5,8 +5,11 @@ Connects to external MCP servers (STDIO transport) such as Brave Search MCP.
 
 import json
 import os
+import shutil
 import subprocess
 import threading
+import time
+from collections import deque
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 
@@ -25,14 +28,35 @@ class McpStdioClient:
         self._lock = threading.Lock()
         self._responses: Dict[int, Any] = {}
         self._reader_thread: Optional[threading.Thread] = None
+        self._stderr_thread: Optional[threading.Thread] = None
+        self._io_lock = threading.RLock()
         self._running = False
         self.tools: List[Dict[str, Any]] = []
+        self.last_error: Optional[str] = None
+        self.server_info: Dict[str, Any] = {}
+        self.stderr_tail: deque = deque(maxlen=30)
 
-    def start(self) -> bool:
+    @staticmethod
+    def _resolved_command(command: List[str]) -> List[str]:
+        if not command:
+            return command
+        exe = shutil.which(command[0]) or command[0]
+        # npm/uv launchers on Windows are often .cmd shims.  CreateProcess
+        # cannot reliably execute those directly, so route them through cmd.
+        if os.name == "nt" and str(exe).lower().endswith((".cmd", ".bat")):
+            return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", str(exe), *command[1:]]
+        return [str(exe), *command[1:]]
+
+    def start(self, timeout: float = 30.0) -> bool:
         """Spawn the MCP server process and initialize."""
+        self.last_error = None
         try:
+            if not self.command:
+                raise ValueError("empty MCP command")
+            if not shutil.which(self.command[0]) and not Path(self.command[0]).exists():
+                raise FileNotFoundError(f"command not found: {self.command[0]}")
             self.process = subprocess.Popen(
-                self.command,
+                self._resolved_command(self.command),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -44,27 +68,58 @@ class McpStdioClient:
             self._running = True
             self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
             self._reader_thread.start()
+            self._stderr_thread = threading.Thread(target=self._stderr_loop, daemon=True)
+            self._stderr_thread.start()
 
-            # MCP Handshake: initialize
             init_res = self.send_request("initialize", {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "arena-cli", "version": "1.0.0"}
-            }, timeout=10)
+                "clientInfo": {"name": "arena-personal", "version": "1.0.0"}
+            }, timeout=timeout)
+            if not init_res or "error" in init_res:
+                detail = (init_res or {}).get("error") if isinstance(init_res, dict) else None
+                raise RuntimeError(f"MCP initialize failed: {detail or self._failure_hint('timed out')}")
+            self.server_info = init_res.get("serverInfo") if isinstance(init_res.get("serverInfo"), dict) else {}
 
-            if not init_res:
-                return False
-
-            # Send initialized notification
             self.send_notification("notifications/initialized", {})
-
-            # Discover available tools
-            tools_res = self.send_request("tools/list", {}, timeout=10)
-            if tools_res and "tools" in tools_res:
-                self.tools = tools_res["tools"]
+            tools: List[Dict[str, Any]] = []
+            cursor = None
+            for _page in range(20):
+                params = {"cursor": cursor} if cursor else {}
+                tools_res = self.send_request("tools/list", params, timeout=timeout)
+                if not tools_res or "error" in tools_res:
+                    detail = (tools_res or {}).get("error") if isinstance(tools_res, dict) else None
+                    raise RuntimeError(f"MCP tools/list failed: {detail or self._failure_hint('timed out')}")
+                tools.extend(tools_res.get("tools") or [])
+                cursor = tools_res.get("nextCursor")
+                if not cursor:
+                    break
+            self.tools = [tool for tool in tools if isinstance(tool, dict) and tool.get("name")]
             return True
-        except Exception:
+        except Exception as e:
+            self.last_error = f"{type(e).__name__}: {e}"
+            tail = " | ".join(list(self.stderr_tail)[-3:])
+            if tail and tail not in self.last_error:
+                self.last_error += f" | stderr: {tail}"
+            self.stop()
             return False
+
+    def _failure_hint(self, fallback: str) -> str:
+        if self.process and self.process.poll() is not None:
+            return f"server exited with code {self.process.returncode}"
+        return fallback
+
+    def _stderr_loop(self) -> None:
+        while self._running and self.process and self.process.stderr:
+            try:
+                line = self.process.stderr.readline()
+            except Exception:
+                break
+            if not line:
+                break
+            line = line.strip()
+            if line:
+                self.stderr_tail.append(line[-500:])
 
     def _read_loop(self) -> None:
         """Background thread reading JSON-RPC responses from stdout."""
@@ -87,6 +142,10 @@ class McpStdioClient:
                 break
 
     def send_request(self, method: str, params: Dict[str, Any], timeout: float = 15.0) -> Optional[Dict[str, Any]]:
+        with self._io_lock:
+            return self._send_request_locked(method, params, timeout)
+
+    def _send_request_locked(self, method: str, params: Dict[str, Any], timeout: float = 15.0) -> Optional[Dict[str, Any]]:
         """Send a synchronous JSON-RPC request and await response."""
         with self._lock:
             self._req_id += 1
@@ -131,38 +190,48 @@ class McpStdioClient:
         }
         try:
             payload = json.dumps(msg) + "\n"
-            if self.process and self.process.stdin:
-                self.process.stdin.write(payload)
-                self.process.stdin.flush()
+            with self._io_lock:
+                if self.process and self.process.stdin:
+                    self.process.stdin.write(payload)
+                    self.process.stdin.flush()
         except Exception:
             pass
 
-    def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+    def call_tool(self, tool_name: str, arguments: Dict[str, Any], timeout: float = 60.0) -> str:
         """Call an MCP tool and format response as text."""
         res = self.send_request("tools/call", {
             "name": tool_name,
             "arguments": arguments,
-        }, timeout=30)
+        }, timeout=timeout)
 
         if not res:
-            return f"Error: MCP tool '{tool_name}' timed out."
+            return f"Error: MCP tool '{tool_name}' timed out. {self.last_error or ''}".strip()
         if "error" in res:
             return f"MCP Error: {res['error']}"
 
         content_list = res.get("content", [])
         text_outputs = []
         for item in content_list:
-            if item.get("type") == "text":
+            if not isinstance(item, dict):
+                text_outputs.append(str(item))
+            elif item.get("type") == "text":
                 text_outputs.append(item.get("text", ""))
             else:
-                text_outputs.append(json.dumps(item))
-
-        return "\n".join(text_outputs) if text_outputs else "(MCP tool returned empty content)"
+                text_outputs.append(json.dumps(item, ensure_ascii=False))
+        if res.get("structuredContent") is not None:
+            text_outputs.append(json.dumps(res["structuredContent"], ensure_ascii=False))
+        output = "\n".join(text_outputs) if text_outputs else "(MCP tool returned empty content)"
+        return f"MCP Error: {output}" if res.get("isError") else output
 
     def stop(self) -> None:
         """Shut down the MCP server process."""
         self._running = False
         if self.process:
+            try:
+                if self.process.stdin:
+                    self.process.stdin.close()
+            except Exception:
+                pass
             try:
                 self.process.terminate()
                 self.process.wait(timeout=2)

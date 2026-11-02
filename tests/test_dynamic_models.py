@@ -12,7 +12,8 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from arena.models import (
-    get_org_color, sync_models, get_popular_models, CACHE_TTL_SECONDS
+    get_org_color, sync_models, get_popular_models, get_models_for_modality,
+    CACHE_TTL_SECONDS
 )
 from arena.tools.browser_mcp import (
     BrowserDetectTool, BrowserOpenUrlTool
@@ -58,6 +59,12 @@ class TestDynamicModels(unittest.TestCase):
                         "organization": "anthropic",
                         "rank": 58,
                         "userSelectable": True
+                    },
+                    {
+                        "id": "model-hidden",
+                        "displayName": "Battle Only",
+                        "organization": "test",
+                        "rank": 1
                     }
                 ]
             },
@@ -76,9 +83,13 @@ class TestDynamicModels(unittest.TestCase):
         ]
         mock_get.return_value = mock_response
 
-        # Force sync
+        # Force sync keeps catalog rows, but a missing explicit
+        # userSelectable=true must never be treated as picker permission.
         models = sync_models(cookie="test_cookie", force=True)
-        self.assertEqual(len(models), 3)
+        self.assertEqual(len(models), 4)
+        hidden = next(m for m in models if m["id"] == "model-hidden")
+        self.assertFalse(hidden["user_selectable"])
+        self.assertNotIn("model-hidden", [m["id"] for m in get_models_for_modality(models, "chat")])
 
         # Check fields normalized
         m1 = models[0]
@@ -87,7 +98,7 @@ class TestDynamicModels(unittest.TestCase):
         self.assertEqual(m1["org"], "openai")
         self.assertEqual(m1["rank"], 43)
 
-        # Popular sorting sorts by rank
+        # Popular sorting sorts selectable models by rank
         popular = get_popular_models(models)
         self.assertEqual(len(popular), 3)
         self.assertEqual(popular[0]["id"], "model-3")  # Rank 10 comes first

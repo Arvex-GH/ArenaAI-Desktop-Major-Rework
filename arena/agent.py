@@ -9,16 +9,23 @@ its own copy of the folder (option-a, option-b) so their work never collides.
 """
 
 import difflib
+import json
 import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-OUTPUT_LIMIT = 40_000
+MAX_ROUNDS = 8
+OUTPUT_LIMIT = 6000
 _TOOL_RE = re.compile(r"<tool\s+name\s*=\s*[\"']?([\w-]+)[\"']?\s*>(.*?)</tool\s*>", re.S | re.I)
 _EMPTY_FENCE = re.compile(r"```[\w-]*[ \t]*\n?\s*```")
-_PARAM_RE = re.compile(r"<([a-z_]+)>(.*?)</\1\s*>", re.S | re.I)
+_PARAM_RE = re.compile(r"<([A-Za-z_][\w-]*)>(.*?)</\1\s*>", re.S | re.I)
+# Some models ignore the guide's tag form and answer with Anthropic-style
+# invokes instead; accept those too so their work is not lost.
+_INVOKE_RE = re.compile(r"<invoke\s+name\s*=\s*[\"']?([\w-]+)[\"']?\s*>(.*?)</invoke\s*>", re.S | re.I)
+_INVOKE_PARAM_RE = re.compile(r"<parameter\s+name\s*=\s*[\"']?([\w-]+)[\"']?\s*>(.*?)</parameter\s*>", re.S | re.I)
+_FUNCTION_CALLS_RE = re.compile(r"<function_calls>.*?</function_calls\s*>", re.S | re.I)
 _SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", ".next", "dist", "build"}
 _WRITES = {"write_file", "edit_file", "mkdir", "delete"}
 LANE_DIRS = {"a": "option-a", "b": "option-b"}
@@ -38,7 +45,7 @@ FULL FILE CONTENT
 <tool name="mkdir"><path>assets/img</path></tool>
 <tool name="delete"><path>old_notes.txt</path></tool>
 <tool name="run_cmd"><cmd>python -m pytest -q</cmd></tool>
-
+{extra_tools}
 Rules: paths are relative to the folder. Read a file before editing it. write_file takes the whole file. When the task is done, reply with a short summary and no tool tags. If the message does not need files, just answer it.
 
 User message:
@@ -58,21 +65,114 @@ MODE_NOTES = {
 }
 
 
-def guide(root, mode_label: str, mode_note: str, dual: bool = False) -> str:
+def guide(root, mode_label: str, mode_note: str, dual: bool = False, extra_tools: str = "") -> str:
     """The tool guide that goes in front of the first message of a conversation."""
-    return GUIDE.format(root=root, mode_label=mode_label, mode_note=mode_note, lane_note=LANE_NOTE if dual else "")
+    return GUIDE.format(root=root, mode_label=mode_label, mode_note=mode_note,
+                        lane_note=LANE_NOTE if dual else "", extra_tools=extra_tools or "")
 
 
 def parse_tool_calls(text: str) -> List[Dict[str, Any]]:
     calls = []
+    found = []
     for m in _TOOL_RE.finditer(text or ""):
-        params = {p.group(1).lower(): p.group(2) for p in _PARAM_RE.finditer(m.group(2))}
-        calls.append({"name": m.group(1).lower(), "params": params})
+        params: Dict[str, Any] = {}
+        for p in _PARAM_RE.finditer(m.group(2)):
+            # Keep MCP argument names case-sensitive, while retaining the
+            # lower-case aliases the built-in file tools have always used.
+            params[p.group(1)] = p.group(2)
+            params.setdefault(p.group(1).lower(), p.group(2))
+        found.append((m.start(), {"name": m.group(1).lower(), "params": params}))
+    for m in _INVOKE_RE.finditer(text or ""):
+        params = {}
+        for p in _INVOKE_PARAM_RE.finditer(m.group(2)):
+            params[p.group(1)] = p.group(2)
+            params.setdefault(p.group(1).lower(), p.group(2))
+        found.append((m.start(), {"name": m.group(1).lower(), "params": params}))
+    found.sort(key=lambda item: item[0])
+    calls.extend(call for _pos, call in found)
     return calls
 
 
+def coerce_mcp_arguments(call: Dict[str, Any], schema: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Turn the XML form of an MCP call into JSON arguments.
+
+    The preferred form is ``<arguments>{...}</arguments>``.  Plain child
+    elements are also accepted and coerced from strings using the JSON Schema
+    advertised by the MCP server.
+    """
+    params = dict(call.get("params") or {})
+    raw = None
+    for key in ("arguments", "args", "json"):
+        if isinstance(params.get(key), str) and params[key].strip():
+            raw = params.pop(key).strip()
+            break
+    if raw is not None:
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I | re.S).strip()
+        try:
+            value = json.loads(raw)
+        except ValueError as e:
+            raise ValueError(f"MCP arguments are not valid JSON: {e}") from e
+        if not isinstance(value, dict):
+            raise ValueError("MCP arguments must be a JSON object")
+        return _coerce_mcp_value(value, schema or {})
+
+    properties = {}
+    if isinstance(schema, dict) and isinstance(schema.get("properties"), dict):
+        properties = schema["properties"]
+    out: Dict[str, Any] = {}
+    seen_lower = set()
+    for key, value in params.items():
+        # parse_tool_calls adds lower-case aliases for built-in tools; do not
+        # emit the same MCP property twice under two spellings.
+        if key.lower() in seen_lower and key not in properties:
+            continue
+        seen_lower.add(key.lower())
+        prop = properties.get(key) if isinstance(properties.get(key), dict) else {}
+        out[key] = _coerce_mcp_value(value, prop)
+    return out
+
+
+def _coerce_mcp_value(value: Any, prop: Dict[str, Any]) -> Any:
+    if isinstance(value, dict):
+        properties = prop.get("properties") if isinstance(prop, dict) else None
+        if not isinstance(properties, dict):
+            return value
+        return {
+            key: _coerce_mcp_value(item, properties.get(key) if isinstance(properties.get(key), dict) else {})
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        items = prop.get("items") if isinstance(prop, dict) else None
+        if not isinstance(items, dict):
+            return value
+        return [_coerce_mcp_value(item, items) for item in value]
+    if not isinstance(value, str):
+        return value
+    kind = prop.get("type")
+    if isinstance(kind, list):
+        kind = next((item for item in kind if item != "null"), None)
+    text = value.strip()
+    try:
+        if kind == "integer":
+            return int(float(text)) if text else 0
+        if kind == "number":
+            number = float(text)
+            return int(number) if number.is_integer() else number
+        if kind == "boolean":
+            return text.lower() in ("1", "true", "yes", "on")
+        if kind in ("array", "object"):
+            parsed = json.loads(text)
+            return _coerce_mcp_value(parsed, prop)
+    except (ValueError, TypeError):
+        return value
+    return value
+
+
 def strip_tool_calls(text: str) -> str:
-    return _EMPTY_FENCE.sub("", _TOOL_RE.sub("", text or ""))
+    cleaned = _FUNCTION_CALLS_RE.sub("", text or "")
+    cleaned = _INVOKE_RE.sub("", cleaned)
+    return _EMPTY_FENCE.sub("", _TOOL_RE.sub("", cleaned))
 
 
 def _body(text: str) -> str:

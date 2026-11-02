@@ -1,0 +1,279 @@
+"""
+Convert arena.ai account history into Arena Desktop's local chat format.
+
+The live Arena frontend exposes a unified account history and a full
+evaluation-session resource through its own /api client.  Only the JSON shapes
+are mirrored here; all network access stays in the authenticated app engine.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+_WIRE_TO_UI_MODE = {
+    "battle": "battle",
+    "side-by-side": "side-by-side",
+    "direct": "direct",
+    "direct-battle": "direct",
+}
+_WIRE_TO_UI_MODALITY = {
+    "auto": "text",
+    "chat": "text",
+    "webdev": "code",
+    "search": "search",
+    "image": "image",
+    "video": "video",
+    "audio": "text",
+    "p2l": "text",
+}
+
+
+def ui_selection(mode: Any, modality: Any) -> Tuple[str, str]:
+    ui_mode = _WIRE_TO_UI_MODE.get(str(mode or ""), "battle")
+    ui_modality = _WIRE_TO_UI_MODALITY.get(str(modality or ""), "text")
+    if ui_modality == "video" and ui_mode != "battle":
+        ui_mode = "battle"
+    return ui_mode, ui_modality
+
+
+def entry_summary(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(entry, dict) or not entry.get("id"):
+        return None
+    kind = str(entry.get("type") or "evaluation")
+    if kind == "agentic":
+        mode, modality = "agent", "text"
+        model_a = model_b = None
+    else:
+        mode, modality = ui_selection(entry.get("mode"), entry.get("modality"))
+        model_a, model_b = entry.get("modelAId"), entry.get("modelBId")
+    return {
+        "id": str(entry["id"]),
+        "eval_id": str(entry["id"]),
+        "type": kind,
+        "title": str(entry.get("title") or "Arena chat"),
+        "updated_at": entry.get("updatedAt") or entry.get("createdAt") or "",
+        "created_at": entry.get("createdAt") or "",
+        "mode": mode,
+        "modality": modality,
+        "model_a": model_a,
+        "model_b": model_b,
+        "source": "arena",
+    }
+
+
+def _part_text(part: Any) -> str:
+    if isinstance(part, str):
+        return part
+    if not isinstance(part, dict):
+        return ""
+    kind = str(part.get("type") or "")
+    if kind in ("text", "search", "compaction"):
+        return str(part.get("text") or "")
+    if kind == "video":
+        url = part.get("url")
+        return f"[Video]({url})" if url else ""
+    if kind in ("file", "image"):
+        url = part.get("url") or part.get("data") or part.get("image")
+        name = part.get("filename") or part.get("name") or ("Image" if kind == "image" else "File")
+        return f"[{name}]({url})" if isinstance(url, str) and url.startswith(("http://", "https://")) else ""
+    return ""
+
+
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(_part_text(part) for part in content)
+    if isinstance(content, dict):
+        return _part_text(content) or str(content.get("text") or content.get("content") or "")
+    return ""
+
+
+def _content_reasoning(content: Any, fallback: Any = "") -> str:
+    pieces: List[str] = []
+    if isinstance(fallback, str) and fallback:
+        pieces.append(fallback)
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "reasoning":
+                pieces.append(str(part.get("text") or ""))
+            elif part.get("type") == "thinking":
+                pieces.append(str(part.get("thinking") or part.get("text") or ""))
+    # Arena streams reasoning as raw deltas.  Preserve their spacing exactly;
+    # inserting a newline between pieces is what produced one-word lines.
+    return "".join(pieces)
+
+
+def _attachment_links(message: Dict[str, Any]) -> List[str]:
+    links: List[str] = []
+    attachments = message.get("experimental_attachments") or message.get("attachments") or []
+    if not isinstance(attachments, list):
+        return links
+    for item in attachments:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url")
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            continue
+        name = str(item.get("name") or item.get("filename") or "Attachment")
+        content_type = str(item.get("contentType") or item.get("content_type") or "")
+        links.append(f"![{name}]({url})" if content_type.startswith("image/") else f"[{name}]({url})")
+    return links
+
+
+def _agentic_container(session: Any) -> Dict[str, Any]:
+    """The agentic session payload may nest title/messages one level down."""
+    if not isinstance(session, dict):
+        return {}
+    if isinstance(session.get("messages"), list) or session.get("title"):
+        return session
+    for key in ("session", "state", "data", "chat"):
+        sub = session.get(key)
+        if isinstance(sub, dict) and (isinstance(sub.get("messages"), list) or sub.get("title")):
+            return sub
+    return session
+
+
+def agentic_title(session: Any) -> str:
+    container = _agentic_container(session)
+    title = container.get("title")
+    if isinstance(session, dict) and not title:
+        title = session.get("title")
+    return str(title or "").strip()
+
+
+def agentic_last_event_id(session: Any) -> Optional[str]:
+    """The .out stream cursor from the session snapshot, when present.
+
+    Arena's own resume reads ``lastEventId`` from ``GET /api/chat/{id}``
+    (its reload returns {messages, pagination, lastEventId, ...}), so a
+    continued session can subscribe exactly at the head instead of
+    replaying or draining the whole backlog.
+    """
+    container = _agentic_container(session)
+    for source in (container, session if isinstance(session, dict) else {}):
+        for key in ("lastEventId", "last_event_id"):
+            value = source.get(key)
+            if value not in (None, ""):
+                return str(value)
+    return None
+
+
+def agentic_messages(session: Any) -> List[Dict[str, Any]]:
+    """Best-effort local messages for one cloud Arena Agent (agentic) session.
+
+    The session endpoint returns AI SDK style messages: items carry either
+    ``parts`` (typed part dicts) or ``content``. Anything unrecognised is
+    skipped — importing the session coordinates matters more than a perfect
+    transcript: continuation must work even if the payload shape drifts.
+    """
+    container = _agentic_container(session)
+    raw_messages = container.get("messages")
+    if not isinstance(raw_messages, list):
+        return []
+    indexed = list(enumerate(raw_messages))
+    indexed.sort(key=lambda pair: (str((pair[1] or {}).get("createdAt") or "") if isinstance(pair[1], dict) else "", pair[0]))
+    messages: List[Dict[str, Any]] = []
+    for _index, raw in indexed:
+        if not isinstance(raw, dict):
+            continue
+        role = str(raw.get("role") or "").lower()
+        if role not in ("user", "assistant"):
+            continue
+        parts = raw.get("parts")
+        if isinstance(parts, list):
+            text = "".join(_part_text(part) for part in parts)
+        else:
+            text = _content_text(raw.get("content"))
+        text = (text or "").strip()
+        if not text:
+            continue
+        if role == "user":
+            messages.append({"role": "user", "text": text})
+        else:
+            messages.append({"role": "assistant", "text": text, "text_b": "",
+                             "names": {"a": "Agent", "b": None}})
+    return messages
+
+
+def session_to_local(session: Dict[str, Any],
+                     model_name: Optional[Callable[[Optional[str]], Optional[str]]] = None) -> Dict[str, Any]:
+    """Return title/mode/modality/models/messages for one evaluation session."""
+    if not isinstance(session, dict):
+        raise ValueError("Arena returned an invalid evaluation session")
+    raw_messages = session.get("messages") or []
+    if not isinstance(raw_messages, list):
+        raw_messages = []
+    indexed = list(enumerate(raw_messages))
+    indexed.sort(key=lambda pair: (str((pair[1] or {}).get("createdAt") or ""), pair[0]))
+
+    messages: List[Dict[str, Any]] = []
+    current_assistant: Optional[Dict[str, Any]] = None
+    current_parent: Optional[Tuple[str, ...]] = None
+    model_ids: Dict[str, Optional[str]] = {"a": None, "b": None}
+    inferred_modality = None
+
+    def flush_assistant():
+        nonlocal current_assistant, current_parent
+        if current_assistant is not None:
+            messages.append(current_assistant)
+        current_assistant, current_parent = None, None
+
+    for _index, raw in indexed:
+        if not isinstance(raw, dict):
+            continue
+        role = str(raw.get("role") or "").lower()
+        text = _content_text(raw.get("content"))
+        links = _attachment_links(raw)
+        if links:
+            text = (text + "\n\n" if text else "") + "\n\n".join(links)
+        if role == "user":
+            flush_assistant()
+            messages.append({"role": "user", "text": text})
+            continue
+        if role != "assistant":
+            continue
+        lane = "b" if str(raw.get("participantPosition") or "a").lower() == "b" else "a"
+        parents = raw.get("parentMessageIds") if isinstance(raw.get("parentMessageIds"), list) else []
+        parent_key = tuple(str(item) for item in parents)
+        if current_assistant is None or (parent_key and current_parent and parent_key != current_parent):
+            flush_assistant()
+            current_assistant = {"role": "assistant", "text": "", "text_b": "", "names": {"a": None, "b": None}}
+            current_parent = parent_key or None
+        assert current_assistant is not None
+        field = "text_b" if lane == "b" else "text"
+        if text:
+            current_assistant[field] = (current_assistant[field] + "\n\n" + text) if current_assistant[field] else text
+        reasoning = _content_reasoning(raw.get("content"), raw.get("reasoning"))
+        if reasoning:
+            r_field = "reasoning_b" if lane == "b" else "reasoning"
+            current_assistant[r_field] = str(current_assistant.get(r_field) or "") + reasoning
+        model_id = raw.get("modelId")
+        if model_id and not model_ids[lane]:
+            model_ids[lane] = str(model_id)
+        if model_id and not current_assistant["names"].get(lane):
+            current_assistant["names"][lane] = model_name(str(model_id)) if model_name else None
+        if raw.get("failureReason"):
+            current_assistant.setdefault("error", str(raw["failureReason"]))
+    flush_assistant()
+
+    for evaluation in session.get("maskedEvaluations") or []:
+        if isinstance(evaluation, dict) and evaluation.get("modality"):
+            inferred_modality = evaluation["modality"]
+            break
+    mode, modality = ui_selection(session.get("mode"), inferred_modality or session.get("modality"))
+    return {
+        "id": str(session.get("id") or ""),
+        "eval_id": str(session.get("id") or ""),
+        "title": str(session.get("title") or "Arena chat"),
+        "mode": mode,
+        "modality": modality,
+        "model_a": model_ids["a"],
+        "model_b": model_ids["b"],
+        "messages": messages,
+        "updated_at": session.get("updatedAt") or "",
+        "created_at": session.get("createdAt") or "",
+        "source": "arena",
+    }
