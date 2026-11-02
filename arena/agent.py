@@ -53,8 +53,9 @@ FULL FILE CONTENT
 <tool name="mkdir"><path>assets/img</path></tool>
 <tool name="delete"><path>old_notes.txt</path></tool>
 <tool name="run_cmd"><cmd>python -m pytest -q</cmd></tool>
+<tool name="ask_user"><question>Which database should I use?</question><option1>SQLite</option1><option2>PostgreSQL</option2></tool>
 {extra_tools}{delegate}
-Rules: paths are relative to the folder. Read a file before editing it. write_file takes the whole file. When the task is done, reply with a short summary and no tool tags. If the message does not need files, just answer it.
+Rules: paths are relative to the folder. Read a file before editing it. write_file takes the whole file. When the task is done, reply with a short summary and no tool tags. If the message does not need files, just answer it. Use ask_user only for choices that are genuinely the user's (preferences, ambiguous requirements): one clear question with 2-4 short options \u2014 the user can also type their own answer, and it comes back to you as the tool result. Never ask what you can find out from the files, and do not ask twice in a row.
 Keep the context lean: batch independent tool calls in one reply instead of one call per round. read_file accepts <start_line> and <end_line> — read only the part you need, and do not re-read files you just wrote. Very long tool outputs are saved under .arena-artifacts/ and you only see a preview; read_file that path if you need the full text.
 
 Persistent memory: MEMORY.md in the workspace root is shared across chats about this project, and its content may be included above as established context. When you learn durable facts worth keeping beyond this chat \u2014 project conventions, decisions, user preferences, the current state of the work \u2014 update MEMORY.md briefly with write_file/edit_file (short bullet points; point to files instead of copying code). Do not store secrets, one-off details, or anything obvious from the code itself. If the user says \u201cremember this\u201d, that goes to MEMORY.md.
@@ -76,7 +77,7 @@ MODE_NOTES = {
 }
 
 
-READ_ONLY_TOOLS = {"ls", "read_file", "search"}
+READ_ONLY_TOOLS = {"ls", "read_file", "search", "ask_user"}
 
 
 def delegate_guide(models) -> str:

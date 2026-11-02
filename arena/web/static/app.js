@@ -512,6 +512,8 @@
     exportSettings() { return this.request('/api/settings/export'); },
     importSettings(bundle) { return this.request('/api/settings/import', { method: 'POST', body: bundle }); },
     diagnostics() { return this.request('/api/diagnostics'); },
+    getQuestions() { return this.request('/api/questions'); },
+    answerQuestion(id, answer) { return this.request(`/api/questions/${encodeURIComponent(id)}`, { method: 'POST', body: { answer } }); },
     getHistory() { return this.request('/api/history'); },
     getPermissions() { return this.request('/api/permissions'); },
     decidePermission(id, decision) {
@@ -990,7 +992,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '4.16.0',
+        app_version: '4.17.0',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -1186,6 +1188,8 @@
     async exportSettings() { await sleep(60); return { app: 'Arena Desktop', version: 1, config: {}, memory_global: demoStore.memoryGlobal || '', memory_workspace: demoStore.memoryWorkspace || '', mcp: null, demo: true }; },
     async importSettings(bundle = {}) { await sleep(60); if (typeof bundle.memory_global === 'string') demoStore.memoryGlobal = bundle.memory_global; return { ok: true, backup: 'demo', demo: true }; },
     async diagnostics() { await sleep(60); return { text: 'Arena Desktop (demo)\nDiagnostics are illustrative in demo mode.', demo: true }; },
+    async getQuestions() { await sleep(40); return []; },
+    async answerQuestion() { await sleep(40); return { ok: true, demo: true }; },
     async archiveArenaChat(id) {
       demoStore.cloudChats = demoStore.cloudChats.filter((item) => item.eval_id !== id && item.id !== id);
       await sleep(120);
@@ -1640,6 +1644,7 @@ You can start with a more structured option: one script, short captions, and a c
     memoryData: null,
     updateInfo: null,
     appSettings: null,
+    pendingQuestions: [],
     _rateLimitTimer: null,
     appVersion: '',
     workspaceChosen: false,
@@ -3089,7 +3094,7 @@ You can start with a more structured option: one script, short captions, and a c
       const detail = activity.command || activity.path || activity.detail;
       const childId = activity.raw?.child_id;
       const subModel = activity.raw?.model_name || (activity.raw?.model && !['a', 'b'].includes(activity.raw.model) ? activity.raw.model : '');
-      const iconName = childId ? 'layers' : activity.kind === 'sandbox' ? 'package' : activity.kind === 'webdev' ? 'layout' : activity.kind === 'agent' ? 'spark' : 'terminal';
+      const iconName = childId ? 'layers' : activity.name === 'Question' ? 'help' : activity.kind === 'sandbox' ? 'package' : activity.kind === 'webdev' ? 'layout' : activity.kind === 'agent' ? 'spark' : 'terminal';
       const head = el('div', { class: 'activity-head' },
         el('span', { class: 'activity-icon' }, iconEl(iconName)),
         el('span', { class: 'activity-title', text: childId ? `Sub-agent${subModel ? ' \u00b7 ' + subModel : ''}` : (activity.name || "Action") }),
@@ -3428,6 +3433,75 @@ You can start with a more structured option: one script, short captions, and a c
     return wrapper;
   }
 
+  async function loadQuestions() {
+    try {
+      const items = await API.getQuestions();
+      state.pendingQuestions = (Array.isArray(items) ? items : []).map((q) => ({
+        id: String(q.id), chatId: q.chat_id || q.chatId || null, lane: q.lane === 'b' ? 'b' : 'a',
+        question: textValue(q.question),
+        options: Array.isArray(q.options) ? q.options.map(textValue).filter(Boolean) : [],
+        custom: q.custom !== false, subagent: q.subagent || null
+      })).filter((q) => q.id && q.id !== 'undefined');
+      updatePendingPermissionsBadge();
+      if (state.view === 'chat') renderMessages();
+    } catch { /* offline: live questions still arrive over the stream */ }
+  }
+
+  async function answerQuestionUI(q, answer, card) {
+    const text = String(answer || '').trim();
+    if (!text) return;
+    card?.querySelectorAll('button, input').forEach((n) => { n.disabled = true; });
+    try {
+      await API.answerQuestion(q.id, text);
+      state.pendingQuestions = state.pendingQuestions.filter((x) => x.id !== q.id);
+      updatePendingPermissionsBadge();
+      renderMessages();
+    } catch (error) {
+      toast(errorMessage(error), 'error', 'Question');
+      card?.querySelectorAll('button, input').forEach((n) => { n.disabled = false; });
+    }
+  }
+
+  function renderQuestionCard(q) {
+    const card = el('div', { class: 'permission-card question-card', 'data-question-card': q.id });
+    const head = el('div', { class: 'permission-head' },
+      el('span', { class: 'permission-icon' }, iconEl('help')),
+      el('div', { class: 'permission-heading' },
+        el('p', { class: 'permission-title', text: q.subagent ? 'Sub-agent asks' : 'The model asks' }),
+        el('p', { class: 'permission-subtitle', text: 'Generation is paused until you answer' })));
+    const body = el('div', { class: 'permission-body' },
+      el('p', { class: 'permission-note', text: q.question }));
+    if (q.options.length) {
+      const row = el('div', { class: 'question-options' });
+      q.options.forEach((opt) => {
+        const b = el('button', { class: 'button button-small', type: 'button' }, el('span', { text: opt }));
+        b.addEventListener('click', () => { void answerQuestionUI(q, opt, card); });
+        row.appendChild(b);
+      });
+      body.appendChild(row);
+    }
+    if (q.custom) {
+      const input = el('input', { class: 'input', type: 'text', placeholder: 'Your answer\u2026', 'aria-label': 'Your answer' });
+      const send = el('button', { class: 'button button-small', type: 'button' }, iconEl('check'), el('span', { text: 'Answer' }));
+      send.addEventListener('click', () => { void answerQuestionUI(q, input.value, card); });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); void answerQuestionUI(q, input.value, card); }
+      });
+      body.appendChild(el('div', { class: 'question-custom' }, input, send));
+    }
+    card.append(head, body);
+    return card;
+  }
+
+  function renderUnattachedQuestions() {
+    const mine = (state.pendingQuestions || []).filter(
+      (q) => !q.chatId || String(q.chatId) === String(state.activeChatId));
+    if (!mine.length) return null;
+    const section = el('section', { class: 'message-turn', 'aria-label': 'Question from the model' });
+    mine.forEach((q) => section.appendChild(renderQuestionCard(q)));
+    return section;
+  }
+
   function renderUnattachedPermissions(renderedIds) {
     const remaining = state.pendingPermissions.filter((permission) => !permission.id || !renderedIds.has(String(permission.id)));
     if (!remaining.length) return null;
@@ -3500,6 +3574,8 @@ You can start with a more structured option: one script, short captions, and a c
     });
     const unattached = renderUnattachedPermissions(renderedPermissions);
     if (unattached) els.messageList.appendChild(unattached);
+    const questions = renderUnattachedQuestions();
+    if (questions) els.messageList.appendChild(questions);
 
     if (content) {
       if (!preserveScroll || wasNearBottom) {
@@ -3872,11 +3948,12 @@ You can start with a more structured option: one script, short captions, and a c
 
   function updatePendingPermissionsBadge() {
     if (!els.pendingPermissionsBadge) return;
-    const count = Math.max(Number(state.permissionCount) || 0, state.pendingPermissions.length);
+    const count = Math.max(Number(state.permissionCount) || 0, state.pendingPermissions.length)
+      + (state.pendingQuestions?.length || 0);
     els.pendingPermissionsBadge.hidden = !count;
     els.pendingPermissionsBadge.textContent = String(count);
-    els.pendingPermissionsBadge.title = `Awaiting permissions: ${count}`;
-    els.pendingPermissionsBadge.setAttribute('aria-label', `Awaiting permissions: ${count}`);
+    els.pendingPermissionsBadge.title = `Awaiting your decision: ${count}`;
+    els.pendingPermissionsBadge.setAttribute('aria-label', `Awaiting your decision: ${count}`);
   }
 
   function renderPendingPermissionsUI() {
@@ -4158,7 +4235,10 @@ You can start with a more structured option: one script, short captions, and a c
           for (const step of (Array.isArray(item.tools) ? item.tools : [])) {
             const key = step.lane === 'b' ? 'b' : 'a';
             const lane = current.lanes[key] || (current.lanes[key] = emptyLane(key));
-            const activity = normalizeActivity({ ...step, detail: step.summary, status: step.status || (step.ok ? 'ok' : 'error') }, 'tool');
+            const stepDetail = step.tool === 'ask_user' && step.question
+              ? `${step.question}${step.answer ? `\n\u2192 ${step.answer}` : ''}`
+              : step.summary;
+            const activity = normalizeActivity({ ...step, name: step.tool === 'ask_user' ? 'Question' : step.name, detail: stepDetail, status: step.status || (step.ok ? 'ok' : 'error') }, 'tool');
             if (activity) lane.activities.push(activity);
           }
           for (const step of (Array.isArray(item.sandbox) ? item.sandbox : [])) {
@@ -4275,6 +4355,7 @@ You can start with a more structured option: one script, short captions, and a c
       updateComposerState();
       renderMessages({ preserveScroll: false });
       syncGenerationState();
+      void loadQuestions();
       announce(`Dialog “${state.activeChatTitle}” loaded.`);
     } catch (error) {
       if (historyToken !== state.historyRequest) return;
@@ -4795,6 +4876,29 @@ You can start with a more structured option: one script, short captions, and a c
           act.detail = `${act.detail ? act.detail + '\n' : ''}\u2022 ${event.summary}`.slice(-2400);
         }
       }
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'question') {
+      const q = {
+        id: String(event.id), chatId: event.chat_id || generation.chatId, lane: key,
+        question: textValue(event.question),
+        options: Array.isArray(event.options) ? event.options.map(textValue).filter(Boolean) : [],
+        custom: event.custom !== false, subagent: event.subagent || null
+      };
+      if (!state.pendingQuestions.some((x) => x.id === q.id)) state.pendingQuestions.push(q);
+      updatePendingPermissionsBadge();
+      if (String(q.chatId) !== String(state.activeChatId)) {
+        toast('The model is asking a question in another chat.', 'warning', 'Question');
+      } else {
+        announce('The model asks a question. Your answer is needed.');
+      }
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'question_done') {
+      state.pendingQuestions = state.pendingQuestions.filter((x) => x.id !== String(event.id));
+      updatePendingPermissionsBadge();
       scheduleChatRender();
       return;
     }

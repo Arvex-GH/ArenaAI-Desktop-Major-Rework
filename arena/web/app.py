@@ -244,7 +244,7 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "4.16.0"
+APP_VERSION = "4.17.0"
 
 
 @app.after_request
@@ -1434,6 +1434,40 @@ def api_diagnostics():
         lines += ["", "--- desktop.log, last lines (URLs reduced to host+path) ---"]
         lines += [_redact_urls(line) for line in tail]
     return jsonify({"text": "\n".join(lines)})
+
+
+_QUESTIONS: dict = {}
+_questions_lock = threading.Lock()
+QUESTION_TIMEOUT = 600
+
+
+def _question_answer(qid):
+    with _questions_lock:
+        q = _QUESTIONS.get(qid)
+        return (q or {}).get("answer")
+
+
+@app.route("/api/questions")
+def api_questions():
+    """Questions from models that are still waiting for the user."""
+    with _questions_lock:
+        items = [{k: q.get(k) for k in ("id", "chat_id", "question", "options", "custom", "lane", "subagent")}
+                 for q in _QUESTIONS.values() if q.get("answer") is None]
+    return jsonify(items)
+
+
+@app.route("/api/questions/<qid>", methods=["POST"])
+def api_question_answer(qid):
+    data = request.get_json(silent=True) or {}
+    answer = str(data.get("answer") or "").strip()
+    if not answer:
+        return jsonify({"error": "Write or pick an answer first.", "code": "empty"}), 400
+    with _questions_lock:
+        q = _QUESTIONS.get(qid)
+        if not q or q.get("answer") is not None:
+            return jsonify({"error": "That question is no longer waiting.", "code": "gone"}), 404
+        q["answer"] = answer[:2000]
+    return jsonify({"ok": True})
 
 
 def _archive_agentic_on_arena(session_id: str) -> Optional[str]:
@@ -3065,7 +3099,7 @@ def _run_subagent(client, parent_conv: dict, call: dict, lane: str, child_id: st
             except ValueError:
                 continue
             etype = parsed.get("type")
-            if etype in ("permission", "permission_done", "ping"):
+            if etype in ("permission", "permission_done", "ping", "question", "question_done"):
                 yield ev
             elif etype == "notice":
                 yield _sse(dict(parsed, subagent=child_id))
@@ -3191,6 +3225,52 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
             for call in calls[l]:
                 if _stopped():
                     outcomes.append((call, "skipped: the user pressed Stop", ""))
+                    continue
+                if call["name"] == "ask_user":
+                    qparams = call.get("params") or {}
+                    question = str(qparams.get("question") or "").strip()
+                    options = [str(qparams.get(f"option{i}") or "").strip() for i in range(1, 5)]
+                    options = [o for o in options if o][:4]
+                    custom = str(qparams.get("custom") or "true").strip().lower() not in ("false", "no", "0")
+                    info = {"tool": "ask_user", "model": l, "name": "Question",
+                            "summary": "Question: " + (" ".join(question.split())[:120] or "…"),
+                            "inside": True, "path": question[:400]}
+                    yield _sse(dict(info, type="tool_call"))
+                    answer_text = ""
+                    if not question:
+                        ok, status, output = False, "error", "ask_user needs a <question>."
+                    else:
+                        qid = generate_uuidv7()
+                        parent_chat = getattr(_tl, "chat_id", None) or conv.get("chat_id")
+                        with _questions_lock:
+                            _QUESTIONS[qid] = {
+                                "id": qid, "chat_id": parent_chat, "question": question,
+                                "options": options, "custom": custom, "lane": l,
+                                "subagent": (conv.get("chat_id") if conv.get("chat_id") != parent_chat else None),
+                                "answer": None}
+                        yield _sse({"type": "question", "id": qid, "lane": l, "model": l,
+                                    "question": question, "options": options, "custom": custom,
+                                    "chat_id": parent_chat,
+                                    "subagent": _QUESTIONS[qid]["subagent"]})
+                        answer_text = yield from _wait_for(lambda: _question_answer(qid), QUESTION_TIMEOUT)
+                        with _questions_lock:
+                            _QUESTIONS.pop(qid, None)
+                        yield _sse({"type": "question_done", "id": qid, "lane": l,
+                                    "answer": answer_text or ""})
+                        if answer_text:
+                            ok, status, output = True, "ok", f'The user answered: "{answer_text}"'
+                        else:
+                            ok, status = False, "timeout"
+                            output = ("The user did not answer in time. Proceed with your best "
+                                      "judgment and state the assumption you made.")
+                            answer_text = ""
+                    outcomes.append((call, status, output))
+                    conv.setdefault("tools", []).append(
+                        {"tool": "ask_user", "summary": info["summary"], "lane": l, "diff": None,
+                         "ok": ok, "status": status, "question": question, "options": options,
+                         "answer": answer_text})
+                    yield _sse({"type": "tool_result", "model": l, "tool": "ask_user",
+                                "ok": ok, "status": status, "output": (output or "")[:4000]})
                     continue
                 if call["name"] == "delegate_task":
                     child_id = generate_uuidv7()

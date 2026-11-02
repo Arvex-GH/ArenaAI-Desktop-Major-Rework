@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.16.0-8b5cf6?style=flat-square" alt="Version 4.16.0" />
+  <img src="https://img.shields.io/badge/version-4.17.0-8b5cf6?style=flat-square" alt="Version 4.17.0" />
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue?style=flat-square" alt="Windows 10/11" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776ab?style=flat-square" alt="Python 3.11+" />
   <img src="https://img.shields.io/badge/models-400%2B%20via%20arena.ai-10b981?style=flat-square" alt="400+ models via arena.ai" />
@@ -72,6 +72,10 @@ The app orchestrates chats, tools, files and permissions around it.
   folder and only a preview travels back (the model reads the full file only if it needs to),
   repeated output lines collapse, `read_file` reads line ranges, and a model that keeps repeating
   the same tool call is stopped automatically.
+- **The model can ask you**: with the `ask_user` tool the Local Agent (and its sub-agents) can pause
+  mid-task and ask a clarifying question with 2–4 answer options plus a free-text field — your
+  answer returns to the model and the work continues, instead of it guessing on a fork that
+  matters. Unanswered questions time out with the assumption stated in the reply.
 - **Sub-agents**: the Local Agent (and Direct with Workspace Sync) can delegate a self-contained
   sub-task to a child chat with its own Arena session and tool loop — research (read-only) or work —
   and pick the sub-agent's model. Only the child's summary returns to the parent, so long projects

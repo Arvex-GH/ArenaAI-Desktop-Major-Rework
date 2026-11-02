@@ -2501,3 +2501,53 @@ def test_portable_config_dir(tmp_path, monkeypatch):
     assert cfgmod._config_dir() == exe_dir / "data"
     monkeypatch.setattr(_sys, "frozen", False, raising=False)
     assert cfgmod._config_dir().name == ".arena-personal"
+
+
+def test_ask_user_pauses_and_returns_answer(web, monkeypatch, tmp_path):
+    import threading as _threading
+    import time as _time
+    appmod, c, cfg, use, sent, cid, ws = _delegate_parent(web, tmp_path, monkeypatch)
+    ask = ('<tool name="ask_user"><question>Which database?</question>'
+           '<option1>SQLite</option1><option2>PostgreSQL</option2></tool>')
+    use(FakeResp(["a0:" + json.dumps(ask)]), FakeResp(['a0:"Final answer"']))
+    result = {}
+
+    def run():
+        client2 = appmod.app.test_client()
+        result["events"] = events(client2.post("/api/chat", json={
+            "message": "ask me", "chat_id": cid}))
+
+    thread = _threading.Thread(target=run, daemon=True)
+    thread.start()
+    pending = []
+    for _ in range(100):
+        pending = c.get("/api/questions").get_json()
+        if pending:
+            break
+        _time.sleep(0.1)
+    assert pending and pending[0]["question"] == "Which database?"
+    assert pending[0]["options"] == ["SQLite", "PostgreSQL"]
+    qid = pending[0]["id"]
+    assert c.post(f"/api/questions/{qid}", json={"answer": "  "}).status_code == 400
+    assert c.post(f"/api/questions/{qid}", json={"answer": "PostgreSQL"}).get_json()["ok"]
+    thread.join(timeout=20)
+    assert not thread.is_alive()
+    assert 'The user answered: "PostgreSQL"' in sent[-1][1]["userMessage"]["content"]
+    assert any(e.get("type") == "question" for e in result["events"])
+    saved = appmod._load_chat(cid)
+    step = next(t for m in saved["messages"] for t in (m.get("tools") or [])
+                if t.get("tool") == "ask_user")
+    assert step["answer"] == "PostgreSQL" and step["question"] == "Which database?"
+
+
+def test_ask_user_timeout_proceeds_with_assumption(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent, cid, ws = _delegate_parent(web, tmp_path, monkeypatch)
+    monkeypatch.setattr(appmod, "QUESTION_TIMEOUT", 2)
+    ask = '<tool name="ask_user"><question>Redis or Memcached?</question></tool>'
+    use(FakeResp(["a0:" + json.dumps(ask)]), FakeResp(['a0:"Moved on"']))
+    ev = events(c.post("/api/chat", json={"message": "ask", "chat_id": cid}))
+    assert "did not answer in time" in sent[-1][1]["userMessage"]["content"]
+    assert c.get("/api/questions").get_json() == []
+    gone = c.post("/api/questions/11111111-1111-7111-8111-111111111111",
+                  json={"answer": "Redis"})
+    assert gone.status_code == 404

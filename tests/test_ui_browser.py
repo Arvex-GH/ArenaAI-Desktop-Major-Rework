@@ -652,7 +652,7 @@ def test_v47_battle_lane_error_avatar_and_model_logo(site):
                     'engine': {'open': False, 'ready': True},
                     'permission_mode': 'default', 'workspace': 'C:\\test',
                     'pending_permissions': 0, 'generating': False,
-                    'app_version': '4.16.0'})
+                    'app_version': '4.17.0'})
             if path == 'mode' and route.request.method == 'POST':
                 body = route.request.post_data_json or {}
                 return fulfill(route, {'ok': True, 'mode': body.get('mode', 'battle'), 'modality': 'text'})
