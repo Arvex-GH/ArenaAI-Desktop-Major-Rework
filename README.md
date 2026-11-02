@@ -231,5 +231,14 @@ Arena Desktop grew out of the open-source arena.ai desktop/CLI work by
 (full in-app Arena Agent Mode, Workspace Sync tool loop, MCP support, multi-account auth,
 parallel chats, and a redesigned interface). Thanks to everyone whose code and research it builds on.
 
+## Contact
+
+Questions, ideas or feedback? Reach the maintainer on Discord:
+
+[![Discord](https://img.shields.io/static/v1?label=Discord&message=%40.max_power._&color=5865F2&style=flat-square&logo=discord&logoColor=white)](https://discord.com/users/877543689428287489)
+
+DMs are open — `@.max_power._`. For bugs and feature requests, [GitHub Issues](../../issues) still work best.
+
+
 Released under the [MIT License](LICENSE). Not affiliated with Arena AI Inc.; “Arena” is used
 descriptively to name the service this client connects to.
