@@ -1001,7 +1001,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '5.0.0',
+        app_version: '5.1.0',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -3776,9 +3776,13 @@ You can start with a more structured option: one script, short captions, and a c
       mk('⤓', 'Jump to latest', () => content.scrollTo({ top: content.scrollHeight, behavior: 'smooth' }))
     );
     content.appendChild(pill);
+    const bottomBtn = el('button', { class: 'scroll-bottom-btn', id: 'scrollBottomBtn', type: 'button', title: 'Back to bottom', 'aria-label': 'Back to bottom', hidden: true }, el('span', { text: '↓' }));
+    bottomBtn.addEventListener('click', () => content.scrollTo({ top: content.scrollHeight, behavior: 'smooth' }));
+    content.appendChild(bottomBtn);
     content.addEventListener('scroll', () => {
       const dist = content.scrollHeight - content.scrollTop - content.clientHeight;
       pill.hidden = dist < 300;
+      bottomBtn.hidden = dist < 300;
     }, { passive: true });
   }
 
@@ -4218,11 +4222,6 @@ You can start with a more structured option: one script, short captions, and a c
     let disabledReason = '';
     const rateLimitLeft = Math.max(0, Math.ceil((state.rateLimitUntil - Date.now()) / 1000));
     if (busy) disabledReason = "Wait for the current generation to complete";
-    else if (rateLimitLeft > 0) {
-      const mm = Math.floor(rateLimitLeft / 60);
-      const ss = String(rateLimitLeft % 60).padStart(2, '0');
-      disabledReason = `Arena rate limit — wait ${mm > 0 ? `${mm}:${ss}` : `${rateLimitLeft}s`}`;
-    }
     else if (state.stopping) disabledReason = "Stopping generation";
     else if (transitions) disabledReason = "Applying settings";
     else if (noServer) disabledReason = "No connection to the local server";
@@ -5398,12 +5397,33 @@ You can start with a more structured option: one script, short captions, and a c
       scheduleChatRender();
       return;
     }
+    if (type === 'auto_retry') {
+      // The server discarded an interrupted attempt and is continuing:
+      // drop its partial text so the retry does not duplicate it.
+      const dropped = event.dropped || {};
+      ['a', 'b'].forEach((k) => {
+        const n = Number(dropped[k]) || 0;
+        if (n > 0) {
+          const lobj = turnLane(turn, k);
+          if (lobj.text) lobj.text = lobj.text.slice(0, Math.max(0, lobj.text.length - n));
+        }
+      });
+      const msg = `The reply was interrupted — auto-continuing (${event.attempt || 1}/${event.max || 2})…`;
+      if (!lane.notices.includes(msg)) lane.notices.push(msg);
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'chats_changed') {
+      void loadChats({ silent: true });
+      return;
+    }
     if (type === 'error') {
       const message = textValue(event.message ?? event.error ?? event.detail ?? 'The server reported an error.');
       generation.hadError = true;
       if (event.code === 'rate_limit' && Number(event.wait) > 0) {
-        // Respect Arena's own reset window instead of letting retry spam
-        // keep the account throttled.
+        // Informational only (v5.1): drives the switch-account hint.
+        // Sending is never blocked - the limit may be per-modality or
+        // already reset, and the user decides when to continue.
         state.rateLimitUntil = Date.now() + Number(event.wait) * 1000;
         if (!state._rateLimitTimer) {
           state._rateLimitTimer = window.setInterval(() => {
@@ -5782,13 +5802,6 @@ You can start with a more structured option: one script, short captions, and a c
 
   async function sendMessage() {
     if (state.starting) return;
-    if (state.rateLimitUntil > Date.now()) {
-      const left = Math.ceil((state.rateLimitUntil - Date.now()) / 1000);
-      const mm = Math.floor(left / 60);
-      const ss = String(left % 60).padStart(2, '0');
-      toast(`Arena asked to wait before sending again (${mm > 0 ? `${mm}:${ss}` : `${left}s`} left). Retrying early can extend the limit.`, 'warning', 'Rate limited');
-      return;
-    }
     if (chatIsGenerating(state.activeChatId)) {
       toast("This chat is still working on the previous message. You can use other chats meanwhile.", 'warning', "Generation is already in progress");
       return;
@@ -6972,7 +6985,14 @@ You can start with a more structured option: one script, short captions, and a c
         }, iconEl('login'), el('span', { text: 'Sign-in window' })),
         el('button', {
           class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-add-cookies',
-          onclick: () => { closePopover(false); openSettings('connection'); }
+          onclick: () => {
+            closePopover(false);
+            openSettings('connection');
+            window.setTimeout(() => {
+              const field = document.querySelector('.cookie-field');
+              if (field) { field.focus(); field.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+            }, 80);
+          }
         }, iconEl('login'), el('span', { text: 'Use cookies' }))
       );
       content.appendChild(el('button', {
@@ -7249,12 +7269,12 @@ You can start with a more structured option: one script, short captions, and a c
       wrap.appendChild(actions);
       wrap.appendChild(el('p', { class: 'setting-desc', text: 'Sign-in and human checks open in their own window and close by themselves when you are done.' }));
 
-      if (!state.authenticated && !state.demo) {
-        wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Sign in with cookies' }));
-        wrap.appendChild(el('p', { class: 'modal-copy', text: 'On arena.ai in your browser: DevTools → Application → Cookies → arena.ai. Copy the arena-auth-prod-v1 lines as name=value pairs and paste them here.' }));
-        const cookieField = el('textarea', { class: 'input mono', rows: '3', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
+      if (!state.demo) {
+        wrap.appendChild(el('h3', { class: 'modal-section-title', text: state.authenticated ? 'Add an account with cookies' : 'Sign in with cookies' }));
+        wrap.appendChild(el('p', { class: 'modal-copy', text: 'On arena.ai in your browser: DevTools → Application → Cookies → arena.ai. Copy the arena-auth-prod-v1 lines as name=value pairs and paste them here.' + (state.authenticated ? ' The new account becomes current; your saved accounts stay in the account menu.' : '') }));
+        const cookieField = el('textarea', { class: 'input mono cookie-field', rows: '3', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
           'aria-label': 'Arena cookies', placeholder: 'arena-auth-prod-v1.0=…; arena-auth-prod-v1.1=…' });
-        const importButton = settingsActionButton('Sign in with cookies', 'login', async () => {
+        const importButton = settingsActionButton(state.authenticated ? 'Add account with cookies' : 'Sign in with cookies', 'login', async () => {
           const cookie = cookieField.value.trim();
           cookieField.value = '';
           if (!cookie) { toast('Paste the cookies first.', 'warning'); return; }
@@ -7612,6 +7632,14 @@ You can start with a more structured option: one script, short captions, and a c
       wrap.appendChild(el('label', { class: 'setting-toggle-row' },
         el('span', { text: 'Show leaderboard Elo in the model picker' }),
         el('span', { class: 'switch' }, eloToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
+      const acToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: cfg.auto_continue !== false, 'aria-label': 'Auto-continue on error' });
+      acToggle.addEventListener('change', async () => {
+        await API.saveSettings({ auto_continue: acToggle.checked });
+        state.appSettings = { ...(state.appSettings || {}), auto_continue: acToggle.checked };
+      });
+      wrap.appendChild(el('label', { class: 'setting-toggle-row' },
+        el('span', { text: 'Auto-continue on error (up to 2 attempts)' }),
+        el('span', { class: 'switch' }, acToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
       const trayToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: Boolean(cfg.tray_enabled), 'aria-label': 'Keep in system tray when closed' });
       trayToggle.addEventListener('change', async () => {
         await API.saveSettings({ tray_enabled: trayToggle.checked });

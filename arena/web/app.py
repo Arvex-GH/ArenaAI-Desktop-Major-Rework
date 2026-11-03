@@ -263,7 +263,7 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "5.0.0"
+APP_VERSION = "5.1.0"
 
 
 @app.after_request
@@ -1043,6 +1043,12 @@ def api_login():
                         "session. " + _LOGIN_STEPS}), 400
     # Do not retain unrelated website cookies pasted alongside the auth chunks.
     auth_cookies = "; ".join(f"{k}={v}" for k, v in cookie_dict.items() if k.startswith(contracts.AUTH_COOKIE_PREFIX))
+    # Adding an account by cookies while signed in: keep the current
+    # account's freshest (rotated) cookie so it stays switchable.
+    try:
+        _sync_current_account_cookie(get_client().cookie_str)
+    except Exception:
+        pass
     resp, ok = _activate_cookie(auth_cookies, method)
     return (resp, 200) if ok else (resp, 401)
 
@@ -2034,6 +2040,27 @@ def _chat_arena_session(chat: dict):
     return None, False
 
 
+def _delete_chat_everywhere(client, chat_id: str, chat: dict = None):
+    """Delete a chat locally and archive it on Arena; returns (ok, message).
+
+    Shared by the delete route's semantics and the delete_subagent tool.
+    """
+    chat = chat if isinstance(chat, dict) else (_load_chat(chat_id) or {})
+    note = ""
+    session_id, agentic = _chat_arena_session(chat)
+    if session_id:
+        if _signed_in_somewhere(client):
+            _state, arena_error = _archive_session_on_arena(session_id, agentic)
+            if arena_error:
+                note = f" It could not be archived on Arena ({arena_error})."
+        else:
+            note = " It was not archived on Arena (not signed in)."
+    if not _delete_chat(chat_id):
+        return False, "That sub-agent chat no longer exists."
+    _orphan_children(chat_id)
+    return True, f"Sub-agent chat deleted.{note}"
+
+
 @app.route("/api/chats/<chat_id>/delete", methods=["POST"])
 def api_chat_delete(chat_id):
     """Delete locally and archive the same conversation on arena.ai."""
@@ -2946,6 +2973,140 @@ def _turn(client: ArenaClient, content: str, conv: dict):
         return None
     yield _sse({"type": "error", "code": "http", "retry": True, "message": "arena.ai kept refusing the message."})
     return None
+
+
+def _sse_payload(item):
+    """Parse one SSE string back into its event dict (or None)."""
+    try:
+        text = str(item).strip()
+        if text.startswith("data:"):
+            return json.loads(text[5:].strip())
+    except Exception:
+        return None
+    return None
+
+
+def _auto_continue_on() -> bool:
+    try:
+        return load_config().get("auto_continue", True) is not False
+    except Exception:
+        return True
+
+
+_AUTO_RETRY_CODES = {"network", "server", "model", "stalled", "empty"}
+_CONTINUE_PROMPT = ("[Arena Desktop] Your previous reply was interrupted mid-stream. "
+                    "Continue exactly from where it stopped. Do not repeat anything "
+                    "you already wrote and do not restart the answer.")
+
+
+def _turn_auto(client, content, conv):
+    """_turn with automatic continuation (v5.1).
+
+    If the model call dies (network/5xx, stream stall, lane error or an
+    empty reply), the task no longer ends: the call is retried up to 2
+    more times. A prose partial is kept and the model is asked to
+    continue it; a partial containing tool calls is discarded and the
+    same content is resent. Errors of failed attempts are held back and
+    only surfaced when no attempts remain. Dual (Battle/Side by Side)
+    turns only retry when nothing was produced at all, so a surviving
+    lane is never re-rolled.
+    """
+    dual = conv.get("mode") in ("battle", "side-by-side")
+    attempts_left = 2 if _auto_continue_on() else 0
+    accumulated = {"a": "", "b": ""}
+    send_content = content
+    attempt_no = 0
+
+    def merged(o):
+        if o is None:
+            return None
+        return {"a": accumulated["a"] + (o.get("a") or ""),
+                "b": accumulated["b"] + (o.get("b") or "")}
+
+    while True:
+        attempt_no += 1
+        held = []  # (raw SSE, payload) errors / stall notice of this attempt
+        saw_stall = False
+        saw_artifact = False
+        out = None
+        gen = _turn(client, send_content, conv)
+        while True:
+            try:
+                item = next(gen)
+            except StopIteration as stop:
+                out = stop.value
+                break
+            payload = _sse_payload(item) or {}
+            ptype = payload.get("type")
+            if ptype == "error":
+                held.append((item, payload))
+                continue
+            if ptype == "notice" and "stopped sending data" in str(payload.get("text") or ""):
+                saw_stall = True
+                held.append((item, payload))
+                continue
+            if ptype in ("media", "preview", "webdev", "files_written", "files"):
+                saw_artifact = True
+            yield item
+
+        failed = False
+        fail_err = None
+        if out is None:
+            failed = True
+            errs = [p for _i, p in held if p.get("type") == "error"]
+            fail_err = errs[-1] if errs else {"code": "http", "retry": False}
+        else:
+            empty = (not (out.get("a") or "").strip() and not (out.get("b") or "").strip()
+                     and not saw_artifact and not conv.get("media_saved"))
+            lane_errs = [p for _i, p in held if p.get("type") == "error"]
+            if dual:
+                if empty:
+                    failed = True
+                    fail_err = lane_errs[-1] if lane_errs else {"code": "empty", "retry": True}
+            elif saw_stall:
+                failed, fail_err = True, {"code": "stalled", "retry": True}
+            elif lane_errs and empty:
+                failed, fail_err = True, lane_errs[-1]
+            elif empty and conv.get("modality") in ("chat", "search"):
+                failed, fail_err = True, {"code": "empty", "retry": True}
+
+        if not failed:
+            for raw_item, payload in held:
+                if payload.get("type") == "error":
+                    yield raw_item
+            return merged(out)
+
+        code = str((fail_err or {}).get("code") or "")
+        try:
+            wait = float((fail_err or {}).get("wait") or 0)
+        except (TypeError, ValueError):
+            wait = 0
+        retryable = code in _AUTO_RETRY_CODES or (code == "rate_limit" and 0 < wait <= 20)
+        if attempts_left <= 0 or not retryable or _stopped():
+            for raw_item, _p in held:
+                yield raw_item
+            return merged(out)
+
+        attempts_left -= 1
+        _tl.error = None  # the held whole-turn error is not final
+        partial_a = (out or {}).get("a") or ""
+        partial_b = (out or {}).get("b") or ""
+        partial = partial_a + partial_b
+        dropped = {"a": 0, "b": 0}
+        if (partial.strip() and not dual and out is not None
+                and "<tool" not in partial and "<invoke" not in partial):
+            accumulated["a"] += partial_a
+            accumulated["b"] += partial_b
+            send_content = _CONTINUE_PROMPT
+        else:
+            dropped = {"a": len(partial_a), "b": len(partial_b)}
+            send_content = content
+        yield _sse({"type": "auto_retry", "attempt": attempt_no, "max": 2,
+                    "code": code, "dropped": dropped})
+        backoff = int(wait) if code == "rate_limit" and wait else 2
+        yield from _wait_for(lambda: False, max(1, min(backoff, 20)))
+        if _stopped():
+            return merged(out)
 
 
 def _native_connected_slugs():
@@ -4003,6 +4164,9 @@ def _run_subagent(client, parent_conv: dict, call: dict, lane: str, child_id: st
                   f"Its chat is saved as \u201c{title}\u201d.")
     yield _sse({"type": "subagent", "status": "done", "child_id": child_id,
                 "ok": ok, "model_name": model_name, "mode": smode, "lane": lane})
+    if not params.get("fanout"):
+        # The parent model needs the id to manage (e.g. delete) this chat.
+        output = f"[sub-agent chat: {child_id}]\n{output}"
     return ok, status, output, extra
 
 
@@ -4056,7 +4220,7 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
     key_counts: dict = {}
     loop_notes: list = []
     for rnd in range(1, agent.MAX_ROUNDS + 1):
-        out = yield from _turn(client, content, conv)
+        out = yield from _turn_auto(client, content, conv)
         if out is None:
             break
         calls = {l: agent.parse_tool_calls(out[l]) for l in lanes}
@@ -4064,7 +4228,10 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
             total[l] += out[l]
         if not any(calls.values()) or _stopped():
             break
-        repeated = None
+        # Soft anti-loop (v5.1): repeated calls are marked blocked and
+        # answered with a warning during execution below - the task is
+        # NOT stopped, the model just gets told to change approach.
+        blocked: dict = {}  # id(call) -> repeat count
         for l in lanes:
             for call in calls[l]:
                 try:
@@ -4074,7 +4241,7 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                     sig = repr(call)
                 sig_counts[sig] = sig_counts.get(sig, 0) + 1
                 if sig_counts[sig] >= 4:
-                    repeated = call.get("name") or "tool"
+                    blocked[id(call)] = max(blocked.get(id(call), 0), sig_counts[sig])
                 cparams = call.get("params") or {}
                 target_key = (call.get("name") or "tool",
                               str(cparams.get("path") or cparams.get("pattern")
@@ -4086,12 +4253,7 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                         f"'{target_key[1]}' three times. If it is not working, change "
                         "approach instead of repeating it.")
                 elif key_counts[target_key] >= 5:
-                    repeated = repeated or f"{target_key[0]} on {target_key[1]}"
-        if repeated:
-            yield _sse({"type": "notice", "level": "warn",
-                        "text": f"Stopped the tool loop: the model kept repeating the same call "
-                                f"({repeated}). Its work so far is saved in the selected folder."})
-            break
+                    blocked[id(call)] = max(blocked.get(id(call), 0), key_counts[target_key])
         mode = _perm_mode()
         results = {}
         precomputed: dict = {}
@@ -4108,6 +4270,23 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                     yield _sse({"type": "tool_result", "model": l, "tool": "delegate_task",
                                 "child_id": pre["step"].get("child_id"), "ok": pre["ok"],
                                 "status": pre["status"], "output": (pre["output"] or "")[:4000]})
+                    continue
+                if id(call) in blocked:
+                    info = {"tool": call["name"], "model": l, "inside": True,
+                            "summary": f"{call['name']} (not run: repeated call)"}
+                    yield _sse(dict(info, type="tool_call"))
+                    n = blocked[id(call)]
+                    ok, status = False, "blocked: repeated call"
+                    output = (f"[Arena Desktop] This exact {call['name']} call was NOT run: "
+                              f"you have already made it {n} times and the result will not "
+                              "change. Stop repeating it - try a different approach, or "
+                              "finish the task with what you already have.")
+                    outcomes.append((call, status, output))
+                    conv.setdefault("tools", []).append(
+                        {"tool": call["name"], "summary": info["summary"], "lane": l,
+                         "diff": None, "ok": ok, "status": status})
+                    yield _sse({"type": "tool_result", "model": l, "tool": call["name"],
+                                "ok": ok, "status": status, "output": output[:4000]})
                     continue
                 if call["name"] in ("read_file", "read_files"):
                     rparams = call.get("params") or {}
@@ -4342,6 +4521,40 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                     yield _sse({"type": "tool_result", "model": l, "tool": "delegate_task",
                                 "child_id": extra.get("child_id"), "ok": ok, "status": status,
                                 "output": (output or "")[:4000]})
+                    continue
+                if call["name"] == "delete_subagent":
+                    dparams = call.get("params") or {}
+                    target_id = str(dparams.get("child_id") or dparams.get("chat_id")
+                                    or dparams.get("id") or "").strip()
+                    info = {"tool": "delete_subagent", "model": l, "name": "Sub-agent",
+                            "summary": "Delete sub-agent chat", "child_id": target_id,
+                            "inside": True, "path": target_id[:64]}
+                    yield _sse(dict(info, type="tool_call"))
+                    if not conv.get("allow_delegate"):
+                        ok, status = False, "error"
+                        output = "delete_subagent is not available inside a sub-agent."
+                    elif not target_id or not _validate_chat_id(target_id):
+                        ok, status = False, "error"
+                        output = ("Pass the sub-agent chat id shown at the start of the "
+                                  "delegate_task result: <child_id>...</child_id>.")
+                    else:
+                        child = _load_chat(target_id) or {}
+                        if str(child.get("parent_id") or "") != str(conv.get("chat_id") or ""):
+                            ok, status = False, "error"
+                            output = ("That chat is not one of your sub-agents in this "
+                                      "conversation, so it was not deleted.")
+                        else:
+                            ok, output = _delete_chat_everywhere(client, target_id, child)
+                            status = "ok" if ok else "error"
+                    outcomes.append((call, status, output))
+                    conv.setdefault("tools", []).append(
+                        {"tool": "delete_subagent", "summary": info["summary"], "lane": l,
+                         "diff": None, "ok": ok, "status": status, "child_id": target_id})
+                    yield _sse({"type": "tool_result", "model": l, "tool": "delete_subagent",
+                                "child_id": target_id, "ok": ok, "status": status,
+                                "output": (output or "")[:4000]})
+                    if ok:
+                        yield _sse({"type": "chats_changed"})
                     continue
                 allowed = conv.get("allowed_tools")
                 if allowed is not None and call["name"] not in allowed:
@@ -4942,7 +5155,7 @@ def _api_chat_impl():
         elif tools_on:
             out = yield from _agent_run(client, send, conv)
         else:
-            out = yield from _turn(client, send, conv)
+            out = yield from _turn_auto(client, send, conv)
         out = out or {"a": "", "b": ""}
         # conv carries this chat's own Arena session id; the shared client
         # Field is not used, so parallel chats cannot cross their sessions.

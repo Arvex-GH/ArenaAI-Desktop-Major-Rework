@@ -71,7 +71,7 @@ def main(path: str) -> int:
                    and b"createPairwiseFeedback" in engine))
 
     app = modules["arena.web.app"]
-    checks.append(("app: APP_VERSION 5.0.0", b"5.0.0" in app))
+    checks.append(("app: APP_VERSION 5.1.0", b"5.1.0" in app))
     checks.append(("app: native create direct with genuine-cx ladder",
                    b"genuine-cx+connectors" in app and b"_native_drive" not in app))
     checks.append(("app: turn-complete record detection + drain resume",
@@ -103,7 +103,7 @@ def main(path: str) -> int:
                    b"is_turn_complete_record" in native and b"trigger-control" in native))
 
     index = entries.get("arena/web/static/index.html", b"")
-    checks.append(("index.html: assets v=5.0.0", b"?v=5.0.0" in index))
+    checks.append(("index.html: assets v=5.1.0", b"?v=5.1.0" in index))
     checks.append(("index.html: Arena dropdown chips + resize handles, no segmented bars",
                    b'id="modeButton"' in index and b'id="modalityButton"' in index
                    and b'id="sidebarResize"' in index and b'id="workspaceResize"' in index
@@ -121,7 +121,7 @@ def main(path: str) -> int:
                    and b"cookie-policy" in index))
 
     app_js = entries.get("arena/web/static/app.js", b"")
-    checks.append(("app.js: demo app_version 5.0.0", b"app_version: '5.0.0'" in app_js))
+    checks.append(("app.js: demo app_version 5.1.0", b"app_version: '5.1.0'" in app_js))
     checks.append(("app.js: cloud chat open passes title",
                    b"openArenaChat(id, type, title)" in app_js))
     checks.append(("app.js: Arena dropdowns + vote + chat lock",
@@ -205,6 +205,15 @@ def main(path: str) -> int:
                    not any("\u0400" <= ch <= "\u04ff" for ch in static_text)
                    and b"Arena Personal" not in index + app_js + style))
 
+    agent_m = modules["arena.agent"]
+    checks.append(("v5.1: auto-continue + soft anti-loop + delete_subagent",
+                   b"_turn_auto" in app and b"auto_retry" in app
+                   and b"blocked: repeated call" in app and b"delete_subagent" in app
+                   and b"delete_subagent" in agent_m))
+    checks.append(("v5.1 UI: back-to-bottom + add account cookies + no rate-limit lock",
+                   b"scrollBottomBtn" in app_js and b"Add an account with cookies" in app_js
+                   and b"auto_continue" in app_js
+                   and b"Arena asked to wait before sending again" not in app_js))
     models_m = modules["arena.models"]
     checks.append(("catalog: signed-in fetch + force refresh (new models appear)",
                    b"_catalog_fetch_json" in app and b"model catalog fetch failed" in app

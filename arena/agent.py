@@ -106,6 +106,10 @@ def delegate_guide(models) -> str:
         "reasoning); omit <model> to auto-assign.",
         '<tool name="delegate_task"><task>Find everywhere the config file is parsed; report '
         'file:line for each place with a one-line note.</task><mode>research</mode></tool>',
+        "Each delegate result starts with [sub-agent chat: <id>]. Once you have used a "
+        "sub-agent's summary and no longer need its chat, delete it so the user's chat "
+        "list stays clean: <tool name=\"delete_subagent\"><child_id>the id</child_id></tool>. "
+        "You can only delete chats you delegated in this conversation.",
     ]
     if models:
         lines.append("Models you may name in <model> (use the id in brackets): "

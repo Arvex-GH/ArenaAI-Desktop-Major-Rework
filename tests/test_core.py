@@ -850,10 +850,15 @@ def test_chats_keep_their_own_history(web):
     assert [m["text"] for m in appmod._load_chat(a)["messages"]] == ["first", "one"]
 
 
-def test_failed_reply_is_saved_with_its_error(web):
+def test_failed_reply_is_saved_with_its_error(web, monkeypatch):
     appmod, c, _, use, sent = web
-    use(FakeResp(status=500, text="boom"))
+    monkeypatch.setattr(appmod, "_wait_for", lambda check, seconds: ())
+    # Auto-continue burns its 2 retries, then the error is saved as before.
+    use(FakeResp(status=500, text="boom"), FakeResp(status=500, text="boom"),
+        FakeResp(status=500, text="boom"))
     ev = events(c.post("/api/chat", json={"message": "x"}))
+    assert len([e for e in ev if e["type"] == "auto_retry"]) == 2
+    assert len(sent) == 3
     last = appmod._load_chat(ev[0]["chat_id"])["messages"][-1]
     assert last["role"] == "assistant" and last["text"] == "" and last.get("error")
 
@@ -2087,11 +2092,15 @@ def test_stream_ends_on_finish_record_without_waiting_for_close(web):
         thread.join(timeout=5)
 
 
-def test_agent_empty_final_round_leaves_explaining_text(web):
+def test_agent_empty_final_round_leaves_explaining_text(web, monkeypatch):
     appmod, c, cfg, use, _sent = web
     cfg["permission_mode"] = "bypassPermissions"
     appmod._ui_mode = "agent"
+    monkeypatch.setattr(appmod, "_wait_for", lambda check, seconds: ())
+    # The empty round is auto-retried twice, then the explaining text remains.
     use(FakeResp([_tool_line('<tool name="ls"><path>.</path></tool>')]),
+        FakeResp(['ad:{"finishReason":"stop"}']),
+        FakeResp(['ad:{"finishReason":"stop"}']),
         FakeResp(['ad:{"finishReason":"stop"}']))
     ev = events(c.post("/api/chat", json={"message": "look around"}))
     done = ev[-1]
@@ -2176,27 +2185,37 @@ def test_native_file_bridge_without_folder_only_notifies(web, monkeypatch):
     assert any("Choose a folder" in (e.get("text") or "") for e in ev)
 
 
-def test_tool_loop_stops_repeating_identical_calls(web):
-    appmod, c, cfg, use, _sent = web
+def test_tool_loop_warns_instead_of_stopping_on_repeats(web):
+    appmod, c, cfg, use, sent = web
     cfg["permission_mode"] = "bypassPermissions"
     appmod._ui_mode = "agent"
-    same = FakeResp([_tool_line('<tool name="ls"><path>.</path></tool>')])
-    use(same, FakeResp([_tool_line('<tool name="ls"><path>.</path></tool>')]),
-        FakeResp([_tool_line('<tool name="ls"><path>.</path></tool>')]),
-        FakeResp([_tool_line('<tool name="ls"><path>.</path></tool>')]))
+    ls = _tool_line('<tool name="ls"><path>.</path></tool>')
+    # 4 identical calls (the 4th is blocked, not run), then the model wraps up:
+    # the task must NOT end on the repeat (v5.1 soft anti-loop).
+    use(FakeResp([ls]), FakeResp([ls]), FakeResp([ls]), FakeResp([ls]),
+        FakeResp([_tool_line("Understood, wrapping up.")]))
     ev = events(c.post("/api/chat", json={"message": "keep listing"}))
     results = [e for e in ev if e["type"] == "tool_result"]
-    assert len(results) == 3
-    assert any("kept repeating" in (e.get("text") or "") for e in ev if e["type"] == "notice")
-    assert ev[-1]["type"] == "done"
+    assert len(results) == 4
+    assert results[-1]["status"] == "blocked: repeated call"
+    assert "was NOT run" in results[-1]["output"]
+    assert not any("kept repeating" in (e.get("text") or "") for e in ev if e["type"] == "notice")
+    # the warning was fed back to the model as the tool result
+    assert "was NOT run" in sent[-1][1]["userMessage"]["content"]
+    assert ev[-1]["type"] == "done" and "wrapping up" in ev[-1]["text_a"]
 
 
-def test_empty_reply_explains_context_limit(web):
+def test_empty_reply_explains_context_limit(web, monkeypatch):
     appmod, c, _cfg, use, _sent = web
     appmod._ui_mode, appmod._ui_modality = "direct", "text"
-    use(FakeResp(['ad:{"finishReason":"stop"}']))
+    monkeypatch.setattr(appmod, "_wait_for", lambda check, seconds: ())
+    # Empty replies are auto-retried twice (v5.1) before giving up.
+    use(FakeResp(['ad:{"finishReason":"stop"}']),
+        FakeResp(['ad:{"finishReason":"stop"}']),
+        FakeResp(['ad:{"finishReason":"stop"}']))
     ev = events(c.post("/api/chat", json={"message": "continue", "mode": "direct",
                                           "modality": "text", "model_id": "m1", "tools": False}))
+    assert len([e for e in ev if e["type"] == "auto_retry"]) == 2
     assert ev[-1]["type"] == "done" and ev[-1]["text_a"] == ""
     assert any("empty reply" in (e.get("text") or "") for e in ev if e["type"] == "notice")
 
@@ -2819,3 +2838,100 @@ def test_api_models_force_uses_authed_catalog_fetch(web, monkeypatch):
     assert res.status_code == 200
     assert seen["force"] is True
     assert seen["fetch_json"] is appmod._catalog_fetch_json
+
+
+def _no_backoff(appmod, monkeypatch):
+    monkeypatch.setattr(appmod, "_wait_for", lambda check, seconds: ())
+
+
+def test_auto_retry_recovers_after_server_error(web, monkeypatch):
+    appmod, c, _cfg, use, sent = web
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    _no_backoff(appmod, monkeypatch)
+    use(FakeResp(status=500, text="boom"),
+        FakeResp([_tool_line("Recovered answer")]))
+    ev = events(c.post("/api/chat", json={"message": "hi", "mode": "direct",
+                                          "modality": "text", "model_id": "m1", "tools": False}))
+    retries = [e for e in ev if e["type"] == "auto_retry"]
+    assert len(retries) == 1 and retries[0]["attempt"] == 1 and retries[0]["max"] == 2
+    assert not [e for e in ev if e["type"] == "error"]
+    assert ev[-1]["type"] == "done" and ev[-1]["text_a"] == "Recovered answer"
+    assert len(sent) == 2
+
+
+def test_auto_retry_continues_interrupted_prose(web, monkeypatch):
+    appmod, c, _cfg, use, sent = web
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    _no_backoff(appmod, monkeypatch)
+
+    class StallResp(FakeResp):
+        def iter_text(self):
+            yield _tool_line("Partial ans") + "\n"
+            raise appmod.requests.RequestException("Read timed out")
+
+    use(StallResp(), FakeResp([_tool_line("wer completed.")]))
+    ev = events(c.post("/api/chat", json={"message": "hi", "mode": "direct",
+                                          "modality": "text", "model_id": "m1", "tools": False}))
+    retries = [e for e in ev if e["type"] == "auto_retry"]
+    assert len(retries) == 1 and retries[0]["dropped"]["a"] == 0
+    assert ev[-1]["type"] == "done" and ev[-1]["text_a"] == "Partial answer completed."
+    assert "Continue exactly from where it stopped" in sent[1][1]["userMessage"]["content"]
+
+
+def test_auto_retry_skips_long_rate_limit(web, monkeypatch):
+    appmod, c, _cfg, use, sent = web
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    _no_backoff(appmod, monkeypatch)
+    use(FakeResp(status=429, text="rate limited"))
+    ev = events(c.post("/api/chat", json={"message": "hi", "mode": "direct",
+                                          "modality": "text", "model_id": "m1", "tools": False}))
+    assert not [e for e in ev if e["type"] == "auto_retry"]
+    errs = [e for e in ev if e["type"] == "error"]
+    assert errs and errs[0]["code"] == "rate_limit"
+    assert len(sent) == 1
+
+
+def test_delete_subagent_only_own_children(web, monkeypatch):
+    appmod, c, cfg, use, _sent = web
+    cfg["permission_mode"] = "bypassPermissions"
+    appmod._ui_mode = "agent"
+    _no_backoff(appmod, monkeypatch)
+    parent_id = generate_uuidv7()
+    child_id = generate_uuidv7()
+    stranger_id = generate_uuidv7()
+    appmod._save_chat(parent_id, title="Parent", mode="agent", modality="text",
+                      model_a="m1", model_b=None, tools_guide=True, agent_backend="local",
+                      messages=[{"role": "user", "text": "hi"},
+                                {"role": "assistant", "text": "hello", "text_b": ""}])
+    appmod._save_chat(child_id, title="Child", mode="direct", modality="text",
+                      model_a="m1", model_b=None, tools_guide=True, parent_id=parent_id,
+                      messages=[{"role": "user", "text": "task"},
+                                {"role": "assistant", "text": "summary", "text_b": ""}])
+    appmod._save_chat(stranger_id, title="Stranger", mode="direct", modality="text",
+                      model_a="m1", model_b=None, tools_guide=True,
+                      parent_id=generate_uuidv7(),
+                      messages=[{"role": "user", "text": "task"},
+                                {"role": "assistant", "text": "summary", "text_b": ""}])
+    use(FakeResp([_tool_line(f'<tool name="delete_subagent"><child_id>{child_id}</child_id></tool>')]),
+        FakeResp([_tool_line(f'<tool name="delete_subagent"><child_id>{stranger_id}</child_id></tool>')]),
+        FakeResp([_tool_line("Cleanup done.")]))
+    ev = events(c.post("/api/chat", json={"chat_id": parent_id, "message": "clean up"}))
+    results = [e for e in ev if e["type"] == "tool_result"]
+    assert len(results) == 2
+    assert results[0]["ok"] and results[0]["status"] == "ok"
+    assert not results[1]["ok"] and "not one of your sub-agents" in results[1]["output"]
+    assert not (appmod.CHATS_DIR / child_id).exists()
+    assert (appmod.CHATS_DIR / stranger_id).exists()
+    assert len([e for e in ev if e["type"] == "chats_changed"]) == 1
+    assert ev[-1]["type"] == "done"
+
+
+def test_cookie_import_syncs_current_account_first(web, monkeypatch):
+    appmod, c, *_ = web
+    synced = []
+    monkeypatch.setattr(appmod, "_sync_current_account_cookie", lambda ck: synced.append(ck))
+    monkeypatch.setattr(appmod, "_activate_cookie",
+                        lambda cookies, method: (appmod.jsonify({"ok": True}), True))
+    r = c.post("/api/login", json={"method": "manual", "cookie": "arena-auth-prod-v1.0=AAA"})
+    assert r.status_code == 200
+    assert synced  # the account being left kept its freshest cookie

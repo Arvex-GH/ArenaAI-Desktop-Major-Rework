@@ -2889,6 +2889,9 @@ body.is-resizing-y, body.is-resizing-y * { cursor: ns-resize !important; }
 .turn-actions { display: flex; gap: 8px; margin-top: 8px; }
 .turn-flash { outline: 2px solid var(--accent-strong); outline-offset: 4px; border-radius: 8px; transition: outline-color .4s; }
 .jump-pill { position: fixed; right: 26px; bottom: 128px; z-index: 40; display: flex; gap: 4px; padding: 4px; border-radius: 999px; background: #1d2221; border: 1px solid #3b4140; box-shadow: 0 6px 18px rgba(0,0,0,.35); }
+.scroll-bottom-btn { position: fixed; left: 50%; transform: translateX(-50%); bottom: 128px; z-index: 40; width: 34px; height: 30px; border-radius: 8px; border: 1px solid #3b4140; background: #1d2221; color: var(--text); font-size: 15px; line-height: 1; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,.35); }
+.scroll-bottom-btn:hover { background: #2e3333; }
+.scroll-bottom-btn[hidden] { display: none; }
 .jump-pill-btn { min-width: 30px; min-height: 26px; border-radius: 999px; border: 0; background: transparent; color: var(--text); font-size: 13px; cursor: pointer; }
 .jump-pill-btn:hover { background: #2e3333; }
 .model-pin { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; color: var(--text-soft); cursor: pointer; flex: none; }
