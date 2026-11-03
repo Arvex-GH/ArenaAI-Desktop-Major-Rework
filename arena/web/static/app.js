@@ -513,6 +513,11 @@
     importSettings(bundle) { return this.request('/api/settings/import', { method: 'POST', body: bundle }); },
     diagnostics() { return this.request('/api/diagnostics'); },
     getUsage() { return this.request('/api/usage'); },
+    getGateway() { return this.request('/api/gateway'); },
+    startGateway() { return this.request('/api/gateway/start', { method: 'POST', body: {} }); },
+    stopGateway() { return this.request('/api/gateway/stop', { method: 'POST', body: {} }); },
+    getComponents() { return this.request('/api/components'); },
+    installComponent(id) { return this.request('/api/components/install', { method: 'POST', body: { id } }); },
     getQuestions() { return this.request('/api/questions'); },
     answerQuestion(id, answer) { return this.request(`/api/questions/${encodeURIComponent(id)}`, { method: 'POST', body: { answer } }); },
     searchChats(q) { return this.request(`/api/search?q=${encodeURIComponent(q)}`); },
@@ -556,6 +561,19 @@
     openWorkspace(path) { return this.request('/api/workspace/open', { method: 'POST', body: { path } }); },
     getWorkspaceTree(path = '.') { return this.request(`/api/workspace/tree?path=${encodeURIComponent(path)}`); },
     getWorkspaceFile(path) { return this.request(`/api/workspace/file?path=${encodeURIComponent(path)}`); },
+    async downloadWorkspaceFile(path) {
+      let response;
+      try {
+        response = await fetch(`/api/workspace/download?path=${encodeURIComponent(path)}`, { credentials: 'same-origin', cache: 'no-store' });
+      } catch (error) {
+        throw new ApiError('The local application server is unavailable.', 0, error);
+      }
+      if (!response.ok) {
+        const payload = await parseResponsePayload(response);
+        throw new ApiError(extractError(payload, response.status), response.status, payload);
+      }
+      return response.blob();
+    },
     getConnectors() { return this.request('/api/connectors'); },
     reloadConnectors() { return this.request('/api/connectors/reload', { method: 'POST', body: {} }); },
     openConnectorConfig() { return this.request('/api/connectors/config/open', { method: 'POST', body: {} }); },
@@ -1002,7 +1020,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '5.1.5',
+        app_version: '5.5.0',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -1133,6 +1151,10 @@
       }
       return { ok: true, kind: 'evaluation', name: file?.name || 'file', contentType: mediaType, url: 'demo://file', size: file?.size || 0, demo: true };
     },
+    async downloadWorkspaceFile(path) {
+      await sleep(60);
+      return new Blob([`Demo content of ${path}`], { type: 'text/plain' });
+    },
     async vote(chatId, body) {
       await sleep(240);
       const messages = demoStore.messages[chatId] || [];
@@ -1204,6 +1226,48 @@
       return { today, current_account: 'demo',
         days: { [today]: { demo: { email: 'demo@local.invalid', sends: 42, by_modality: { text: 38, media: 4 }, models: { 'gpt-x-mini': 20, 'opus-max': 12 }, rate_limits: 1 } } },
         events: [{ ts: Math.floor(Date.now() / 1000) - 3600, account: 'demo@local.invalid', modality: 'text', model: 'opus-max', wait: 7200, message: "You've reached your Arena daily usage limit." }], demo: true };
+    },
+    async getGateway() {
+      await sleep(40);
+      const s = demoStore.gatewaySession || null;
+      return { enabled: Boolean(demoStore.settings?.gateway_enabled), auto: Boolean(demoStore.settings?.gateway_auto),
+        chosen: null,
+        available: [{ name: 'blender', enabled: true, transport: 'stdio' }, { name: 'roblox_studio', enabled: true, transport: 'stdio' }],
+        session: s || { state: 'off', url: null, servers: [], calls: [], error: null }, demo: true };
+    },
+    async startGateway() {
+      await sleep(300);
+      if (!demoStore.componentsInstalled?.cloudflared) {
+        const err = new Error('cloudflared is not installed');
+        err.details = { code: 'cloudflared_missing' };
+        throw err;
+      }
+      demoStore.gatewaySession = { state: 'on', url: 'https://demo-gateway.trycloudflare.com', pairing: 'demo-pairing-code',
+        servers: ['blender', 'roblox_studio'], started_at: Date.now() / 1000, expires_at: Date.now() / 1000 + 8 * 3600,
+        calls: [{ ts: Date.now() / 1000 - 30, server: 'blender', tool: 'get_scene_info', ok: true, ms: 142 }], error: null };
+      return { ok: true, session: demoStore.gatewaySession, demo: true };
+    },
+    async stopGateway() { await sleep(120); demoStore.gatewaySession = null; return { ok: true, demo: true }; },
+    async getComponents() {
+      await sleep(40);
+      const installed = demoStore.componentsInstalled || {};
+      const jobs = {};
+      if (demoStore.componentJob) jobs[demoStore.componentJob.id] = demoStore.componentJob;
+      return { components: [
+        { id: 'cloudflared', name: 'cloudflared (Cloudflare Tunnel)', purpose: 'Agent Gateway tunnel.', installed: Boolean(installed.cloudflared), version: installed.cloudflared ? '2026.10.7' : null, install_kind: 'download', size_mb: 53, source: 'github.com/cloudflare/cloudflared', note: 'Demo data.' },
+        { id: 'node', name: 'Node.js', purpose: 'npx-based local MCP servers.', installed: true, version: 'v22.0.0', install_kind: 'winget', source: 'winget', note: '' },
+        { id: 'python', name: 'Python', purpose: 'Python MCP servers.', installed: false, version: null, install_kind: 'link', source: 'python.org', note: '' },
+        { id: 'webview2', name: 'Microsoft Edge WebView2 Runtime', purpose: 'App window rendering.', installed: true, version: '141.0.0.0', install_kind: 'bootstrapper', source: 'Microsoft', note: '' }
+      ], jobs, demo: true };
+    },
+    installComponent(id) {
+      demoStore.componentJob = { id, state: 'downloading', progress: 20, error: null };
+      setTimeout(() => { if (demoStore.componentJob) demoStore.componentJob.progress = 65; }, 500);
+      setTimeout(() => {
+        demoStore.componentJob = { id, state: 'done', progress: 100, error: null };
+        demoStore.componentsInstalled = { ...(demoStore.componentsInstalled || {}), [id]: true };
+      }, 1100);
+      return Promise.resolve({ ok: true, demo: true });
     },
     async getQuestions() { await sleep(40); return []; },
     async answerQuestion() { await sleep(40); return { ok: true, demo: true }; },
@@ -1788,6 +1852,7 @@ You can start with a more structured option: one script, short captions, and a c
     if (!gen) state.stopping = false;
     updateComposerState();
     renderChats();
+    renderQueuedBar();
   }
   function stashActiveTurns() {
     if (state.activeChatId && Array.isArray(state.messages) && state.messages.length) {
@@ -1895,7 +1960,8 @@ You can start with a more structured option: one script, short captions, and a c
       generating_chat_ids: Array.isArray(data.generating_chat_ids) ? data.generating_chat_ids : null,
       accounts: Array.isArray(data.accounts) ? data.accounts : null,
       current_account_id: data.current_account_id ?? null,
-      challenge: data.challenge ?? null
+      challenge: data.challenge ?? null,
+      gateway: data.gateway ?? null
     };
   }
 
@@ -2474,6 +2540,9 @@ You can start with a more structured option: one script, short captions, and a c
       if (status.challenge) {
         state.challenge = typeof status.challenge === 'object' ? status.challenge : { message: textValue(status.challenge) };
       }
+      state.gateway = status.gateway || null;
+      syncGatewayChip();
+      maybeGatewaySetupPrompt();
       if (!status.authenticated) {
         state.modelAId = null;
         state.modelBId = null;
@@ -3032,6 +3101,227 @@ You can start with a more structured option: one script, short captions, and a c
     );
     els.challengeSlot.appendChild(card);
     els.challengeSlot.hidden = false;
+  }
+
+  let challengeModal = null;
+
+  function showChallengeModal() {
+    if (challengeModal) return;
+    const content = el('div', {},
+      el('p', { class: 'modal-note', text: 'Arena paused this message for a quick human check. The arena.ai window with the checkbox was brought to the front: tick the box there (solve the pictures if any) and your message is resent automatically. Nothing is sent until you finish.' }));
+    challengeModal = mountModal({
+      title: 'Human check needed',
+      subtitle: 'arena.ai verification',
+      size: 'small',
+      content,
+      actions: [
+        { label: 'Later', variant: 'quiet', onClick: () => {} },
+        {
+          label: 'Show the check window', variant: 'primary', icon: 'panel-right', autofocus: true,
+          onClick: () => { void showEngine(); }
+        }
+      ],
+      onClose: () => { challengeModal = null; }
+    });
+  }
+
+  function closeChallengeModal() {
+    if (!challengeModal) return;
+    const modal = challengeModal;
+    challengeModal = null;
+    modal.close();
+  }
+
+  // --- Composer QoL (v5.1.6): per-chat drafts, message queue, done sound ---
+  const DRAFTS_KEY = 'arena-drafts-v1';
+  const composerDrafts = (() => {
+    try { return new Map(Object.entries(JSON.parse(localStorage.getItem(DRAFTS_KEY) || '{}'))); }
+    catch { return new Map(); }
+  })();
+
+  function draftKey() { return state.activeChatId ? String(state.activeChatId) : '__home__'; }
+
+  function persistDrafts() {
+    try {
+      const entries = [...composerDrafts.entries()].filter(([, value]) => value).slice(-60);
+      localStorage.setItem(DRAFTS_KEY, JSON.stringify(Object.fromEntries(entries)));
+    } catch { /* storage unavailable */ }
+  }
+
+  function saveComposerDraft() {
+    if (!els.prompt) return;
+    const value = els.prompt.value;
+    if (value) composerDrafts.set(draftKey(), value);
+    else composerDrafts.delete(draftKey());
+    persistDrafts();
+  }
+
+  function restoreComposerDraft() {
+    if (!els.prompt) return;
+    els.prompt.value = composerDrafts.get(draftKey()) || '';
+    state.draft = els.prompt.value;
+    try { resizePrompt(); } catch { /* autosize unavailable */ }
+    updateComposerState();
+    renderQueuedBar();
+  }
+
+  const queuedMessages = new Map(); // chatId -> text to send when that chat turns idle
+
+  function renderQueuedBar() {
+    const shell = els.composerShell;
+    if (!shell) return;
+    const key = state.activeChatId ? String(state.activeChatId) : null;
+    const queued = key ? queuedMessages.get(key) : null;
+    let bar = document.getElementById('queuedBar');
+    if (!queued) { bar?.remove(); return; }
+    if (!bar) {
+      bar = el('div', { class: 'queued-bar', id: 'queuedBar' });
+      (els.composerCard || shell).before(bar);
+    }
+    const stamp = `${key}:${queued.length}:${queued.slice(0, 24)}`;
+    if (bar.dataset.stamp === stamp) return;
+    bar.dataset.stamp = stamp;
+    clear(bar);
+    bar.append(
+      iconEl('clock'),
+      el('span', {
+        class: 'queued-bar-text',
+        text: `Queued: ${truncate(queued, 80)}`,
+        title: 'This message sends itself when the current answer finishes.'
+      }),
+      el('button', {
+        class: 'button button-small button-quiet', type: 'button', title: 'Remove the queued message',
+        onclick: () => { queuedMessages.delete(key); renderQueuedBar(); focusComposer(); }
+      }, iconEl('x'), el('span', { text: 'Cancel' })));
+  }
+
+  function flushQueuedMessage(chatId) {
+    const key = chatId ? String(chatId) : null;
+    if (!key || String(state.activeChatId) !== key) return;
+    const text = queuedMessages.get(key);
+    if (!text || chatIsGenerating(key) || state.starting || state.historyLoading) return;
+    queuedMessages.delete(key);
+    renderQueuedBar();
+    if (els.prompt) els.prompt.value = text;
+    void sendMessage();
+  }
+
+  let doneAudio = null;
+
+  function primeDoneAudio() {
+    if (doneAudio) { if (doneAudio.state === 'suspended') void doneAudio.resume(); return; }
+    try { doneAudio = new (window.AudioContext || window.webkitAudioContext)(); } catch { doneAudio = null; }
+  }
+
+  function maybePlayDoneSound(generation, { wasStopped = false } = {}) {
+    if (!generation?.done || wasStopped || generation.hadError) return;
+    if (state.appSettings?.notify_sound === false) return;
+    if (document.hasFocus() && !document.hidden) return; // only when the user is away
+    if (!doneAudio) return;
+    try {
+      const ctx = doneAudio;
+      if (ctx.state === 'suspended') void ctx.resume();
+      const t = ctx.currentTime;
+      [[880, 0], [1174.66, 0.12]].forEach(([freq, offset]) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, t + offset);
+        gain.gain.exponentialRampToValueAtTime(0.08, t + offset + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + offset + 0.22);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t + offset);
+        osc.stop(t + offset + 0.25);
+      });
+    } catch { /* audio unavailable */ }
+  }
+
+  // --- Find in chat (Ctrl+F): WebView2 has no built-in page find ---
+  let findHits = [];
+  let findIndex = -1;
+
+  function clearFindHighlights() {
+    document.querySelectorAll('#messageList mark.find-hit').forEach((mark) => {
+      mark.replaceWith(document.createTextNode(mark.textContent));
+    });
+    els.messageList?.normalize();
+    findHits = [];
+    findIndex = -1;
+  }
+
+  function runFind(query) {
+    clearFindHighlights();
+    const counter = document.querySelector('#findBar .find-counter');
+    const needle = String(query || '').trim().toLocaleLowerCase('en');
+    if (!needle || !els.messageList) { if (counter) counter.textContent = ''; return; }
+    const walker = document.createTreeWalker(els.messageList, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.nodeValue || !node.nodeValue.toLocaleLowerCase('en').includes(needle)) return NodeFilter.FILTER_REJECT;
+        const parent = node.parentElement;
+        if (!parent || parent.closest('script,style,mark,button')) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    const targets = [];
+    while (walker.nextNode()) targets.push(walker.currentNode);
+    for (const node of targets) {
+      const text = node.nodeValue;
+      const lower = text.toLocaleLowerCase('en');
+      const frag = document.createDocumentFragment();
+      let at = 0;
+      let hit = lower.indexOf(needle, at);
+      while (hit !== -1) {
+        if (hit > at) frag.appendChild(document.createTextNode(text.slice(at, hit)));
+        const mark = document.createElement('mark');
+        mark.className = 'find-hit';
+        mark.textContent = text.slice(hit, hit + needle.length);
+        frag.appendChild(mark);
+        findHits.push(mark);
+        at = hit + needle.length;
+        hit = lower.indexOf(needle, at);
+      }
+      if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)));
+      node.replaceWith(frag);
+    }
+    if (counter) counter.textContent = findHits.length ? `${findHits.length} found` : 'No matches';
+    if (findHits.length) stepFind(1, true);
+  }
+
+  function stepFind(direction, fresh = false) {
+    findHits = findHits.filter((mark) => mark.isConnected);
+    if (!findHits.length) return;
+    findIndex = fresh ? 0 : (findIndex + direction + findHits.length) % findHits.length;
+    findHits.forEach((mark, i) => mark.classList.toggle('find-hit-current', i === findIndex));
+    findHits[findIndex].scrollIntoView({ block: 'center', behavior: 'smooth' });
+    const counter = document.querySelector('#findBar .find-counter');
+    if (counter) counter.textContent = `${findIndex + 1}/${findHits.length}`;
+  }
+
+  function closeFindBar() {
+    clearFindHighlights();
+    document.getElementById('findBar')?.remove();
+    focusComposer();
+  }
+
+  function toggleFindBar() {
+    let bar = document.getElementById('findBar');
+    if (bar) { closeFindBar(); return; }
+    const input = el('input', { type: 'search', class: 'find-input', placeholder: 'Find in this chat', 'aria-label': 'Find in this chat' });
+    input.addEventListener('input', () => runFind(input.value));
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); stepFind(event.shiftKey ? -1 : 1); }
+      if (event.key === 'Escape') { event.preventDefault(); closeFindBar(); }
+    });
+    bar = el('div', { class: 'find-bar', id: 'findBar' },
+      iconEl('search'), input,
+      el('span', { class: 'find-counter', text: '' }),
+      el('button', { class: 'icon-button tiny', type: 'button', 'aria-label': 'Previous match', style: { transform: 'rotate(180deg)' }, onclick: () => stepFind(-1) }, iconEl('chevron-down')),
+      el('button', { class: 'icon-button tiny', type: 'button', 'aria-label': 'Next match', onclick: () => stepFind(1) }, iconEl('chevron-down')),
+      el('button', { class: 'icon-button tiny', type: 'button', 'aria-label': 'Close find', onclick: () => closeFindBar() }, iconEl('x')));
+    document.body.appendChild(bar);
+    input.focus();
   }
 
   function userAttachmentsNode(message) {
@@ -4030,6 +4320,49 @@ You can start with a more structured option: one script, short captions, and a c
 
   const CONTEXT_WARN_CHARS = 80000;
 
+  function syncGatewayChip() {
+    const chip = els.gatewayChip;
+    if (!chip) return;
+    const active = Boolean(state.gateway?.active);
+    chip.hidden = !active;
+    if (active) chip.title = `Agent Gateway is ON — ${state.gateway?.servers || 0} local MCP server(s) reachable by the Arena Agent. Click to manage.`;
+  }
+
+  let gatewaySetupPrompted = false;
+
+  function maybeGatewaySetupPrompt() {
+    if (gatewaySetupPrompted || state.demo) return;
+    if (state.gateway?.state !== 'needs_cloudflared') return;
+    if (!state.appSettings?.gateway_enabled) return;
+    gatewaySetupPrompted = true;
+    showCloudflaredInstallModal(() => {
+      toast('cloudflared installed — the gateway starts with your next new Agent chat.', 'success', 'Agent Gateway');
+    });
+  }
+
+  let gatewayWarmAttempted = false;
+
+  function maybeWarmGateway() {
+    const cfg = state.appSettings || {};
+    const wanted = state.mode === 'agent' && state.directTools
+      && cfg.gateway_enabled === true && cfg.gateway_auto === true && !state.demo;
+    if (!wanted) { gatewayWarmAttempted = false; return; }
+    if (gatewayWarmAttempted || state.gateway?.active) return;
+    gatewayWarmAttempted = true;
+    void API.startGateway().catch(() => undefined); // problems surface via status/JIT
+  }
+
+  function estimateHistoryChars() {
+    let total = 0;
+    for (const turn of state.messages || []) {
+      if (!turn) continue;
+      const user = turn.user;
+      total += String(typeof user === 'string' ? user : (user?.text ?? user?.content ?? '')).length;
+      for (const lane of Object.values(turn.lanes || {})) total += String(lane?.text || '').length;
+    }
+    return total;
+  }
+
   function syncCompactChip() {
     const button = els.compactButton;
     if (!button) return;
@@ -4039,6 +4372,11 @@ You can start with a more structured option: one script, short captions, and a c
     button.hidden = !show;
     if (!show) return;
     const warn = (state.historyChars || 0) >= CONTEXT_WARN_CHARS;
+    // Context meter: the chip doubles as a live size estimate (the server
+    // value after load, refined by what is actually on screen since).
+    const chars = Math.max(state.historyChars || 0, estimateHistoryChars());
+    const sizeLabel = button.querySelector('.chip-label');
+    if (sizeLabel) sizeLabel.textContent = chars >= 1000 ? `Compact · ~${Math.round(chars / 1000)}k` : 'Compact';
     button.classList.toggle('is-warn', warn);
     button.disabled = state.generating;
     if (els.compactDot) els.compactDot.hidden = !warn;
@@ -4218,6 +4556,7 @@ You can start with a more structured option: one script, short captions, and a c
       els.workspaceButton.title = state.workspace || "Working folder not selected";
     }
     renderComposerContext();
+    maybeWarmGateway();
     renderModelStrip();
     renderModeBars();
     renderModelsNavCount();
@@ -4248,9 +4587,12 @@ You can start with a more structured option: one script, short captions, and a c
 
     const send = els.sendButton;
     if (send) {
-      send.disabled = Boolean(disabledReason) || state.starting;
-      send.title = disabledReason || "Send message";
-      send.hidden = busy;
+      // While this chat is generating, typed text can be queued instead:
+      // Send becomes the queue button next to Stop.
+      const canQueue = busy && Boolean(text) && !state.stopping && !state.starting;
+      send.disabled = canQueue ? false : (Boolean(disabledReason) || state.starting);
+      send.title = canQueue ? "Queue: send when the current answer finishes" : (disabledReason || "Send message");
+      send.hidden = busy && !canQueue;
       send.classList.toggle('is-stopping', state.stopping);
     }
     if (els.stopButton) {
@@ -4646,9 +4988,11 @@ You can start with a more structured option: one script, short captions, and a c
     closePopover(false);
     closeMobileSidebar();
     if (String(state.activeChatId) !== String(chatId)) stashActiveTurns();
+    saveComposerDraft();
     markChatSeen(chatId);
     const known = state.chats.find((chat) => chat.id === String(chatId));
     state.activeChatId = String(chatId);
+    restoreComposerDraft();
     syncGenerationState();
     const historyToken = (state.historyRequest || 0) + 1;
     state.historyRequest = historyToken;
@@ -4710,6 +5054,7 @@ You can start with a more structured option: one script, short captions, and a c
       }
       state.historyError = null;
       state.historyLoading = false;
+      flushQueuedMessage(chatId);
       state.activeChatTitle = state.activeChatTitle || "Conversation";
       renderChats();
       updateTopbarTitle();
@@ -4743,7 +5088,9 @@ You can start with a more structured option: one script, short captions, and a c
       const chatId = raw?.chat_id ?? raw?.id ?? raw?.chat?.id;
       if (!chatId) throw new ApiError("The server did not return the new chat ID.");
       stashActiveTurns();
+      saveComposerDraft();
       state.activeChatId = String(chatId);
+      restoreComposerDraft();
       state.activeChatTitle = String(raw?.title ?? raw?.chat?.title ?? "New chat");
       state.messages = [];
       state.artifacts = [];
@@ -4991,6 +5338,23 @@ You can start with a more structured option: one script, short captions, and a c
   /* ---------------------------------------------------------------------- */
   /* Model selection                                                       */
   /* ---------------------------------------------------------------------- */
+  const RECENT_MODELS_KEY = 'arena-recent-models-v1';
+
+  function recentModelIds() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(RECENT_MODELS_KEY) || '[]');
+      return Array.isArray(raw) ? raw.map(String) : [];
+    } catch { return []; }
+  }
+
+  function noteRecentModel(id) {
+    if (id == null) return;
+    try {
+      const ids = [String(id), ...recentModelIds().filter((x) => x !== String(id))].slice(0, 6);
+      localStorage.setItem(RECENT_MODELS_KEY, JSON.stringify(ids));
+    } catch { /* storage unavailable */ }
+  }
+
   function selectModel(lane, modelId) {
     if (!allowsManualModels()) return false;
     if (chatLocked()) { lockedNotice("Models"); return false; }
@@ -5009,6 +5373,7 @@ You can start with a more structured option: one script, short captions, and a c
       const candidate = state.models.find((item) => String(item.id) !== String(modelId));
       state.modelBId = candidate?.id || null;
     }
+    noteRecentModel(modelId);
     updateComposerState();
     renderChatHead();
     announce(`Model ${lane.toUpperCase()}: ${model.name}`);
@@ -5392,6 +5757,7 @@ You can start with a more structured option: one script, short captions, and a c
     if (type === 'challenge') {
       state.challenge = { message: textValue(event.message ?? event.text ?? event.detail ?? "Manual verification required."), raw: event };
       renderChallenge();
+      showChallengeModal();
       if (state.view === 'chat') renderMessages();
       announce("The server reports a challenge. Open a separate window and verify login manually.");
       toast("The server requires manual login verification. Automatic bypass is not performed.", 'warning', 'Challenge');
@@ -5401,6 +5767,7 @@ You can start with a more structured option: one script, short captions, and a c
       const wasChallenge = state.challenge;
       state.challenge = null;
       renderChallenge();
+      closeChallengeModal();
       if (wasChallenge) lane.notices.push("Login verification marked by the server as completed.");
       scheduleChatRender();
       return;
@@ -5594,6 +5961,8 @@ You can start with a more structured option: one script, short captions, and a c
       toast(`“${truncate(finishedChat?.title || 'Chat', 40)}” is done.`, 'success', 'Generation finished');
     }
     syncGenerationState();
+    maybePlayDoneSound(generation, { wasStopped });
+    if (!wasStopped && !generation.hadError && generation.done) flushQueuedMessage(genChatId);
     if (isOpenChat && state.view === 'chat') renderMessages();
     announce(generation.hadError ? "Generation completed with an error." : wasStopped ? "Generation stopped." : "Generation completed.");
     window.setTimeout(() => {
@@ -5740,6 +6109,16 @@ You can start with a more structured option: one script, short captions, and a c
       toast('Attached files were removed: they do not fit the new mode or work type.', 'info', 'Attachments removed');
     }
   }
+  async function attachWorkspaceFile(path) {
+    try {
+      const blob = await API.downloadWorkspaceFile(path);
+      const name = String(path || 'file').split(/[\\/]/).pop() || 'file';
+      addFiles([new File([blob], name, { type: blob.type || '' })]);
+    } catch (error) {
+      toast(errorMessage(error), 'error', 'Could not attach the workspace file');
+    }
+  }
+
   function addFiles(fileList) {
     const files = Array.from(fileList || []).filter((file) => file && typeof file.size === 'number');
     if (!files.length) return;
@@ -5815,7 +6194,16 @@ You can start with a more structured option: one script, short captions, and a c
   async function sendMessage() {
     if (state.starting) return;
     if (chatIsGenerating(state.activeChatId)) {
-      toast("This chat is still working on the previous message. You can use other chats meanwhile.", 'warning', "Generation is already in progress");
+      const queuedText = els.prompt?.value.trim() || '';
+      if (queuedText && state.activeChatId) {
+        queuedMessages.set(String(state.activeChatId), queuedText);
+        if (els.prompt) { els.prompt.value = ''; saveComposerDraft(); }
+        updateComposerState();
+        renderQueuedBar();
+        toast("Queued — it sends itself when this chat finishes the current answer.", 'info', "Message queued");
+      } else {
+        toast("This chat is still working on the previous message. You can use other chats meanwhile.", 'warning', "Generation is already in progress");
+      }
       return;
     }
     const text = els.prompt?.value.trim() || '';
@@ -5945,6 +6333,7 @@ You can start with a more structured option: one script, short captions, and a c
       state.artifacts = state.artifacts.filter((artifact) => artifact.chatId !== null || artifact.chatId === chatId);
       if (els.prompt) els.prompt.value = '';
       state.draft = '';
+      saveComposerDraft();
       // The turn keeps its own preview URLs; the composer starts clean.
       state.attachments = [];
       renderAttachmentStrip();
@@ -6366,7 +6755,17 @@ You can start with a more structured option: one script, short captions, and a c
         return;
       }
       const selectedId = effectiveLane === 'b' ? state.modelBId : state.modelAId;
-      filtered.forEach((model) => {
+      const recentModels = (query ? [] : recentModelIds())
+        .map((id) => filtered.find((model) => String(model.id) === id))
+        .filter(Boolean)
+        .slice(0, 4);
+      const recentSet = new Set(recentModels.map((model) => String(model.id)));
+      const sequence = recentModels.length
+        ? [...recentModels, ...filtered.filter((model) => !recentSet.has(String(model.id)))]
+        : filtered;
+      sequence.forEach((model, index) => {
+        if (recentModels.length && index === 0) list.appendChild(el('div', { class: 'popover-group-label', text: 'Recent' }));
+        if (recentModels.length && index === recentModels.length) list.appendChild(el('div', { class: 'popover-group-label', text: 'All models' }));
         const conflicts = effectiveLane === 'b' && String(state.modelAId) === String(model.id);
         const capsText = (model.capabilities || []).join(' ').toLowerCase();
         const elo = eloForModel(model);
@@ -7221,6 +7620,8 @@ You can start with a more structured option: one script, short captions, and a c
       { id: 'memory', label: 'Memory', icon: 'layers' },
       { id: 'automations', label: 'Automations', icon: 'clock' },
       { id: 'usage', label: 'Usage', icon: 'chart' },
+      { id: 'gateway', label: 'Gateway', icon: 'globe' },
+      { id: 'components', label: 'Components', icon: 'package' },
       { id: 'about', label: 'About', icon: 'info' }
     ];
     let currentTab = tabDefs.some((tab) => tab.id === initialTab) ? initialTab : 'connection';
@@ -7582,7 +7983,254 @@ You can start with a more structured option: one script, short captions, and a c
       return wrap;
     }
 
-    function renderUsagePanel() {
+    function installCardShell(title) {
+    document.getElementById('installCard')?.remove();
+    const body = el('div', { class: 'install-card-body' });
+    const card = el('div', { class: 'install-card', id: 'installCard', role: 'status' },
+      el('div', { class: 'install-card-head' },
+        el('strong', { text: title }),
+        el('button', {
+          class: 'icon-button tiny', type: 'button', 'aria-label': 'Close',
+          onclick: () => card.remove()
+        }, iconEl('x'))),
+      body);
+    document.body.appendChild(card);
+    return { card, body };
+  }
+
+  function runComponentInstall(id, name, onDone) {
+    const { card, body } = installCardShell(`Installing ${name}`);
+    const fillBar = el('div', { class: 'install-progress-fill' });
+    const note = el('p', { class: 'modal-note', text: 'Starting…' });
+    body.append(note, el('div', { class: 'install-progress' }, fillBar));
+    let timer = null;
+    const finish = (ok, message) => {
+      if (timer) clearInterval(timer);
+      note.textContent = message;
+      if (ok) {
+        fillBar.style.width = '100%';
+        try { onDone?.(); } catch { /* noop */ }
+        setTimeout(() => card.remove(), 1400);
+      }
+    };
+    void (async () => {
+      try {
+        const result = await API.installComponent(id);
+        if (result?.open_url) {
+          window.open(result.open_url, '_blank', 'noopener');
+          finish(false, 'The official download page opened in your browser. Install it there — Settings → Components detects it afterwards.');
+          return;
+        }
+        timer = setInterval(() => {
+          if (!card.isConnected) { clearInterval(timer); return; }
+          void (async () => {
+            try {
+              const data = await API.getComponents();
+              const job = data?.jobs?.[id] || {};
+              if (typeof job.progress === 'number') fillBar.style.width = `${job.progress}%`;
+              if (job.state === 'done') finish(true, `${name} is installed.`);
+              else if (job.state === 'installer_started') finish(false, job.hint || 'Complete the installer window — Components detects it afterwards.');
+              else if (job.state === 'error') finish(false, job.error || 'Installation failed.');
+              else note.textContent = `Downloading… ${Math.round(job.progress || 0)}%`;
+            } catch { /* keep polling */ }
+          })();
+        }, 700);
+      } catch (error) {
+        finish(false, errorMessage(error));
+      }
+    })();
+  }
+
+  function showCloudflaredInstallModal(onDone) {
+    const { card, body } = installCardShell('Component needed: cloudflared');
+    body.append(
+      el('p', { class: 'modal-note', text: 'The Agent Gateway reaches this computer through a temporary Cloudflare tunnel. That needs cloudflared — a single official Cloudflare file (about 53 MB), downloaded once into the app\u2019s data folder and verified by checksum. No administrator rights, nothing else is installed.' }),
+      el('div', { class: 'install-card-actions' },
+        el('button', { class: 'button button-small button-quiet', type: 'button', onclick: () => card.remove() },
+          el('span', { text: 'Not now' })),
+        el('button', {
+          class: 'button button-small', type: 'button',
+          onclick: () => runComponentInstall('cloudflared', 'cloudflared', onDone)
+        }, iconEl('download'), el('span', { text: 'Install cloudflared' }))));
+  }
+
+  function renderComponentsPanel() {
+    const wrap = el('div', { class: 'memory-panel' });
+    const listHost = el('div', {}, el('p', { class: 'modal-note', text: 'Checking components…' }));
+    const fill = async () => {
+      let data = null;
+      try { data = await API.getComponents(); } catch (_err) { /* below */ }
+      if (!wrap.isConnected) return;
+      clear(listHost);
+      if (!data?.components) {
+        listHost.appendChild(el('p', { class: 'modal-note', text: 'Component status is unavailable right now.' }));
+        return;
+      }
+      data.components.forEach((comp) => {
+        const job = data.jobs?.[comp.id] || {};
+        const installing = job.state === 'downloading';
+        const status = el('span', {
+          class: `component-pill${comp.installed ? ' is-on' : ''}`,
+          text: comp.installed ? `Installed${comp.version ? ` · ${comp.version}` : ''}` : 'Not installed'
+        });
+        const action = comp.installed ? null : el('button', {
+          class: 'button button-small', type: 'button', disabled: installing,
+          onclick: () => runComponentInstall(comp.id, comp.name, () => { void fill(); })
+        }, iconEl('download'), el('span', { text: installing ? 'Installing…' : 'Install' }));
+        const details = [comp.purpose, comp.source ? `Source: ${comp.source}.` : '', comp.note || '']
+          .filter(Boolean).join(' ');
+        listHost.appendChild(el('div', { class: 'component-row' },
+          el('div', { class: 'component-main' },
+            el('div', { class: 'component-head' },
+              el('span', { class: 'component-name', text: comp.name }), status),
+            el('p', { class: 'modal-note', text: details })),
+          action));
+      });
+    };
+    wrap.append(
+      el('h3', { class: 'modal-section-title', text: 'Components' }),
+      el('p', { class: 'modal-note', text: 'Arena Desktop itself is a single file and needs none of these for regular chats. Optional components unlock specific features and are only ever installed when you ask; downloads come from the official sources shown.' }),
+      el('div', { class: 'modal-field-row' },
+        el('span', { class: 'modal-field-label', text: 'Status' }),
+        el('button', { class: 'btn ghost small', type: 'button', onclick: () => { void fill(); } },
+          el('span', { text: 'Check again' }))),
+      listHost);
+    requestAnimationFrame(() => { void fill(); });
+    return wrap;
+  }
+
+  function renderGatewayPanel() {
+    const wrap = el('div', { class: 'memory-panel' });
+    wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Agent Gateway' }));
+    wrap.appendChild(el('p', { class: 'modal-note', text: 'Lets the genuine Arena Agent use selected local MCP servers on this computer (Blender, Roblox Studio, files…). For a session, a temporary Cloudflare tunnel exposes a pairing-protected job endpoint; the agent receives the address automatically in new Agent chats. Tool calls follow your Permissions mode — the app asks before anything that can change things, unless you use Bypass. Off by default: a tunnel makes this PC reachable from the internet for anyone holding the pairing code, so keep the code secret and stop the session when done.' }));
+    const host = el('div', {}, el('p', { class: 'modal-note', text: 'Loading gateway status…' }));
+    wrap.appendChild(host);
+    let poll = null;
+    const stopPoll = () => { if (poll) { clearInterval(poll); poll = null; } };
+
+    const toggleRow = (label, checked, aria, onChange, disabled = false) => {
+      const input = el('input', { type: 'checkbox', class: 'switch-input', checked: Boolean(checked), disabled: Boolean(disabled), 'aria-label': aria });
+      input.addEventListener('change', () => { void onChange(input); });
+      return el('label', { class: 'setting-toggle-row' },
+        el('span', { text: label }),
+        el('span', { class: 'switch' }, input, el('span', { class: 'switch-track', 'aria-hidden': 'true' })));
+    };
+
+    const fill = async () => {
+      let data = null;
+      try { data = await API.getGateway(); } catch (_err) { /* below */ }
+      if (!wrap.isConnected) { stopPoll(); return; }
+      clear(host);
+      if (!data) {
+        host.appendChild(el('p', { class: 'modal-note', text: 'Gateway status is unavailable right now.' }));
+        return;
+      }
+      const session = data.session || {};
+      const cfg = state.appSettings || {};
+      host.appendChild(toggleRow('Enable Agent Gateway', data.enabled, 'Enable Agent Gateway', async (input) => {
+        await API.saveSettings({ gateway_enabled: input.checked });
+        state.appSettings = { ...cfg, gateway_enabled: input.checked };
+        if (input.checked) {
+          try {
+            const comps = await API.getComponents();
+            const cf = (comps?.components || []).find((c) => c.id === 'cloudflared');
+            if (cf && !cf.installed) showCloudflaredInstallModal(() => { void fill(); });
+          } catch { /* install offer is best-effort */ }
+        } else if (session.state === 'on') {
+          await API.stopGateway().catch(() => undefined);
+        }
+        void fill();
+      }));
+      host.appendChild(toggleRow('Start automatically with Workspace Sync (Agent chats)', data.auto, 'Auto-start gateway', async (input) => {
+        await API.saveSettings({ gateway_auto: input.checked });
+        state.appSettings = { ...(state.appSettings || {}), gateway_auto: input.checked };
+        if (input.checked) toast('New Agent chats will start the gateway and hand the address to the agent automatically while Workspace Sync is on.', 'info', 'Agent Gateway');
+        void fill();
+      }, !data.enabled));
+
+      host.appendChild(el('h4', { class: 'modal-mini-title', text: 'MCP servers to expose' }));
+      const available = (data.available || []).filter((s) => (s.transport || 'stdio') === 'stdio');
+      if (!available.length) {
+        host.appendChild(el('p', { class: 'modal-note', text: 'No local MCP servers configured yet. Add one in the Connectors panel (Local MCP), then come back here.' }));
+      } else {
+        const chosenSet = new Set(Array.isArray(data.chosen) ? data.chosen : available.filter((s) => s.enabled).map((s) => s.name));
+        const list = el('div', { class: 'gateway-servers' });
+        available.forEach((server) => {
+          const box = el('input', { type: 'checkbox', checked: chosenSet.has(server.name), disabled: !server.enabled || !data.enabled });
+          box.addEventListener('change', async () => {
+            const picks = [...list.querySelectorAll('input[type="checkbox"]')]
+              .filter((i) => i.checked).map((i) => i.dataset.server);
+            await API.saveSettings({ gateway_servers: picks });
+            state.appSettings = { ...(state.appSettings || {}), gateway_servers: picks };
+            if (session.state === 'on') toast('Server selection applies to the next gateway session.', 'info', 'Agent Gateway');
+          });
+          box.dataset.server = server.name;
+          list.appendChild(el('label', { class: 'gateway-server-row' }, box,
+            el('span', { text: server.name }),
+            server.enabled ? null : el('span', { class: 'muted', text: ' (disabled in Connectors)' })));
+        });
+        host.appendChild(list);
+      }
+
+      host.appendChild(el('h4', { class: 'modal-mini-title', text: 'Session' }));
+      if (session.state === 'on') {
+        const expires = session.expires_at ? new Date(session.expires_at * 1000).toLocaleTimeString() : '';
+        const copyRow = (label, value) => el('div', { class: 'modal-field-row' },
+          el('span', { class: 'modal-field-label', text: label }),
+          el('span', { class: 'muted gateway-mono', text: value || '', title: value || '' }),
+          el('button', {
+            class: 'button button-small button-quiet', type: 'button',
+            onclick: async () => { await copyText(value || ''); toast(`${label} copied.`, 'success'); }
+          }, iconEl('copy'), el('span', { text: 'Copy' })));
+        host.append(
+          el('p', { class: 'modal-note', text: `Running${expires ? ` · ends by ${expires}` : ''} · ${(session.servers || []).length} server(s) exposed. New Agent chats receive these automatically${data.auto ? '' : ' when auto-start is on'}; you can also paste them into an arena.ai Agent chat manually.` }),
+          copyRow('Gateway URL', session.url),
+          copyRow('Pairing code', session.pairing));
+        const recent = (session.calls || []).slice(0, 8);
+        if (recent.length) {
+          host.appendChild(el('h4', { class: 'modal-mini-title', text: 'Recent calls' }));
+          recent.forEach((call) => {
+            host.appendChild(el('div', { class: 'modal-field-row' },
+              el('span', { class: 'modal-field-label', text: call.ts ? new Date(call.ts * 1000).toLocaleTimeString() : '' }),
+              el('span', { class: 'muted', text: `${call.server}:${call.tool} · ${call.ok ? 'ok' : 'failed'} · ${call.ms} ms` })));
+          });
+        }
+        host.appendChild(el('button', {
+          class: 'button button-danger', type: 'button',
+          onclick: async () => { await API.stopGateway().catch(() => undefined); toast('Gateway session stopped and pairing revoked.', 'info', 'Agent Gateway'); void fill(); }
+        }, iconEl('x'), el('span', { text: 'Stop & revoke' })));
+      } else {
+        if (session.error) host.appendChild(el('p', { class: 'modal-note', text: `Last session: ${session.error}` }));
+        const startBtn = el('button', {
+          class: 'button', type: 'button', disabled: !data.enabled,
+          onclick: async () => {
+            startBtn.disabled = true;
+            startBtn.querySelector('span:last-child').textContent = 'Starting tunnel…';
+            try {
+              await API.startGateway();
+              toast('Gateway session is live. Open a new Agent chat.', 'success', 'Agent Gateway');
+            } catch (error) {
+              if (error?.details?.code === 'cloudflared_missing') {
+                showCloudflaredInstallModal(() => { void fill(); });
+              } else {
+                toast(errorMessage(error), 'error', 'Agent Gateway');
+              }
+            }
+            void fill();
+          }
+        }, iconEl('globe'), el('span', { text: 'Start session now' }));
+        host.append(startBtn,
+          el('p', { class: 'modal-note', text: data.enabled
+            ? 'A session lasts until you stop it, the app closes, 45 idle minutes pass, or 8 hours elapse.'
+            : 'Enable the gateway above first.' }));
+      }
+    };
+    requestAnimationFrame(() => { void fill(); });
+    poll = setInterval(() => { if (!wrap.isConnected) { stopPoll(); return; } void fill(); }, 5000);
+    return wrap;
+  }
+
+  function renderUsagePanel() {
     const wrap = el('div', 'memory-panel');
     const humanWait = (w) => {
       const s = Number(w) || 0;
@@ -7721,6 +8369,14 @@ You can start with a more structured option: one script, short captions, and a c
       wrap.appendChild(el('label', { class: 'setting-toggle-row' },
         el('span', { text: 'Auto-continue on error (up to 2 attempts)' }),
         el('span', { class: 'switch' }, acToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
+      const soundToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: cfg.notify_sound !== false, 'aria-label': 'Sound when a chat finishes in the background' });
+      soundToggle.addEventListener('change', async () => {
+        await API.saveSettings({ notify_sound: soundToggle.checked });
+        state.appSettings = { ...(state.appSettings || {}), notify_sound: soundToggle.checked };
+      });
+      wrap.appendChild(el('label', { class: 'setting-toggle-row' },
+        el('span', { text: 'Sound when a chat finishes while the window is in the background' }),
+        el('span', { class: 'switch' }, soundToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
       const pacingToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: cfg.pacing !== false, 'aria-label': 'Pace requests to avoid Arena rate limits' });
       const pacingPreset = el('select', { class: 'input', 'aria-label': 'Pacing strength' },
         el('option', { value: 'gentle', text: 'Gentle' }),
@@ -7796,6 +8452,8 @@ You can start with a more structured option: one script, short captions, and a c
       if (tab === 'memory') return renderMemoryPanel();
       if (tab === 'automations') return renderAutomationsPanel();
       if (tab === 'usage') return renderUsagePanel();
+      if (tab === 'gateway') return renderGatewayPanel();
+      if (tab === 'components') return renderComponentsPanel();
       if (tab === 'about') return renderAboutPanel();
       return renderConnectionPanel();
     }
@@ -8198,6 +8856,15 @@ You can start with a more structured option: one script, short captions, and a c
       el('span', { class: 'workspace-tree-name', text: entry.name }),
       loading ? el('span', { class: 'mini-spinner', 'aria-hidden': 'true' }) : null
     );
+    if (!entry.is_dir) {
+      row.draggable = true;
+      row.title = `${entry.path} — drag into the composer to attach`;
+      row.addEventListener('dragstart', (event) => {
+        if (!event.dataTransfer) return;
+        event.dataTransfer.setData('application/x-arena-workspace-path', entry.path);
+        event.dataTransfer.effectAllowed = 'copy';
+      });
+    }
     fragment.appendChild(row);
     if (entry.is_dir && expanded) {
       const childrenWrap = el('div', { class: 'workspace-tree-children', role: 'group' });
@@ -9070,6 +9737,7 @@ You can start with a more structured option: one script, short captions, and a c
     els.workspaceSyncChip = $('#workspaceSyncChip');
     els.workspaceSyncToggle = $('#workspaceSyncToggle');
     els.compactButton = $('#compactButton');
+    els.gatewayChip = $('#gatewayChip');
     els.compactDot = $('#compactDot');
     els.permissionLabel = $('#permissionLabel');
     els.pendingPermissionsBadge = $('#pendingPermissionsBadge');
@@ -9146,8 +9814,18 @@ You can start with a more structured option: one script, short captions, and a c
     });
     els.prompt?.addEventListener('input', () => {
       state.draft = els.prompt.value;
+      saveComposerDraft();
       resizePrompt();
       updateComposerState();
+    });
+    document.addEventListener('pointerdown', primeDoneAudio);
+    document.addEventListener('keydown', primeDoneAudio);
+    document.addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey
+        && event.key.toLowerCase() === 'f' && state.view === 'chat') {
+        event.preventDefault();
+        toggleFindBar();
+      }
     });
     els.prompt?.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
@@ -9274,6 +9952,7 @@ You can start with a more structured option: one script, short captions, and a c
     });
     els.workspaceSyncToggle?.addEventListener('change', () => setWorkspaceSync(els.workspaceSyncToggle.checked));
     els.compactButton?.addEventListener('click', confirmCompact);
+    els.gatewayChip?.addEventListener('click', () => openSettings('gateway'));
     els.sendButton?.setAttribute('type', 'submit');
     els.stopButton?.addEventListener('click', () => { void stopGeneration(); });
     els.chatSettingsButton?.addEventListener('click', () => openSettings('permissions'));
@@ -9296,7 +9975,8 @@ You can start with a more structured option: one script, short captions, and a c
     });
     const dropCard = els.composerCard;
     if (dropCard) {
-      const hasFiles = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
+      const hasFiles = (event) => Array.from(event.dataTransfer?.types || [])
+        .some((t) => t === 'Files' || String(t).toLowerCase() === 'application/x-arena-workspace-path');
       const showOverlay = () => { if (els.dropOverlay) els.dropOverlay.hidden = false; };
       const hideOverlay = () => { if (els.dropOverlay) els.dropOverlay.hidden = true; };
       dropCard.addEventListener('dragenter', (event) => {
@@ -9316,6 +9996,8 @@ You can start with a more structured option: one script, short captions, and a c
       dropCard.addEventListener('drop', (event) => {
         event.preventDefault();
         hideOverlay();
+        const workspacePath = event.dataTransfer?.getData('application/x-arena-workspace-path');
+        if (workspacePath) { void attachWorkspaceFile(workspacePath); return; }
         addFiles(event.dataTransfer?.files);
       });
     }

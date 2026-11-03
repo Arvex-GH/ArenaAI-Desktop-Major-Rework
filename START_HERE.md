@@ -1,4 +1,4 @@
-# Arena Desktop v5.1.5 - Start Here
+# Arena Desktop v5.5.0 - Start Here
 
 Arena Desktop is an unofficial Windows client for arena.ai. It is not affiliated with or endorsed by Arena AI Inc.
 

@@ -165,7 +165,8 @@ def _find_preview_url(val):
     return None
 
 
-from arena import agent, connectors, contracts, history_sync, native_agent, permissions, workspace
+from arena import agent, components, connectors, contracts, history_sync, native_agent, permissions, workspace
+from arena.gateway import GatewayManager
 from arena.api import generate_uuidv7
 from arena.auth import get_clipboard_text
 from arena.engine import ENGINE
@@ -263,7 +264,7 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "5.1.5"
+APP_VERSION = "5.5.0"
 
 
 @app.after_request
@@ -889,6 +890,7 @@ def api_status():
         "app_version": APP_VERSION, "workspace_chosen": _chosen_ws() is not None,
         "workspace": str(_workspace_dir()), "projects_dir": str(workspace.PROJECTS_DIR),
         "pending_permissions": len(BROKER.pending()),
+        "gateway": _GATEWAY.summary() if _GATEWAY is not None else {"active": False, "state": "off", "servers": 0},
     }
     cookie_user = (parse_cookie_input(client.cookie_str)[2] if client.cookie_str else None) or {}
     ident = _user_identity(cookie_user)
@@ -1181,6 +1183,64 @@ def api_usage():
                     "current_account": _current_account_id(),
                     "days": store.get("days") or {},
                     "events": list(reversed(store.get("events") or []))})
+
+
+@app.route("/api/gateway")
+def api_gateway():
+    cfg = load_config()
+    available = []
+    try:
+        for name, srv in (connectors.configured_servers() or {}).items():
+            available.append({"name": name, "enabled": bool(srv.get("enabled")),
+                              "transport": srv.get("transport", "stdio")})
+    except Exception:
+        pass
+    return jsonify({
+        "enabled": _gateway_enabled(cfg),
+        "auto": cfg.get("gateway_auto") is True,
+        "chosen": cfg.get("gateway_servers") if isinstance(cfg.get("gateway_servers"), list) else None,
+        "available": available,
+        "session": _gateway().status(include_pairing=True),
+    })
+
+
+@app.route("/api/gateway/start", methods=["POST"])
+def api_gateway_start():
+    cfg = load_config()
+    if not _gateway_enabled(cfg):
+        return jsonify({"error": "Agent Gateway is off. Enable it in Settings -> Gateway first.",
+                        "code": "gateway_off"}), 403
+    servers = _gateway_servers(cfg)
+    if not servers:
+        return jsonify({"error": "No enabled local MCP servers to expose. Add one under Connectors (Local MCP) first.",
+                        "code": "no_servers"}), 400
+    status = _gateway().start(servers, wait_seconds=45)
+    if status["state"] == "needs_cloudflared":
+        return jsonify({"error": "cloudflared is not installed", "code": "cloudflared_missing",
+                        "session": status}), 409
+    if status["state"] != "on":
+        return jsonify({"error": status.get("error") or "The gateway failed to start.",
+                        "code": "gateway_failed", "session": status}), 502
+    return jsonify({"ok": True, "session": status})
+
+
+@app.route("/api/gateway/stop", methods=["POST"])
+def api_gateway_stop():
+    return jsonify({"ok": True, "session": _gateway().stop("stopped")})
+
+
+@app.route("/api/components")
+def api_components():
+    payload = {"components": components.detect()}
+    payload.update(components.install_status())
+    return jsonify(payload)
+
+
+@app.route("/api/components/install", methods=["POST"])
+def api_components_install():
+    data = request.get_json(silent=True) or {}
+    result = components.start_install(str(data.get("id") or ""))
+    return jsonify(result), (200 if result.get("ok") else 400)
 
 
 @app.route("/api/mode", methods=["POST"])
@@ -3301,6 +3361,99 @@ def _failover_seed(conv, content: str) -> str:
     return content
 
 
+# ----------------------------------------------------------------------
+# Agent Gateway (v5.5): selected local MCP servers exposed to the genuine
+# Arena Agent through a temporary Cloudflare Quick Tunnel session.
+# Master opt-in (gateway_enabled, default OFF) + separate auto-start
+# opt-in (gateway_auto) tied to the composer Workspace Sync tools flag.
+_GATEWAY = None
+
+
+def _gateway_tool_index() -> dict:
+    try:
+        tool_map = CONNECTORS.ensure_started(timeout=10) or {}
+    except Exception:
+        tool_map = {}
+    index: dict = {}
+    for alias, entry in tool_map.items():
+        server = entry.get("server") or ""
+        tool = entry.get("tool") or ""
+        if not server or not tool:
+            continue
+        annotations = entry.get("annotations") or {}
+        index.setdefault(server, {"tools": {}})["tools"][tool] = {
+            "alias": alias,
+            "description": entry.get("description") or "",
+            "input_schema": entry.get("input_schema") or {},
+            "read_only": annotations.get("readOnlyHint") is True,
+        }
+    return index
+
+
+def _gateway_approve(server, tool, read_only, arguments) -> bool:
+    # Same verdict machinery as the local tool loop: read-only calls grade
+    # as reads, everything else as shell. "ask" waits on the UI prompt.
+    permission_tool = "read_file" if read_only else "run_cmd"
+    verdict = BROKER.check(_perm_mode(), permission_tool, inside=True)
+    if verdict == "allow":
+        return True
+    if verdict == "blocked":
+        return False
+    info = {"tool": permission_tool, "summary": f"Agent Gateway MCP {server}: {tool}",
+            "gateway": True, "server": server, "mcp_tool": tool, "inside": True,
+            "rel": server, "path": json.dumps(arguments or {}, ensure_ascii=False)[:300]}
+    pid = BROKER.ask(info)
+    LOG.info("gateway: approval requested for %s:%s", server, tool)
+    return BROKER.wait(pid, 180) == "allow"
+
+
+def _gateway():
+    global _GATEWAY
+    if _GATEWAY is None:
+        _GATEWAY = GatewayManager(
+            tool_index=_gateway_tool_index,
+            call_tool=lambda alias, args: CONNECTORS.call(alias, args),
+            approve=_gateway_approve,
+            cloudflared_path=components.cloudflared_path,
+            logger=LOG)
+    return _GATEWAY
+
+
+def _gateway_enabled(cfg=None) -> bool:
+    try:
+        return (cfg or load_config()).get("gateway_enabled") is True
+    except Exception:
+        return False
+
+
+def _gateway_servers(cfg=None) -> list:
+    cfg = cfg or load_config()
+    chosen = cfg.get("gateway_servers")
+    if isinstance(chosen, list):
+        return [str(s) for s in chosen]
+    try:
+        return [name for name, srv in (connectors.configured_servers() or {}).items()
+                if srv.get("enabled") and srv.get("transport", "stdio") == "stdio"]
+    except Exception:
+        return []
+
+
+def _gateway_injection(data, cfg=None) -> str:
+    """Protocol block for a fresh native agent session (auto mode), or ''."""
+    cfg = cfg or load_config()
+    if not _gateway_enabled(cfg) or cfg.get("gateway_auto") is not True:
+        return ""
+    if (data or {}).get("tools") is False:
+        return ""  # Workspace Sync is off in the composer
+    servers = _gateway_servers(cfg)
+    if not servers:
+        return ""
+    mgr = _gateway()
+    if mgr.summary()["state"] != "on":
+        mgr.start(servers, wait_seconds=20)
+    return mgr.injection_block()
+
+
 _AUTO_RETRY_CODES = {"network", "server", "model", "stalled", "empty"}
 _CONTINUE_PROMPT = ("[Arena Desktop] Your previous reply was interrupted mid-stream. "
                     "Continue exactly from where it stopped. Do not repeat anything "
@@ -5391,6 +5544,17 @@ def _api_chat_impl():
                 native_mem_hash = mem_hash
         if native_digest:
             native_prefix += _digest_block(native_digest)
+        # Agent Gateway: a fresh Arena session learns the temporary tunnel
+        # address + pairing in its first message (same hidden-prefix channel
+        # as memory/digest). Only with both opt-ins and Workspace Sync on.
+        if not (existing.get("native") or {}).get("session_id"):
+            try:
+                gateway_block = _gateway_injection(data)
+                if gateway_block:
+                    native_prefix += gateway_block + "\n"
+                    LOG.info("gateway: injected session block into new native chat")
+            except Exception:
+                LOG.exception("gateway injection failed")
         native_message = native_prefix + message
 
         def native_generate():
@@ -6002,6 +6166,21 @@ def api_workspace_file():
         "size": len(data),
         "content": data.decode("utf-8", errors="replace"),
     })
+
+
+@app.route("/api/workspace/download")
+def api_workspace_download():
+    # Raw bytes for drag-from-tree-into-composer: the client wraps them in
+    # a File and runs the normal attachment upload (same limits apply).
+    try:
+        target, _root = _workspace_panel_path(request.args.get("path", ""))
+    except PermissionError as e:
+        return jsonify({"error": str(e)}), 403
+    if not target.is_file():
+        return jsonify({"error": "File not found"}), 404
+    if target.stat().st_size > 30 * 1024 * 1024:
+        return jsonify({"error": "File is too large to attach (30 MB limit)"}), 400
+    return send_file(target, as_attachment=True, download_name=target.name)
 
 
 @app.route("/api/workspace/set", methods=["POST"])

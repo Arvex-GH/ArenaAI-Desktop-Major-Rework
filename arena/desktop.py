@@ -404,6 +404,35 @@ class Dock:
             pass
 
 
+def _ensure_webview2() -> None:
+    """Pre-flight (v5.5): without the WebView2 Runtime no window can open at
+    all, so detect it before any UI exists and offer Microsoft's official
+    bootstrapper instead of failing obscurely inside pywebview."""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        from arena import components
+        if any(c["id"] == "webview2" and c["installed"] for c in components.detect()):
+            return
+    except Exception:
+        return  # detection problems must never block launch on their own
+    try:
+        import ctypes
+        import webbrowser
+        MB_YESNO, MB_ICONQUESTION, IDYES = 0x4, 0x20, 6
+        answer = ctypes.windll.user32.MessageBoxW(
+            None,
+            "Arena Desktop needs the free Microsoft Edge WebView2 Runtime, "
+            "which was not found on this PC.\n\nOpen the official Microsoft "
+            "download page now? Install it, then start Arena Desktop again.",
+            "Arena Desktop — WebView2 Runtime missing", MB_YESNO | MB_ICONQUESTION)
+        if answer == IDYES:
+            webbrowser.open("https://developer.microsoft.com/en-us/microsoft-edge/webview2/")
+    except Exception:
+        pass
+    os._exit(1)
+
+
 def main():
     import webview
     from arena import contracts
@@ -432,6 +461,7 @@ def main():
     base = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
     ico = base / "assets" / "arena-cli.ico"
 
+    _ensure_webview2()
     webview.settings["ALLOW_DOWNLOADS"] = True  # zip and media downloads from the UI
     from arena.config import load_config as _load_cfg
     cfg = _load_cfg()

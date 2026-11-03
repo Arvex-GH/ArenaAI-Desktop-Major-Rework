@@ -71,7 +71,7 @@ def main(path: str) -> int:
                    and b"createPairwiseFeedback" in engine))
 
     app = modules["arena.web.app"]
-    checks.append(("app: APP_VERSION 5.1.5", b"5.1.5" in app))
+    checks.append(("app: APP_VERSION 5.5.0", b"5.5.0" in app))
     checks.append(("app: native create direct with genuine-cx ladder",
                    b"genuine-cx+connectors" in app and b"_native_drive" not in app))
     checks.append(("app: turn-complete record detection + drain resume",
@@ -103,7 +103,7 @@ def main(path: str) -> int:
                    b"is_turn_complete_record" in native and b"trigger-control" in native))
 
     index = entries.get("arena/web/static/index.html", b"")
-    checks.append(("index.html: assets v=5.1.5", b"?v=5.1.5" in index))
+    checks.append(("index.html: assets v=5.5.0", b"?v=5.5.0" in index))
     checks.append(("index.html: Arena dropdown chips + resize handles, no segmented bars",
                    b'id="modeButton"' in index and b'id="modalityButton"' in index
                    and b'id="sidebarResize"' in index and b'id="workspaceResize"' in index
@@ -121,7 +121,7 @@ def main(path: str) -> int:
                    and b"cookie-policy" in index))
 
     app_js = entries.get("arena/web/static/app.js", b"")
-    checks.append(("app.js: demo app_version 5.1.5", b"app_version: '5.1.5'" in app_js))
+    checks.append(("app.js: demo app_version 5.5.0", b"app_version: '5.5.0'" in app_js))
     checks.append(("app.js: cloud chat open passes title",
                    b"openArenaChat(id, type, title)" in app_js))
     checks.append(("app.js: Arena dropdowns + vote + chat lock",
@@ -230,6 +230,20 @@ def main(path: str) -> int:
                    b"_activate_failover" in app and b"account_switched" in app
                    and b"Usage &amp; Arena limits" in app_js
                    and b"Continue on another account at daily limit" in app_js))
+    checks.append(("v5.1.6: captcha raised on screen + composer QoL pack",
+                   b"on_top" in engine and b"restore" in engine and b"showChallengeModal" in app_js
+                   and b"Message queued" in app_js and b"arena-drafts-v1" in app_js
+                   and b"find-hit" in app_js and b"/api/workspace/download" in app))
+    gateway_m = modules["arena.gateway"]
+    components_m = modules["arena.components"]
+    checks.append(("v5.5: Agent Gateway tunnel sessions + injection",
+                   b"/v1/jobs" in gateway_m and b"trycloudflare" in gateway_m
+                   and b"never repeat it in your replies" in gateway_m
+                   and b"_gateway_injection" in app and b"/api/gateway/start" in app))
+    checks.append(("v5.5 UI: Gateway + Components tabs with install flow",
+                   b"cloudflared-windows-amd64.exe" in components_m
+                   and b"Start automatically with Workspace Sync" in app_js
+                   and b"renderComponentsPanel" in app_js and b"gatewayChip" in index))
     models_m = modules["arena.models"]
     checks.append(("catalog: signed-in fetch + force refresh (new models appear)",
                    b"_catalog_fetch_json" in app and b"model catalog fetch failed" in app

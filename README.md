@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.1.5-8b5cf6?style=flat-square" alt="Version 5.1.5" />
+  <img src="https://img.shields.io/badge/version-5.5.0-8b5cf6?style=flat-square" alt="Version 5.5.0" />
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue?style=flat-square" alt="Windows 10/11" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776ab?style=flat-square" alt="Python 3.11+" />
   <img src="https://img.shields.io/badge/models-400%2B%20via%20arena.ai-10b981?style=flat-square" alt="400+ models via arena.ai" />
@@ -142,6 +142,17 @@ The app orchestrates chats, tools, files and permissions around it.
   per-model, new-account video gate) instead of a bare “429”. Built-in request pacing spaces out
   bursts and queues a resend until Arena's reset, so short throttles stop killing tasks (it does
   not raise Arena's daily usage limit; strength is adjustable in Settings).
+- **Agent Gateway** (v5.5, off by default): the genuine Arena Agent can use selected local MCP
+  servers on your PC (Blender, Roblox Studio, files…). With both opt-ins on, a temporary
+  pairing-protected Cloudflare tunnel session starts automatically with Workspace Sync and new
+  Agent chats receive the address invisibly; every call follows your permission mode, sessions
+  expire and are revocable with one click. Settings → Components installs the one external
+  helper (cloudflared, official build, checksum-verified) only when you ask.
+- Everyday polish (v5.1.6): human-check windows come to the front instead of hiding behind the
+  app; messages can be queued while a chat is generating; composer drafts are kept per chat;
+  the Compact chip doubles as a live context-size meter; the model picker shows Recent models;
+  Ctrl+F searches inside the open chat; workspace files drag straight into the composer; and a
+  soft sound plays when a chat finishes while the window is in the background.
 - Daily-limit survival (v5.1.5): Settings → Usage logs the app's own sends per account/day with a
   rate-limit history; agent turns go on a context diet (repeated listings/searches answered from
   cache until files change, Compact offered earlier); research subagents default to light

@@ -1012,6 +1012,89 @@ svg { display: block; }
 .challenge-card p { margin: 0 0 10px; color: #b7aa92; font-size: 11.5px; line-height: 1.6; }
 .challenge-card .button { margin-right: 5px; }
 
+/* Composer QoL: queued message chip + find-in-chat */
+.queued-bar {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 auto 8px; padding: 6px 10px;
+  max-width: 100%;
+  background: #262b28; border: 1px solid #3a453f; border-radius: 8px;
+  color: #cfd8cf; font-size: 12px;
+}
+.queued-bar .icon { width: 14px; height: 14px; flex: none; color: var(--amber, #d9a441); }
+.queued-bar-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queued-bar .button { flex: none; }
+
+.find-bar {
+  position: fixed; top: 64px; right: 18px; z-index: 150;
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 9px;
+  background: #242726; border: 1px solid #3d4442; border-radius: 10px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, .45);
+}
+.find-bar .icon { width: 15px; height: 15px; color: #9aa79f; }
+.find-input {
+  width: 190px; padding: 5px 8px;
+  background: #1c1f1e; border: 1px solid #3d4442; border-radius: 7px;
+  color: #e8ece9; font-size: 12.5px; outline: none;
+}
+.find-input:focus { border-color: #6b7d72; }
+.find-counter { min-width: 52px; color: #9aa79f; font-size: 11.5px; text-align: right; }
+mark.find-hit { background: #6d5a1e; color: inherit; border-radius: 2px; padding: 0 1px; }
+mark.find-hit-current { background: #d9a441; color: #1b1a17; }
+
+.popover-group-label {
+  padding: 8px 10px 4px;
+  color: #8fa398; font-size: 10.5px; font-weight: 650;
+  letter-spacing: .06em; text-transform: uppercase;
+}
+
+.workspace-tree-row[draggable="true"] { cursor: grab; }
+
+/* Components manager + Agent Gateway (v5.5) */
+.component-row {
+  display: flex; gap: 14px; align-items: flex-start;
+  padding: 11px 2px; border-top: 1px solid #2c3130;
+}
+.component-main { flex: 1; min-width: 0; }
+.component-head { display: flex; gap: 9px; align-items: center; margin-bottom: 3px; }
+.component-name { font-size: 13px; font-weight: 650; color: #e8ece9; }
+.component-pill {
+  padding: 2px 8px; border-radius: 999px;
+  background: #2c3130; color: #9aa79f; font-size: 10.5px; font-weight: 650;
+}
+.component-pill.is-on { background: #22392b; color: #9fd8ae; }
+.install-progress {
+  height: 8px; margin: 10px 0 4px;
+  background: #1c1f1e; border: 1px solid #3d4442; border-radius: 999px; overflow: hidden;
+}
+.install-progress-fill {
+  height: 100%; width: 0%;
+  background: #7fb069; transition: width .3s ease;
+}
+.gateway-servers { display: grid; gap: 5px; margin: 5px 0 12px; }
+.gateway-server-row {
+  display: flex; gap: 8px; align-items: center;
+  font-size: 12.5px; color: #dfe5e0; cursor: pointer;
+}
+.gateway-mono {
+  flex: 1; min-width: 0;
+  font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.gateway-chip { border-color: #3c5a45; color: #a9dcb6; }
+.install-card {
+  position: fixed; right: 18px; bottom: 18px; z-index: 320;
+  width: min(390px, calc(100vw - 36px));
+  padding: 13px 14px;
+  background: #262b29; border: 1px solid #46524b; border-radius: 12px;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, .5);
+}
+.install-card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 6px; color: #edf1ee; font-size: 13px;
+}
+.install-card-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+
 /* Sources, media and activity */
 .sources { margin-top: 13px; padding-top: 10px; border-top: 1px solid #303635; }
 .sources-title { display: flex; align-items: center; gap: 5px; margin: 0 0 7px; color: #8b948e; font-size: 9.5px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; }

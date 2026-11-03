@@ -652,7 +652,7 @@ def test_v47_battle_lane_error_avatar_and_model_logo(site):
                     'engine': {'open': False, 'ready': True},
                     'permission_mode': 'default', 'workspace': 'C:\\test',
                     'pending_permissions': 0, 'generating': False,
-                    'app_version': '5.1.5'})
+                    'app_version': '5.5.0'})
             if path == 'mode' and route.request.method == 'POST':
                 body = route.request.post_data_json or {}
                 return fulfill(route, {'ok': True, 'mode': body.get('mode', 'battle'), 'modality': 'text'})
@@ -1044,6 +1044,96 @@ def test_v416_about_updates_backup_and_tray_settings(site):
         panel.locator('.button', has_text='Check for updates').click()
         page.wait_for_timeout(700)
         assert panel.locator('.button', has_text='Check for updates').is_enabled()
+        page.keyboard.press('Escape')
+        assert not errors
+        browser.close()
+
+
+def test_v516_queue_drafts_find_and_recent_models(site):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
+        page = browser.new_page(viewport={'width': 1400, 'height': 950})
+        errors = []
+        page.on('pageerror', lambda err: errors.append(str(err)))
+        page.goto(site + '/?demo=1', wait_until='networkidle')
+
+        # Queue: a message typed during generation sends itself afterwards.
+        page.locator('#prompt').fill('First queued-flow message')
+        page.locator('#prompt').press('Enter')
+        page.wait_for_timeout(400)
+        page.locator('#prompt').fill('Second queued-flow message')
+        page.locator('#prompt').press('Enter')
+        page.locator('#queuedBar').wait_for(timeout=5000)
+        assert 'Queued' in page.locator('#queuedBar').inner_text()
+        page.wait_for_function(
+            "() => !document.querySelector('#queuedBar')"
+            " && document.querySelector('#messageList')?.innerText.includes('Second queued-flow message')",
+            timeout=30000)
+
+        # Find in chat highlights matches and closes cleanly.
+        page.keyboard.press('Control+f')
+        page.locator('#findBar .find-input').fill('queued-flow')
+        page.wait_for_function(
+            "() => document.querySelectorAll('#messageList mark.find-hit').length >= 2",
+            timeout=5000)
+        page.keyboard.press('Escape')
+        page.wait_for_function("() => !document.querySelector('#findBar')", timeout=5000)
+
+        # Drafts survive switching chats.
+        page.locator('#prompt').fill('draft that must survive')
+        page.wait_for_timeout(250)
+        page.locator('#newChatBtn').click()
+        page.wait_for_function("() => document.querySelector('#prompt').value === ''", timeout=10000)
+        page.locator('#chatList .chat-row', has_text='First queued-flow').first.locator('.chat-row-main').click(force=True)
+        page.wait_for_function(
+            "() => document.querySelector('#prompt').value === 'draft that must survive'",
+            timeout=10000)
+
+        # Recent models group appears after picking a model once.
+        page.locator('#newChatBtn').click()
+        page.wait_for_timeout(600)
+        choose_mode(page, 'Direct')
+        page.locator('#modelsNavBtn').click()
+        page.locator('.popover-option', has_text='Sable R1').first.click()
+        page.locator('#modelsNavBtn').click()
+        page.locator('.popover-group-label', has_text='Recent').wait_for(timeout=5000)
+        page.keyboard.press('Escape')
+        assert not errors
+        browser.close()
+
+
+def test_v55_gateway_and_components_panels(site):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
+        page = browser.new_page(viewport={'width': 1400, 'height': 950})
+        errors = []
+        page.on('pageerror', lambda err: errors.append(str(err)))
+        page.goto(site + '/?demo=1', wait_until='networkidle')
+
+        page.locator('[data-action="settings"]').first.click()
+        # Components: cloudflared installs via the demo flow and flips to Installed.
+        page.locator('#settings-tab-components').click()
+        panel = page.locator('.settings-panels')
+        cf_row = panel.locator('.component-row', has_text='cloudflared')
+        cf_row.wait_for(timeout=8000)
+        assert 'Not installed' in cf_row.inner_text()
+        cf_row.locator('.button', has_text='Install').click()
+        page.locator('.install-progress-fill').wait_for(timeout=8000)
+        page.wait_for_function(
+            "() => [...document.querySelectorAll('.component-row')]"
+            ".some((r) => r.innerText.includes('cloudflared') && r.innerText.includes('Installed'))",
+            timeout=10000)
+
+        # Gateway: enable -> start -> demo URL shows with recent calls.
+        page.locator('#settings-tab-gateway').click()
+        panel.locator('.setting-toggle-row', has_text='Enable Agent Gateway').locator('input').check()
+        panel.locator('.button', has_text='Start session now').click()
+        page.wait_for_function(
+            "() => document.querySelector('.settings-panels').innerText.includes('demo-gateway.trycloudflare.com')",
+            timeout=10000)
+        assert 'Stop & revoke' in panel.inner_text()
         page.keyboard.press('Escape')
         assert not errors
         browser.close()

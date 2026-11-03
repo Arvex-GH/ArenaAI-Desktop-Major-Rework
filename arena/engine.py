@@ -919,6 +919,19 @@ class BrowserEngine:
                 w.move(*spot)  # the first show() can re-center the window on screen
             except Exception:
                 pass
+        try:
+            w.restore()
+        except Exception:
+            pass
+        if self.challenge:
+            # A human check is blocking the send. pywebview's show() alone
+            # can open the window behind the main one on Windows, so pin
+            # the checkbox window on top until the check is over (hide()
+            # clears it again).
+            try:
+                w.on_top = True
+            except Exception:
+                pass
 
     def show(self):
         if self.window:
@@ -926,6 +939,11 @@ class BrowserEngine:
 
     def hide(self):
         self.visible = False
+        if self.window:
+            try:
+                self.window.on_top = False
+            except Exception:
+                pass
         dock = getattr(self, "dock", None)
         if dock is not None and dock.visible:
             dock.hide()

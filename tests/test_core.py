@@ -3125,6 +3125,170 @@ def test_account_failover_skips_when_other_chats_generate(web, monkeypatch):
     assert len(sent) == 1
 
 
+def test_gateway_loopback_jobs_and_pairing():
+    import urllib.error
+    import urllib.request
+    from arena.gateway import GatewayManager
+
+    calls = []
+
+    def index():
+        return {"blender": {"tools": {
+            "get_scene": {"alias": "mcp__blender__get_scene", "description": "scene",
+                          "input_schema": {}, "read_only": True},
+            "wipe": {"alias": "mcp__blender__wipe", "description": "wipe",
+                     "input_schema": {}, "read_only": False}}}}
+
+    allowed = {"v": True}
+    mgr = GatewayManager(tool_index=index,
+                         call_tool=lambda alias, args: calls.append(alias) or "scene ok",
+                         approve=lambda s, t, ro, a: allowed["v"],
+                         cloudflared_path=lambda: None)
+    status = mgr.start(["blender"], tunnel=False)
+    try:
+        assert status["state"] == "on"
+        url, token = status["url"], status["pairing"]
+
+        def req(method, path, body=None, auth=True):
+            r = urllib.request.Request(
+                url + path, method=method,
+                data=json.dumps(body).encode() if body is not None else None,
+                headers={"Content-Type": "application/json",
+                         **({"Authorization": f"Bearer {token}"} if auth else {})})
+            try:
+                with urllib.request.urlopen(r, timeout=10) as resp:
+                    return resp.status, json.loads(resp.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read())
+
+        assert req("GET", "/v1/health", auth=False)[0] == 200
+        assert req("GET", "/v1/servers", auth=False)[0] == 401
+        assert req("GET", "/v1/servers")[1]["servers"][0]["name"] == "blender"
+        code, job = req("POST", "/v1/jobs",
+                        {"server": "blender", "steps": [{"tool": "get_scene", "arguments": {}}]})
+        assert code == 202
+        result = {}
+        for _ in range(100):
+            result = req("GET", f"/v1/jobs/{job['job_id']}")[1]
+            if result["status"] in ("done", "error"):
+                break
+            time.sleep(0.05)
+        assert result["status"] == "done" and result["results"][0]["output"] == "scene ok"
+
+        allowed["v"] = False
+        _code, job2 = req("POST", "/v1/jobs",
+                          {"server": "blender", "steps": [{"tool": "wipe", "arguments": {}}]})
+        for _ in range(100):
+            result2 = req("GET", f"/v1/jobs/{job2['job_id']}")[1]
+            if result2["status"] in ("done", "error"):
+                break
+            time.sleep(0.05)
+        assert result2["status"] == "error" and "denied" in result2["results"][0]["error"]
+        assert calls == ["mcp__blender__get_scene"]  # denied call never executed
+        assert req("POST", "/v1/jobs", {"server": "nope", "steps": [{"tool": "x"}]})[0] == 400
+        block = mgr.injection_block()
+        assert url in block and token in block and "never repeat it" in block
+    finally:
+        mgr.stop()
+    assert mgr.status()["state"] == "off"
+
+
+def test_gateway_injection_gating(web, monkeypatch):
+    appmod, _c, cfg, _use, _sent = web
+
+    class FakeMgr:
+        def summary(self):
+            return {"state": "on"}
+
+        def injection_block(self):
+            return "[gateway block]"
+
+    monkeypatch.setattr(appmod, "_gateway", lambda: FakeMgr())
+    monkeypatch.setattr(appmod, "_gateway_servers", lambda cfg=None: ["blender"])
+    cfg.update({"gateway_enabled": True, "gateway_auto": True})
+    assert appmod._gateway_injection({}) == "[gateway block]"
+    assert appmod._gateway_injection({"tools": False}) == ""  # Workspace Sync off
+    cfg["gateway_auto"] = False
+    assert appmod._gateway_injection({}) == ""
+    cfg.update({"gateway_enabled": False, "gateway_auto": True})
+    assert appmod._gateway_injection({}) == ""
+
+
+def test_gateway_endpoints_require_optin(web):
+    _appmod, c, _cfg, _use, _sent = web
+    body = c.get("/api/gateway").get_json()
+    assert body["enabled"] is False and body["session"]["state"] == "off"
+    assert c.post("/api/gateway/start", json={}).status_code == 403
+    comps = c.get("/api/components").get_json()
+    assert {x["id"] for x in comps["components"]} == {"cloudflared", "node", "python", "webview2"}
+
+
+def test_components_cloudflared_install_verifies_hash(tmp_path, monkeypatch):
+    import hashlib
+    from arena import components
+
+    payload = b"fake-cloudflared-bytes"
+    monkeypatch.setattr(components, "BIN_DIR", tmp_path / "bin")
+    monkeypatch.setattr(components, "CLOUDFLARED_SHA256", hashlib.sha256(payload).hexdigest())
+    monkeypatch.setattr(components, "_download",
+                        lambda url, dest, cid: dest.write_bytes(payload))
+    components._install_cloudflared()
+    assert (tmp_path / "bin" / "cloudflared.exe").read_bytes() == payload
+    assert components.install_status()["jobs"]["cloudflared"]["state"] == "done"
+
+    monkeypatch.setattr(components, "CLOUDFLARED_SHA256", "0" * 64)
+    (tmp_path / "bin" / "cloudflared.exe").unlink()
+    components._install_cloudflared()
+    assert not (tmp_path / "bin" / "cloudflared.exe").exists()
+    assert components.install_status()["jobs"]["cloudflared"]["state"] == "error"
+
+
+def test_workspace_download_serves_bytes_inside_root_only(web):
+    appmod, c, _cfg, _use, _sent = web
+    root = appmod._workspace_panel_path(".")[1]
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "note.txt").write_bytes(b"hello workspace")
+    resp = c.get("/api/workspace/download?path=note.txt")
+    assert resp.status_code == 200 and resp.data == b"hello workspace"
+    assert c.get("/api/workspace/download?path=../outside.txt").status_code == 403
+    assert c.get("/api/workspace/download?path=missing.txt").status_code == 404
+
+
+def test_engine_present_raises_window_during_challenge():
+    from arena.engine import BrowserEngine
+
+    class FakeWin:
+        def __init__(self):
+            self.on_top = False
+            self.shown = False
+
+        def show(self):
+            self.shown = True
+
+        def hide(self):
+            self.shown = False
+
+        def restore(self):
+            pass
+
+        def resize(self, *a):
+            pass
+
+        def move(self, *a):
+            pass
+
+    eng = BrowserEngine.__new__(BrowserEngine)
+    eng.window, eng.main = FakeWin(), None
+    eng.challenge, eng.visible = "recaptcha", False
+    eng._present()
+    assert eng.window.shown and eng.window.on_top is True  # checkbox in your face
+    eng.hide()
+    assert eng.window.on_top is False  # ... and released afterwards
+    eng.challenge = None
+    eng._present()
+    assert eng.window.on_top is False  # ordinary show() does not pin
+
+
 def test_delete_subagent_only_own_children(web, monkeypatch):
     appmod, c, cfg, use, _sent = web
     cfg["permission_mode"] = "bypassPermissions"
