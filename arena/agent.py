@@ -14,6 +14,8 @@ import json
 import re
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -54,11 +56,20 @@ FULL FILE CONTENT
 <tool name="delete"><path>old_notes.txt</path></tool>
 <tool name="run_cmd"><cmd>python -m pytest -q</cmd></tool>
 <tool name="ask_user"><question>Which database should I use?</question><option1>SQLite</option1><option2>PostgreSQL</option2></tool>
+<tool name="propose_plan"><plan>1. Inspect the project layout
+2. Refactor the parser
+3. Run the tests</plan></tool>
+<tool name="set_todos"><todos>[x] Inspect the project layout
+[~] Refactor the parser
+[ ] Run the tests</todos></tool>
+<tool name="read_files"><paths>src/main.py
+src/util.py
+README.md</paths></tool>
 {extra_tools}{delegate}
-Rules: paths are relative to the folder. Read a file before editing it. write_file takes the whole file. When the task is done, reply with a short summary and no tool tags. If the message does not need files, just answer it. Use ask_user only for choices that are genuinely the user's (preferences, ambiguous requirements): one clear question with 2-4 short options \u2014 the user can also type their own answer, and it comes back to you as the tool result. Never ask what you can find out from the files, and do not ask twice in a row.
-Keep the context lean: batch independent tool calls in one reply instead of one call per round. read_file accepts <start_line> and <end_line> — read only the part you need, and do not re-read files you just wrote. Very long tool outputs are saved under .arena-artifacts/ and you only see a preview; read_file that path if you need the full text.
+Rules: paths are relative to the folder. Read a file before editing it. write_file takes the whole file. When the task is done, reply with a short summary and no tool tags. If the message does not need files, just answer it. Use ask_user only for choices that are genuinely the user's (preferences, ambiguous requirements): one clear question with 2-4 short options \u2014 the user can also type their own answer, and it comes back to you as the tool result. Never ask what you can find out from the files, and do not ask twice in a row. For work with several steps, keep a checklist with set_todos: set it before you start and update it as steps finish ([x] done, [~] in progress, [ ] pending), so the user sees live progress. Before substantial or risky changes, present the intended steps with propose_plan and wait for the user's decision; if they ask for revisions, present the updated plan.
+Keep the context lean: batch independent tool calls in one reply instead of one call per round. To read several files at once, use read_files with one path per line inside <paths>; re-reading a file that has not changed returns a short note instead of repeating the content. read_file accepts <start_line> and <end_line> — read only the part you need, and do not re-read files you just wrote. Very long tool outputs are saved under .arena-artifacts/ and you only see a preview; read_file that path if you need the full text.
 
-Persistent memory: MEMORY.md in the workspace root is shared across chats about this project, and its content may be included above as established context. When you learn durable facts worth keeping beyond this chat \u2014 project conventions, decisions, user preferences, the current state of the work \u2014 update MEMORY.md briefly with write_file/edit_file (short bullet points; point to files instead of copying code). Do not store secrets, one-off details, or anything obvious from the code itself. If the user says \u201cremember this\u201d, that goes to MEMORY.md.
+Persistent memory: MEMORY.md in the workspace root is shared across chats about this project, and its content may be included above as established context. When you learn durable facts worth keeping beyond this chat \u2014 project conventions, decisions, user preferences, the current state of the work \u2014 update MEMORY.md briefly with write_file/edit_file (short bullet points; point to files instead of copying code). Do not store secrets, one-off details, or anything obvious from the code itself. If the user says \u201cremember this\u201d, that goes to MEMORY.md. If the project root has AGENTS.md, those are the maintainer's standing instructions; they may be included above as context - follow them, and do not copy them into MEMORY.md.
 
 User message:
 """
@@ -69,7 +80,7 @@ LANE_NOTE = ("\nTwo assistants answer this chat side by side. Each one's file ch
 
 MODE_NOTES = {
     "plan": "Plan mode is on: only ls, read_file and search will run. Do not change anything; "
-            "finish with a numbered plan the user can approve.",
+            "finish with a numbered plan and present it with the propose_plan tool so the user can approve it in one click.",
     "default": "The user approves each change and command.",
     "acceptEdits": "File edits run without asking; deletes and commands need approval.",
     "auto": "Work inside the project folder runs without asking; risky commands need approval.",
@@ -77,7 +88,7 @@ MODE_NOTES = {
 }
 
 
-READ_ONLY_TOOLS = {"ls", "read_file", "search", "ask_user"}
+READ_ONLY_TOOLS = {"ls", "read_file", "read_files", "search", "ask_user", "propose_plan", "set_todos"}
 
 
 def delegate_guide(models) -> str:
@@ -278,6 +289,131 @@ def _offload(output: str, call, artifact_dir, artifact_rel: str) -> str:
         return trim_output(output)
 
 
+SHELL_IDLE_LIMIT = 30     # seconds without output -> kill (waiting on input, pager, hang)
+SHELL_TOTAL_LIMIT = 600   # hard cap for a single command
+
+_INTERACTIVE_FIRST = {
+    "vim", "vi", "nvim", "nano", "emacs", "less", "more", "most", "top",
+    "htop", "ssh", "telnet", "ftp", "sftp", "mysql", "psql", "mongo",
+    "redis-cli", "watch", "edit", "notepad",
+}
+_BARE_SHELLS = {"cmd", "powershell", "pwsh", "bash", "sh", "zsh", "fish"}
+_BARE_INTERPRETERS = {"python", "python3", "py", "node", "irb", "ruby", "php", "lua", "perl"}
+
+
+def _interactive_refusal(cmd: str) -> str:
+    """Explain (for the model) why a command cannot run here, or "" if it can."""
+    tokens = re.split(r"[\s;|&]+", cmd.strip())
+    tokens = [t for t in tokens if t and "=" not in t.split("/")[-1].split("\\")[-1]]
+    if not tokens:
+        return ""
+    first = tokens[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if first.endswith(".exe"):
+        first = first[:-4]
+    rest = [t.lower() for t in tokens[1:]]
+    why = ""
+    if first in _INTERACTIVE_FIRST:
+        why = f"'{first}' is an interactive program"
+    elif first == "tail" and ("-f" in rest or "--follow" in rest):
+        why = "'tail -f' never exits"
+    elif first in _BARE_SHELLS and not any(t in ("/c", "-c", "-command", "-encodedcommand") for t in rest):
+        why = f"a bare '{first}' starts an interactive shell"
+    elif first in _BARE_INTERPRETERS and (not rest or "-i" in rest):
+        why = f"a bare '{first}' starts a REPL"
+    if not why:
+        return ""
+    return (f"Error: not run: {why}. run_cmd is non-interactive (stdin is closed, and a "
+            "command with no output for 30 seconds is killed). Use a one-shot form instead, "
+            "e.g. a script file, 'python script.py', 'git log -5', or redirect input from a file.")
+
+
+def run_shell_command(cmd: str, cwd) -> str:
+    """Run one shell command with an idle watchdog; returns formatted output.
+
+    Output streams through pump threads purely so silence can be detected:
+    a command that produces nothing for SHELL_IDLE_LIMIT seconds is killed
+    (it is almost certainly waiting for input or hung), which previously
+    blocked the whole agent loop until the user pressed Stop.
+    """
+    cmd = (cmd or "").strip()
+    if not cmd:
+        raise ValueError("cmd is empty")
+    refusal = _interactive_refusal(cmd)
+    if refusal:
+        return refusal
+    proc = subprocess.Popen(cmd, shell=True, cwd=str(cwd), stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace")
+    out_chunks: List[str] = []
+    err_chunks: List[str] = []
+    state = {"last": time.time()}
+
+    def pump(stream, sink):
+        try:
+            while True:
+                data = stream.read(1024)
+                if not data:
+                    break
+                sink.append(data)
+                state["last"] = time.time()
+        except Exception:
+            pass
+
+    threads = [threading.Thread(target=pump, args=(st, sink), daemon=True)
+               for st, sink in ((proc.stdout, out_chunks), (proc.stderr, err_chunks)) if st is not None]
+    for t in threads:
+        t.start()
+    started = time.time()
+    killed = ""
+    while proc.poll() is None:
+        now = time.time()
+        if now - state["last"] > SHELL_IDLE_LIMIT:
+            killed = f"killed after {SHELL_IDLE_LIMIT}s without output (waiting for input or hung)"
+            break
+        if now - started > SHELL_TOTAL_LIMIT:
+            killed = f"killed after the {SHELL_TOTAL_LIMIT}s limit"
+            break
+        time.sleep(0.15)
+    if killed:
+        try:
+            if os_name_is_windows():
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                               capture_output=True, timeout=10)
+            else:
+                proc.kill()
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    try:
+        proc.wait(timeout=10)
+    except Exception:
+        pass
+    for t in threads:
+        t.join(timeout=2)
+    stdout = "".join(out_chunks).strip()
+    stderr = "".join(err_chunks).strip()
+    if killed:
+        merged = (stdout + ("\n" if stdout and stderr else "") + stderr)[-OUTPUT_LIMIT:]
+        return (f"{killed}\n{merged}").strip() or killed
+    parts = [f"exit code {proc.returncode}"]
+    if stdout:
+        parts.append(stdout[-OUTPUT_LIMIT:])
+    if stderr:
+        parts.append(f"[STDERR]\n{stderr[-1500:]}")
+    if proc.returncode:
+        parts.append(f"[Process exited with code {proc.returncode}]")
+    elif not stdout and not stderr:
+        parts.append("(command finished with no output)")
+    return "\n".join(parts)
+
+
+def os_name_is_windows() -> bool:
+    import os as _os
+    return _os.name == "nt"
+
+
 def _result_lines(outcomes, artifact_dir=None, artifact_rel: str = ARTIFACTS_DIR) -> List[str]:
     lines = []
     for i, (call, status, output) in enumerate(outcomes, 1):
@@ -285,7 +421,7 @@ def _result_lines(outcomes, artifact_dir=None, artifact_rel: str = ARTIFACTS_DIR
         lines.append(f"[{i}] {call['name']} {target}: {status}")
         if output:
             cleaned = _ANSI_RE.sub("", str(output))
-            if (artifact_dir is not None and call.get("name") != "read_file"
+            if (artifact_dir is not None and call.get("name") not in ("read_file", "read_files")
                     and len(cleaned) > INLINE_LIMIT):
                 lines.append(_offload(cleaned, call, artifact_dir, artifact_rel))
             else:
@@ -523,12 +659,6 @@ class LocalTools:
         raise FileNotFoundError(f"{self._rel(target)} does not exist")
 
     def _t_run_cmd(self, prm) -> str:
-        cmd = (prm.get("cmd") or "").strip()
-        if not cmd:
-            raise ValueError("cmd is empty")
         cwd = self.out or self.root
         cwd.mkdir(parents=True, exist_ok=True)
-        r = subprocess.run(cmd, shell=True, cwd=str(cwd), capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=120)
-        out = (r.stdout or "") + (("\n" + r.stderr) if r.stderr else "")
-        return f"exit code {r.returncode}\n{out[-OUTPUT_LIMIT:]}".strip()
+        return run_shell_command(prm.get("cmd") or "", cwd)

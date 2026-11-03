@@ -122,3 +122,69 @@ class TestBrowserTools(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCatalogFreshness(unittest.TestCase):
+    """Regression: a brand-new Arena model must reach the Direct picker.
+
+    The web app used to fetch /model-catalog anonymously; Arena answers
+    403 to that, sync swallowed the error and served the disk cache
+    forever, so models added after the last successful anonymous fetch
+    (e.g. Kimi K3.1 Pro, Oct 2026) never appeared.
+    """
+
+    @patch("arena.models.CACHE_FILE", Path(tempfile.gettempdir()) / "arena-test-models-cache2.json")
+    def test_sync_via_fetch_json_new_model_variants(self):
+        catalog = {"arenas": [{
+            "arena": "text",
+            "models": [
+                {   # new multimodal flagship; capabilities in list/string form
+                    "id": "kimi-k3.1-pro",
+                    "displayName": "Kimi K3.1 Pro",
+                    "organization": "moonshot",
+                    "userSelectable": True,
+                    "capabilities": {
+                        "inputCapabilities": {"text": ["plain"], "image": {}},
+                        "outputCapabilities": {"text": "supported"},
+                    },
+                },
+                {   # truthy flag as 1 (schema drift insurance)
+                    "id": "model-flag-one",
+                    "displayName": "Flag One",
+                    "organization": "test",
+                    "userSelectable": 1,
+                    "capabilities": {
+                        "inputCapabilities": {"text": True},
+                        "outputCapabilities": {"text": True},
+                    },
+                },
+                {   # missing flag stays unselectable (battle/leaderboard row)
+                    "id": "model-no-flag",
+                    "displayName": "Battle Only",
+                    "organization": "test",
+                    "capabilities": {
+                        "inputCapabilities": {"text": True},
+                        "outputCapabilities": {"text": True},
+                    },
+                },
+            ],
+        }]}
+        models = sync_models(force=True, fetch_json=lambda: catalog)
+        ids = [m["id"] for m in get_models_for_modality(models, "chat", mode="direct")]
+        self.assertIn("kimi-k3.1-pro", ids)
+        self.assertIn("model-flag-one", ids)
+        self.assertNotIn("model-no-flag", ids)
+
+    @patch("arena.models.CACHE_FILE", Path(tempfile.gettempdir()) / "arena-test-models-cache3.json")
+    def test_sync_fetch_failure_falls_back_to_cache(self):
+        cache_file = Path(tempfile.gettempdir()) / "arena-test-models-cache3.json"
+        cache_file.write_text(json.dumps({
+            "_cached_at": 0,
+            "models": [{"id": "cached-1", "user_selectable": True}],
+        }), encoding="utf-8")
+
+        def boom():
+            raise RuntimeError("403")
+
+        models = sync_models(force=True, fetch_json=boom)
+        self.assertEqual([m["id"] for m in models], ["cached-1"])

@@ -65,6 +65,38 @@ def _switch_profile(port, wanted):
         LOG.exception("profile switch failed")
 
 
+_QUICK_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Quick ask</title>
+<style>
+ body{margin:0;background:#14171a;color:#e9f2ea;font-family:Segoe UI,system-ui,sans-serif}
+ .wrap{padding:14px}
+ h1{font-size:13px;margin:0 0 8px;font-weight:650}
+ textarea{width:100%;box-sizing:border-box;height:74px;resize:none;border-radius:8px;border:1px solid #3b4140;background:#1d2221;color:#e9f2ea;padding:8px;font:inherit}
+ .row{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}
+ button{border-radius:7px;border:1px solid #8dd39a;background:#b8e5bf;color:#17251a;padding:6px 14px;font-weight:650;cursor:pointer}
+ button.q{background:#262a2b;color:#cfd8d2;border-color:#3b4140}
+</style></head><body><div class="wrap">
+<h1>Quick ask \u2014 starts a new chat</h1>
+<textarea id="t" placeholder="Ask something\u2026 (Enter to send, Shift+Enter for a new line)"></textarea>
+<div class="row"><button class="q" id="cancel">Cancel</button><button id="send">Send</button></div>
+</div><script>
+ const t=document.getElementById('t'); t.focus();
+ const go=()=>{ const v=t.value.trim(); if(!v) return; window.pywebview.api.submit(v); };
+ document.getElementById('send').onclick=go;
+ document.getElementById('cancel').onclick=()=>window.pywebview.api.submit('');
+ t.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();go();} if(e.key==='Escape') window.pywebview.api.submit(''); });
+</script></body></html>"""
+
+
+class _QuickAskApi:
+    """js_api of the quick-ask window; submit('') just closes it."""
+
+    def __init__(self, tray):
+        self._tray = tray
+        self._window = None
+
+    def submit(self, text):
+        self._tray._quick_submit(text)
+
 class Tray:
     """System-tray icon + global Ctrl+Alt+A show/hide hotkey (Windows, best effort).
 
@@ -78,6 +110,7 @@ class Tray:
         self.icon = None
         self.visible = True
         self.quitting = False
+        self.quick_window = None
 
     def show_window(self):
         self.visible = True
@@ -96,6 +129,59 @@ class Tray:
 
     def toggle(self):
         self.hide_window() if self.visible else self.show_window()
+
+    def hotkey_pressed(self):
+        # Ctrl+Alt+A: hide when open; otherwise open the quick-ask window
+        # (the fastest path from anywhere in Windows to a new chat).
+        self.hide_window() if self.visible else self.open_quick_ask()
+
+    def notify(self, title, text, kind="done"):
+        # Questions always toast (the agent is blocked on the user);
+        # finished generations only when the window is tucked away.
+        if kind == "done" and self.visible:
+            return
+        try:
+            if self.icon:
+                self.icon.notify(text, title)
+        except Exception:
+            LOG.exception("tray notify failed")
+
+    def open_quick_ask(self):
+        try:
+            import webview
+            if self.quick_window is not None:
+                try:
+                    self.quick_window.show()
+                    self.quick_window.restore()
+                    return
+                except Exception:
+                    self.quick_window = None
+            api = _QuickAskApi(self)
+            self.quick_window = webview.create_window(
+                "Quick ask - Arena Desktop", html=_QUICK_HTML, js_api=api,
+                width=560, height=200, resizable=False, on_top=True)
+            api._window = self.quick_window
+        except Exception:
+            LOG.exception("quick ask unavailable")
+            self.show_window()
+
+    def _quick_submit(self, text):
+        text = (text or "").strip()
+        if self.quick_window is not None:
+            try:
+                self.quick_window.destroy()
+            except Exception:
+                pass
+            self.quick_window = None
+        if not text:
+            return
+        self.show_window()
+        try:
+            import json as _json
+            self.window.evaluate_js(
+                "window.__quickAsk && window.__quickAsk(" + _json.dumps(text) + ")")
+        except Exception:
+            LOG.exception("quick ask handoff failed")
 
     def on_closing(self):
         if self.quitting:
@@ -122,11 +208,17 @@ class Tray:
             return False
         menu = pystray.Menu(
             pystray.MenuItem("Open Arena Desktop", lambda *_: self.show_window(), default=True),
+            pystray.MenuItem("Quick ask...", lambda *_: self.open_quick_ask()),
             pystray.MenuItem("Hide", lambda *_: self.hide_window()),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", lambda *_: self.quit()),
         )
         self.icon = pystray.Icon("Arena Desktop", image, "Arena Desktop", menu)
+        try:
+            from arena.web import app as _webapp
+            _webapp.NOTIFY_HOOK = lambda title, text, kind="done": self.notify(title, text, kind)
+        except Exception:
+            LOG.exception("notify hook wiring failed")
         threading.Thread(target=self._run_icon, daemon=True).start()
         if sys.platform == "win32":
             threading.Thread(target=self._hotkey_loop, daemon=True).start()
@@ -154,7 +246,7 @@ class Tray:
             msg = wintypes.MSG()
             while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
                 if msg.message == WM_HOTKEY:
-                    self.toggle()
+                    self.hotkey_pressed()
         except Exception:
             LOG.exception("global hotkey unavailable")
 

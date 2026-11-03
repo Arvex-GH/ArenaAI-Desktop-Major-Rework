@@ -71,7 +71,7 @@ def main(path: str) -> int:
                    and b"createPairwiseFeedback" in engine))
 
     app = modules["arena.web.app"]
-    checks.append(("app: APP_VERSION 4.17.0", b"4.17.0" in app))
+    checks.append(("app: APP_VERSION 5.0.0", b"5.0.0" in app))
     checks.append(("app: native create direct with genuine-cx ladder",
                    b"genuine-cx+connectors" in app and b"_native_drive" not in app))
     checks.append(("app: turn-complete record detection + drain resume",
@@ -103,7 +103,7 @@ def main(path: str) -> int:
                    b"is_turn_complete_record" in native and b"trigger-control" in native))
 
     index = entries.get("arena/web/static/index.html", b"")
-    checks.append(("index.html: assets v=4.17.0", b"?v=4.17.0" in index))
+    checks.append(("index.html: assets v=5.0.0", b"?v=5.0.0" in index))
     checks.append(("index.html: Arena dropdown chips + resize handles, no segmented bars",
                    b'id="modeButton"' in index and b'id="modalityButton"' in index
                    and b'id="sidebarResize"' in index and b'id="workspaceResize"' in index
@@ -121,7 +121,7 @@ def main(path: str) -> int:
                    and b"cookie-policy" in index))
 
     app_js = entries.get("arena/web/static/app.js", b"")
-    checks.append(("app.js: demo app_version 4.17.0", b"app_version: '4.17.0'" in app_js))
+    checks.append(("app.js: demo app_version 5.0.0", b"app_version: '5.0.0'" in app_js))
     checks.append(("app.js: cloud chat open passes title",
                    b"openArenaChat(id, type, title)" in app_js))
     checks.append(("app.js: Arena dropdowns + vote + chat lock",
@@ -165,6 +165,21 @@ def main(path: str) -> int:
                    b"delegate_task" in app and b"_run_subagent" in app
                    and b"/api/update-check" in app and b"/api/settings/export" in app
                    and b"/api/diagnostics" in app and b"delegate_guide" in agent_mod))
+    checks.append(("app: v5 agent core (fan-out, checkpoints, automations, watchdogs)",
+                   b"_fanout_run" in app and b"/api/checkpoints/" in app
+                   and b"/api/automations" in app and b"STREAM_IDLE_TIMEOUT" in app
+                   and b"read_files" in agent_mod and b"run_shell_command" in agent_mod))
+    checks.append(("app: v5 chats (search, export.md, fork, snapshot, elo, beta)",
+                   b"/api/search" in app and b"/export.md" in app and b"/fork" in app
+                   and b"/api/workspace/snapshot" in app and b"/api/elo" in app
+                   and b"beta_updates" in app))
+    checks.append(("app.js: v5 UI (fan-out, pins, automations, undo, jump pill)",
+                   b"fanoutModels" in app_js and b"arenaDesktop.modelFavs" in app_js
+                   and b"renderAutomationsPanel" in app_js and b"Undo file changes" in app_js
+                   and b"initJumpPill" in app_js))
+    checks.append(("app: plan approval + checklist + AGENTS.md (v4.20)",
+                   b"propose_plan" in app and b"set_todos" in app and b"AGENTS.md" in app
+                   and b"propose_plan" in agent_mod))
     checks.append(("app: model questions to the user (ask_user)",
                    b"ask_user" in app and b"/api/questions" in app and b"ask_user" in agent_mod))
     checks.append(("app: Arena Agent file bridge (Workspace Sync downloads)",
@@ -189,6 +204,15 @@ def main(path: str) -> int:
     checks.append(("static UI: English only, no Cyrillic or old product name",
                    not any("\u0400" <= ch <= "\u04ff" for ch in static_text)
                    and b"Arena Personal" not in index + app_js + style))
+
+    models_m = modules["arena.models"]
+    checks.append(("catalog: signed-in fetch + force refresh (new models appear)",
+                   b"_catalog_fetch_json" in app and b"model catalog fetch failed" in app
+                   and b"fetch_json" in models_m))
+    checks.append(("parallel: fan-out pairs + live fork anchor + automations edit",
+                   b"_run_children_pair" in app and b"msg_index" in app
+                   and b"Edit automation" in app_js and b"Save changes" in app_js
+                   and b"force ? '&force=1'" in app_js))
 
     ok = True
     for label, passed in checks:

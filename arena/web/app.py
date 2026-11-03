@@ -3,6 +3,7 @@ Flask web backend for Arena.ai desktop client.
 Serves the web UI and proxies chat requests to arena.ai.
 """
 
+import copy
 import difflib
 import hashlib
 import json
@@ -199,6 +200,24 @@ def _generation_finished(chat_id: str = None) -> None:
         _active_generations = max(0, _active_generations - 1)
         if chat_id:
             _active_chat_ids.discard(str(chat_id))
+    if chat_id:
+        _notify("Arena Desktop", "A chat finished generating.", "done")
+
+
+# Desktop shell (tray) installs a toast callback here: fn(title, text, kind)
+# with kind "done" (a generation finished) or "question" (the model waits
+# for an answer).  The web headless server leaves it None.
+NOTIFY_HOOK = None
+
+
+def _notify(title: str, text: str, kind: str = "done") -> None:
+    hook = NOTIFY_HOOK
+    if hook is None:
+        return
+    try:
+        hook(title, text, kind)
+    except Exception:
+        LOG.exception("notify hook failed")
 
 
 def _generation_active() -> bool:
@@ -244,7 +263,7 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "4.17.0"
+APP_VERSION = "5.0.0"
 
 
 @app.after_request
@@ -445,9 +464,26 @@ def get_client() -> ArenaClient:
     return _client
 
 
-def _catalog_models() -> list:
+def _catalog_fetch_json():
+    """Fetch the model catalog through the signed-in session.
+
+    The anonymous endpoint answers 403, and sync used to swallow that and
+    serve the disk cache forever - new models (e.g. Kimi K3.1 Pro) never
+    reached the picker.  _arena_get_json uses the browser engine when
+    present and the account session otherwise, exactly like the website.
+    """
+    data, error, status = _arena_get_json(contracts.PATHS["catalog"], timeout=20)
+    if error or data is None or (status and status >= 400):
+        raise RuntimeError(f"model catalog fetch failed: {error or status}")
+    return data
+
+
+def _catalog_models(force: bool = False) -> list:
     try:
-        models = sync_models(force=False)
+        try:
+            models = sync_models(force=force, fetch_json=_catalog_fetch_json)
+        except TypeError:
+            models = sync_models(force=force)
     except Exception:
         return []
     return models if isinstance(models, list) else []
@@ -493,6 +529,10 @@ def _engine_on() -> bool:
 
 
 def _perm_mode() -> str:
+    # Automations run unattended on their own thread and may pin a mode.
+    override = getattr(_tl, "perm_override", None)
+    if override:
+        return permissions.normalize(override)
     return permissions.normalize(load_config().get("permission_mode"))
 
 # ---------- Persistent memory + conversation compaction ----------
@@ -526,6 +566,9 @@ def _memory_block(folder) -> tuple:
     if general:
         parts.append("General memory (all projects):\n" + general)
     if folder:
+        agents = _read_memory_file(Path(folder) / "AGENTS.md", 6_000)
+        if agents:
+            parts.append(f"Project instructions (AGENTS.md in {folder}):\n" + agents)
         project = _read_memory_file(Path(folder) / MEMORY_FILE_NAME, 6_000)
         if project:
             parts.append(f"Project memory ({MEMORY_FILE_NAME} in {folder}):\n" + project)
@@ -926,7 +969,8 @@ def api_models():
     if error:
         return jsonify({"ok": False, "error": error, "code": "unsupported_selection"}), 400
     api_mod = contracts.api_modality(ui_modality)
-    filtered = get_models_for_modality(_catalog_models(), api_mod, mode=ui_mode)
+    filtered = get_models_for_modality(_catalog_models(force=request.args.get("force") == "1"),
+                                        api_mod, mode=ui_mode)
     result = []
     for m in filtered:
         raw_org = m.get("org", m.get("organization", "unknown"))
@@ -1317,28 +1361,41 @@ def _version_tuple(v) -> tuple:
 
 @app.route("/api/update-check")
 def api_update_check():
-    """Compare APP_VERSION with the latest GitHub release (cached 6h)."""
-    enabled = load_config().get("update_check") is not False
+    """Compare APP_VERSION with the latest GitHub release (cached 6h).
+
+    With the beta channel on, the newest pre-release counts too; each
+    channel keeps its own cache slot."""
+    cfg = load_config()
+    enabled = cfg.get("update_check") is not False
+    beta = cfg.get("beta_updates") is True
+    channel = "beta" if beta else "stable"
     force = request.args.get("force") == "1"
     now = time.time()
-    if not force and _update_cache["data"] and now - _update_cache["t"] < 6 * 3600:
-        return jsonify(dict(_update_cache["data"], enabled=enabled, cached=True))
-    data = {"current": APP_VERSION, "latest": None, "update": False, "url": None, "error": None}
+    slot = _update_cache.setdefault(channel, {"t": 0.0, "data": None})
+    if not force and slot["data"] and now - slot["t"] < 6 * 3600:
+        return jsonify(dict(slot["data"], enabled=enabled, cached=True))
+    data = {"current": APP_VERSION, "latest": None, "update": False, "url": None,
+            "error": None, "channel": channel, "prerelease": False}
+    repo = "https://api.github.com/repos/Maxusimlive/Arena-Desktop"
+    url = f"{repo}/releases?per_page=10" if beta else f"{repo}/releases/latest"
     try:
-        r = requests.get("https://api.github.com/repos/Maxusimlive/Arena-Desktop/releases/latest",
+        r = requests.get(url,
                          headers={"Accept": "application/vnd.github+json",
                                   "User-Agent": f"Arena-Desktop/{APP_VERSION}"}, timeout=6)
         if r.status_code == 200:
             payload = r.json()
+            if beta:
+                payload = next((x for x in payload if isinstance(x, dict) and not x.get("draft")), {})
             latest = str(payload.get("tag_name") or "").lstrip("v")
             data["latest"] = latest or None
             data["url"] = payload.get("html_url")
+            data["prerelease"] = bool(payload.get("prerelease"))
             data["update"] = bool(latest) and _version_tuple(latest) > _version_tuple(APP_VERSION)
         else:
             data["error"] = f"GitHub returned {r.status_code}"
     except Exception as e:
         data["error"] = f"{type(e).__name__}: {e}"
-    _update_cache.update(t=now, data=data)
+    slot.update(t=now, data=data)
     return jsonify(dict(data, enabled=enabled))
 
 
@@ -1439,6 +1496,8 @@ def api_diagnostics():
 _QUESTIONS: dict = {}
 _questions_lock = threading.Lock()
 QUESTION_TIMEOUT = 600
+STREAM_IDLE_TIMEOUT = 90   # seconds of silence before a stalled model stream is closed
+CHILD_TIME_BUDGET = 360    # max seconds one sub-agent (or fan-out child) may run
 
 
 def _question_answer(qid):
@@ -1447,11 +1506,33 @@ def _question_answer(qid):
         return (q or {}).get("answer")
 
 
+def _parse_todos(raw: str) -> list:
+    """Parse a model checklist: one step per line, [x]/[~]/[ ] markers."""
+    items = []
+    for line in str(raw or "").splitlines():
+        line = line.strip().lstrip("-*").strip()
+        if not line:
+            continue
+        status = "pending"
+        marker = line[:3].lower()
+        if marker in ("[x]", "[\u2713]"):
+            status, line = "done", line[3:].strip()
+        elif marker in ("[~]", "[>]", "[*]", "[-]"):
+            status, line = "doing", line[3:].strip()
+        elif marker == "[ ]":
+            line = line[3:].strip()
+        if line:
+            items.append({"text": line[:200], "status": status})
+        if len(items) >= 30:
+            break
+    return items
+
+
 @app.route("/api/questions")
 def api_questions():
     """Questions from models that are still waiting for the user."""
     with _questions_lock:
-        items = [{k: q.get(k) for k in ("id", "chat_id", "question", "options", "custom", "lane", "subagent")}
+        items = [{k: q.get(k) for k in ("id", "chat_id", "kind", "question", "plan", "options", "custom", "lane", "subagent")}
                  for q in _QUESTIONS.values() if q.get("answer") is None]
     return jsonify(items)
 
@@ -1468,6 +1549,414 @@ def api_question_answer(qid):
             return jsonify({"error": "That question is no longer waiting.", "code": "gone"}), 404
         q["answer"] = answer[:2000]
     return jsonify({"ok": True})
+
+
+# ---------- v5: chat search / export / fork, workspace snapshot, Elo, automations ----------
+
+@app.route("/api/search")
+def api_search():
+    """Full-text search across locally saved chats (title search stays client-side)."""
+    q = (request.args.get("q") or "").strip()
+    if len(q) < 2:
+        return jsonify([])
+    ql = q.lower()
+    results = []
+    for summary in _list_chats():
+        if not isinstance(summary, dict):
+            continue
+        cid = summary.get("id") or summary.get("chat_id")
+        if not cid:
+            continue
+        data = _load_chat(str(cid))
+        if not data:
+            continue
+        for idx, m in enumerate(data.get("messages") or []):
+            matched = False
+            for Field_name in ("text", "text_b"):
+                text = str(m.get(Field_name) or "")
+                pos = text.lower().find(ql)
+                if pos >= 0:
+                    start = max(0, pos - 60)
+                    results.append({
+                        "chat_id": str(cid),
+                        "title": data.get("title") or summary.get("title") or "Chat",
+                        "msg_index": idx,
+                        "role": m.get("role") or "assistant",
+                        "snippet": (("..." if start else "")
+                                    + text[start:pos + len(q) + 60].replace("\n", " ") + "...")})
+                    matched = True
+                    break
+            if matched and len(results) >= 40:
+                break
+        if len(results) >= 40:
+            break
+    return jsonify(results[:40])
+
+
+@app.route("/api/chats/<chat_id>/export.md")
+def api_chat_export(chat_id):
+    """The whole chat as one Markdown file (tool steps as a compact list)."""
+    data = _load_chat(chat_id)
+    if not data:
+        return jsonify({"error": "Chat not found"}), 404
+    lines = [f"# {data.get('title') or 'Chat'}", "",
+             f"_Exported from Arena Desktop on {datetime.now().strftime('%Y-%m-%d %H:%M')}_", ""]
+    for m in data.get("messages") or []:
+        role = m.get("role")
+        if role == "notice":
+            lines += ["", "---", "_Context compacted here_", ""]
+            continue
+        if role == "user":
+            lines += ["## User", "", str(m.get("text") or ""), ""]
+        elif role == "assistant":
+            names = m.get("names") or {}
+            for key, Field_name in (("a", "text"), ("b", "text_b")):
+                text = str(m.get(Field_name) or "")
+                if not text:
+                    continue
+                who = names.get(key) or ("Assistant" if key == "a" else "Model B")
+                lines += [f"## {who}", "", text, ""]
+            for t in m.get("tools") or []:
+                lines.append(f"- `{t.get('tool')}` - {t.get('summary') or ''} ({t.get('status') or ''})")
+            if m.get("tools"):
+                lines.append("")
+    fname = re.sub(r"[^A-Za-z0-9._-]+", "-", str(data.get("title") or "chat")).strip("-")[:60] or "chat"
+    return Response("\n".join(lines), mimetype="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}.md"'})
+
+
+@app.route("/api/chats/<chat_id>/fork", methods=["POST"])
+def api_chat_fork(chat_id):
+    """Copy the chat up to a message into a new chat with a fresh Arena session.
+
+    The copied conversation rides into the new session as a pending digest
+    (the Compact mechanism), so the model keeps the context that matters."""
+    data = _load_chat(chat_id)
+    if not data:
+        return jsonify({"error": "Chat not found"}), 404
+    body = request.get_json(silent=True) or {}
+    msgs = list(data.get("messages") or [])
+    try:
+        idx = int(body.get("message_index"))
+    except (TypeError, ValueError):
+        idx = len(msgs) - 1
+    idx = max(0, min(idx, len(msgs) - 1)) if msgs else -1
+    copied = copy.deepcopy(msgs[:idx + 1]) if idx >= 0 else []
+    new_id = generate_uuidv7()
+    try:
+        digest = _build_digest(dict(data, messages=copied)) if copied else ""
+    except Exception:
+        LOG.exception("fork digest failed")
+        digest = ""
+    _save_chat(new_id, title=(str(data.get("title") or "Chat") + " (fork)")[:80],
+               messages=copied, mode=data.get("mode") or "direct",
+               modality=data.get("modality") or "text",
+               model_a=data.get("model_a"), model_b=data.get("model_b"),
+               eval_id=None, native=None, memory_hash="", pending_digest=digest,
+               parent_id=data.get("parent_id"))
+    return jsonify({"ok": True, "chat_id": new_id})
+
+
+@app.route("/api/workspace/snapshot", methods=["POST"])
+def api_workspace_snapshot():
+    """Concatenate workspace text files into one attachable context block."""
+    ws = _chosen_ws()
+    if not ws:
+        return jsonify({"error": "Choose a workspace folder first.", "code": "no_workspace"}), 400
+    root = Path(ws).resolve()
+    body = request.get_json(silent=True) or {}
+    wanted = [str(x) for x in (body.get("paths") or []) if str(x).strip()][:40]
+    files: list = []
+    for rel in wanted:
+        try:
+            target = (root / rel).resolve()
+        except OSError:
+            continue
+        if root != target and root not in target.parents:
+            continue
+        if target.is_file():
+            files.append(target)
+        elif target.is_dir():
+            for fp in sorted(target.rglob("*")):
+                if len(files) >= 40:
+                    break
+                if fp.is_file() and ".git" not in fp.parts and ".arena-artifacts" not in fp.parts:
+                    files.append(fp)
+    parts = ["[Attached workspace files]"]
+    total = included = 0
+    for fp in files[:40]:
+        try:
+            raw = fp.read_bytes()
+        except OSError:
+            continue
+        if b"\x00" in raw[:2048]:
+            continue
+        text = raw.decode("utf-8", errors="replace")[:12000]
+        parts.append(f"\n--- {fp.relative_to(root).as_posix()} ---\n{text}")
+        total += len(text)
+        included += 1
+        if total >= 40000:
+            break
+    parts.append("\n[/Attached workspace files]")
+    text = "\n".join(parts)
+    return jsonify({"ok": True, "text": text[:44000], "chars": len(text), "files": included})
+
+
+_elo_cache = {"t": 0.0, "models": {}}
+ELO_TTL = 24 * 3600
+
+
+def _elo_fetch():
+    base = "https://raw.githubusercontent.com/oolong-tea-2026/arena-ai-leaderboards/main/data"
+    headers = {"User-Agent": f"Arena-Desktop/{APP_VERSION}"}
+    r = requests.get(f"{base}/latest.json", headers=headers, timeout=8)
+    r.raise_for_status()
+    day = str((r.json() or {}).get("path") or "")
+    models: dict = {}
+    for board in ("text", "code"):
+        try:
+            rr = requests.get(f"{base}/{day}/{board}.json", headers=headers, timeout=8)
+            if rr.status_code != 200:
+                continue
+            for m in (rr.json() or {}).get("models") or []:
+                slug = str(m.get("model") or "").strip().lower()
+                if slug and slug not in models:
+                    models[slug] = {"rank": m.get("rank"), "score": m.get("score"), "board": board}
+        except Exception:
+            continue
+    return models
+
+
+@app.route("/api/elo")
+def api_elo():
+    """Daily Arena leaderboard snapshot (oolong-tea), cached 24h. Optional."""
+    if load_config().get("elo_enabled") is False:
+        return jsonify({"enabled": False, "models": {}})
+    now = time.time()
+    cache_file = COOKIE_FILE.parent / "elo_cache.json"
+    if not _elo_cache["models"] and cache_file.exists():
+        try:
+            saved = json.loads(cache_file.read_text(encoding="utf-8"))
+            _elo_cache.update(t=float(saved.get("t") or 0), models=saved.get("models") or {})
+        except Exception:
+            pass
+    if _elo_cache["models"] and now - _elo_cache["t"] < ELO_TTL:
+        return jsonify({"enabled": True, "models": _elo_cache["models"], "cached": True})
+    try:
+        models = _elo_fetch()
+        if models:
+            _elo_cache.update(t=now, models=models)
+            try:
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(json.dumps({"t": now, "models": models}), encoding="utf-8")
+            except OSError:
+                pass
+    except Exception as e:
+        LOG.info("elo fetch failed: %s", e)
+    return jsonify({"enabled": True, "models": _elo_cache["models"]})
+
+
+# ---------------- automations (scheduled agent runs) ----------------
+
+_automation_running: set = set()
+_automation_lock = threading.Lock()
+_scheduler_started = False
+_SCHEDULE_RE = re.compile(r"^(daily\s+([01]?\d|2[0-3]):[0-5]\d|hourly|every\s+\d{1,5}m)$")
+
+
+def _automation_due(item, now=None) -> bool:
+    if not isinstance(item, dict) or item.get("enabled", True) is False:
+        return False
+    now = now or datetime.now()
+    sched = str(item.get("schedule") or "").strip().lower()
+    try:
+        last_ts = float(item.get("last_run") or 0)
+    except (TypeError, ValueError):
+        last_ts = 0.0
+    m = re.fullmatch(r"every\s+(\d{1,5})m", sched)
+    if m:
+        return time.time() - last_ts >= int(m.group(1)) * 60
+    if sched == "hourly":
+        return time.time() - last_ts >= 3600
+    m = re.fullmatch(r"daily\s+([01]?\d|2[0-3]):([0-5]\d)", sched)
+    if m:
+        due = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        return now >= due and last_ts < due.timestamp()
+    return False
+
+
+def _run_automation(item):
+    """Run one automation now (on the caller's thread); returns the chat id."""
+    chat_id = generate_uuidv7()
+    prompt = str(item.get("prompt") or "").strip()
+    title = ("Auto: " + str(item.get("name") or "Automation"))[:60]
+    _tl.chat_id = chat_id
+    _tl.stop_event = threading.Event()
+    _tl.error = None
+    _tl.perm_override = item.get("permission") or "plan"
+    model_id = str(item.get("model") or "") or None
+    conv = {"eval_id": None, "new": True, "mode": contracts.api_mode("direct"),
+            "modality": contracts.api_modality("text"), "model_a": model_id,
+            "model_b": None, "chat_id": chat_id, "auto_model": not model_id,
+            "reasoning": {"a": "", "b": ""}, "lane_errors": {"a": [], "b": []},
+            "attachments": None, "guide_sent": False, "mcp_guide_hash": None,
+            "memory_hash": None, "title": title, "tools": [],
+            "allow_delegate": True, "delegate_sent": False}
+    prefix = ""
+    if _memory_enabled():
+        block, _h = _memory_block(_chosen_ws())
+        prefix = block or ""
+    history = [{"role": "user", "text": prompt}]
+    out = {"a": "", "b": ""}
+    final_error = None
+    _generation_started(chat_id)
+    try:
+        _save_chat(chat_id, title=title, messages=list(history), mode="direct",
+                   modality="text", model_a=model_id, model_b=None, eval_id=None)
+        gen = _agent_run(get_client(), prefix + prompt, conv)
+        while True:
+            try:
+                next(gen)
+            except StopIteration as stop:
+                out = stop.value or out
+                break
+    except Exception as e:
+        final_error = f"{type(e).__name__}: {e}"
+        LOG.exception("automation run failed")
+    finally:
+        _generation_finished(chat_id)
+        text = agent.strip_tool_calls(out.get("a") or "").strip()
+        reply = {"role": "assistant", "text": text, "text_b": "",
+                 "names": {"a": _model_name(model_id) or "Automation", "b": None}}
+        if conv.get("tools"):
+            reply["tools"] = conv["tools"]
+        ckpts = {l: (conv.get(f"_checkpoint_{l}") or {}).get("id")
+                 for l in ("a", "b") if (conv.get(f"_checkpoint_{l}") or {}).get("id")}
+        if ckpts:
+            reply["checkpoints"] = ckpts
+        if final_error and not text:
+            reply["error"] = final_error
+        history.append(reply)
+        try:
+            _save_chat(chat_id, title=title, messages=history, mode="direct",
+                       modality="text", model_a=model_id, model_b=None,
+                       eval_id=conv.get("eval_id") if not conv.get("new") else None,
+                       tools_guide=True,
+                       delegate_guide=bool(conv.get("delegate_sent")))
+        except Exception:
+            LOG.exception("automation save failed")
+        _notify("Arena Desktop", f"Automation '{str(item.get('name') or 'run')[:40]}' finished.", "done")
+    return chat_id
+
+
+def _automation_worker(item):
+    try:
+        _run_automation(item)
+    except Exception:
+        LOG.exception("automation worker failed")
+    finally:
+        with _automation_lock:
+            _automation_running.discard(str(item.get("id") or ""))
+        try:
+            cfg = load_config()
+            for it in cfg.get("automations") or []:
+                if str(it.get("id")) == str(item.get("id")):
+                    it["last_run"] = int(time.time())
+            save_config(cfg)
+        except Exception:
+            LOG.exception("automation last_run save failed")
+
+
+def _spawn_automation(item) -> bool:
+    aid = str(item.get("id") or "")
+    with _automation_lock:
+        if aid in _automation_running:
+            return False
+        _automation_running.add(aid)
+    threading.Thread(target=_automation_worker, args=(item,), daemon=True).start()
+    return True
+
+
+def _automation_tick():
+    for item in load_config().get("automations") or []:
+        if _automation_due(item):
+            _spawn_automation(item)
+
+
+def _start_automation_scheduler():
+    global _scheduler_started
+    if _scheduler_started:
+        return
+    _scheduler_started = True
+
+    def loop():
+        while True:
+            time.sleep(30)
+            try:
+                _automation_tick()
+            except Exception:
+                LOG.exception("automation tick failed")
+
+    threading.Thread(target=loop, daemon=True).start()
+
+
+@app.route("/api/automations")
+def api_automations_list():
+    return jsonify({"items": load_config().get("automations") or []})
+
+
+@app.route("/api/automations", methods=["POST"])
+def api_automations_save():
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name") or "").strip()
+    prompt = str(body.get("prompt") or "").strip()
+    schedule = str(body.get("schedule") or "").strip().lower()
+    if not name or not prompt:
+        return jsonify({"error": "Name and prompt are required.", "code": "bad_request"}), 400
+    if not _SCHEDULE_RE.match(schedule):
+        return jsonify({"error": "Schedule must be 'daily HH:MM', 'hourly' or 'every Nm'.",
+                        "code": "bad_request"}), 400
+    permission = body.get("permission") if body.get("permission") in ("plan", "bypassPermissions") else "plan"
+    cfg = load_config()
+    items = list(cfg.get("automations") or [])
+    aid = str(body.get("id") or "") or generate_uuidv7()
+    entry = {"id": aid, "name": name[:80], "prompt": prompt[:4000], "schedule": schedule,
+             "enabled": body.get("enabled") is not False, "permission": permission,
+             "model": str(body.get("model") or "") or None,
+             "last_run": 0}
+    for i, it in enumerate(items):
+        if str(it.get("id")) == aid:
+            entry["last_run"] = it.get("last_run") or 0
+            items[i] = entry
+            break
+    else:
+        items.append(entry)
+    cfg["automations"] = items[:25]
+    save_config(cfg)
+    return jsonify({"ok": True, "item": entry})
+
+
+@app.route("/api/automations/<aid>", methods=["DELETE"])
+def api_automations_delete(aid):
+    cfg = load_config()
+    items = [it for it in (cfg.get("automations") or []) if str(it.get("id")) != str(aid)]
+    cfg["automations"] = items
+    save_config(cfg)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/automations/<aid>/run", methods=["POST"])
+def api_automations_run(aid):
+    item = next((it for it in (load_config().get("automations") or [])
+                 if str(it.get("id")) == str(aid)), None)
+    if not item:
+        return jsonify({"error": "Automation not found", "code": "gone"}), 404
+    if not _spawn_automation(item):
+        return jsonify({"error": "That automation is already running.", "code": "busy"}), 409
+    return jsonify({"ok": True})
+
+
+_start_automation_scheduler()
 
 
 def _archive_agentic_on_arena(session_id: str) -> Optional[str]:
@@ -1995,7 +2484,8 @@ def _send(client: ArenaClient, path: str, body: dict):
         # and rate-limits expensive modalities (Video first).
         return ENGINE.request(path, body, timeout=timeout, cx=True)
     try:
-        r = client.session.post(contracts.ORIGIN + path, json=body, stream=True, timeout=(15, timeout))
+        read_idle = timeout if body.get("modality") == "video" else STREAM_IDLE_TIMEOUT
+        r = client.session.post(contracts.ORIGIN + path, json=body, stream=True, timeout=(15, read_idle))
     except requests.RequestException as e:
         return _HttpStream(error=str(e))
     client.sync_cookies()
@@ -2345,7 +2835,24 @@ def _line_events(r, conv: dict):
                 if url:
                     yield _sse({"type": "preview", "model": lane, "url": url})
 
-    for chunk in r.iter_text():
+    def _chunks():
+        # A silent stream (server hang, dead connection) raises a read
+        # timeout here; turn it into a graceful end-of-turn instead of an
+        # endless spinner.
+        try:
+            yield from r.iter_text()
+        except requests.RequestException as e:
+            if "timed out" in str(e).lower() or "timeout" in str(e).lower():
+                yield "\x00stalled"
+                return
+            raise
+
+    for chunk in _chunks():
+        if chunk == "\x00stalled":
+            yield _sse({"type": "notice", "level": "warn",
+                        "text": f"The model stopped sending data ({STREAM_IDLE_TIMEOUT}s) - "
+                                "the stream was closed to avoid a hang. Send 'continue' to resume."})
+            return out
         for line in split.feed(chunk):
             yield from handle(line)
         if _stopped():
@@ -2996,7 +3503,342 @@ def _native_file_bridge(files, native_state):
     return written
 
 
+_ckpt_lock = threading.Lock()
+
+
+def _invalidate_read_cache(conv, info):
+    cache = conv.get("_read_cache")
+    if not cache:
+        return
+    target = str(info.get("path") or "")
+    for key in [k for k in cache if k and k[0] == target]:
+        cache.pop(key, None)
+
+
+def _checkpoint_capture(conv, lane, info):
+    """Snapshot files before the agent overwrites/deletes them (once per turn).
+
+    Snapshots land in <base>/.arena-artifacts/checkpoints/<id>/ with a
+    manifest; the reply carries the id so the UI can offer one-click Undo.
+    Best-effort: any failure just means no undo for that file.
+    """
+    try:
+        target = Path(info.get("path") or "")
+        rel = str(info.get("rel") or "")
+        if not rel or rel == "." or not str(target):
+            return
+        with _ckpt_lock:
+            state = conv.get(f"_checkpoint_{lane}")
+            if state is None:
+                ck_id = time.strftime("%Y%m%d-%H%M%S") + "-" + generate_uuidv7()[:8]
+                parts = [pt for pt in Path(rel).parts if pt not in (".", "/")]
+                base = target
+                if all(pt != ".." for pt in parts):
+                    for _ in parts:
+                        base = base.parent
+                else:
+                    base = target.parent
+                ck_dir = base / ".arena-artifacts" / "checkpoints" / ck_id
+                (ck_dir / "files").mkdir(parents=True, exist_ok=True)
+                state = {"id": ck_id, "dir": str(ck_dir), "entries": [], "seen": []}
+                conv[f"_checkpoint_{lane}"] = state
+            targets = []
+            if target.is_dir():
+                for fp in target.rglob("*"):
+                    if fp.is_file():
+                        targets.append(fp)
+                    if len(targets) >= 200:
+                        break
+            else:
+                targets = [target]
+            total = sum(int(e.get("size") or 0) for e in state["entries"])
+            for fp in targets:
+                key = str(fp)
+                if key in state["seen"]:
+                    continue
+                state["seen"].append(key)
+                entry = {"abs": key, "existed": fp.is_file(), "store": None}
+                if entry["existed"]:
+                    try:
+                        size = fp.stat().st_size
+                    except OSError:
+                        size = 0
+                    if total + size <= 20 * 1024 * 1024:
+                        store = f"f{len(state['entries'])}"
+                        try:
+                            (Path(state["dir"]) / "files" / store).write_bytes(fp.read_bytes())
+                            entry.update(store=store, size=size)
+                            total += size
+                        except OSError:
+                            entry["skipped"] = "unreadable"
+                    else:
+                        entry["skipped"] = "checkpoint size cap"
+                state["entries"].append(entry)
+            manifest = {"id": state["id"], "lane": lane, "chat_id": conv.get("chat_id"),
+                        "created": int(time.time()), "entries": state["entries"]}
+            (Path(state["dir"]) / "manifest.json").write_text(
+                json.dumps(manifest, indent=1), encoding="utf-8")
+    except Exception:
+        LOG.exception("checkpoint capture failed")
+
+
+@app.route("/api/checkpoints/<cid>/restore", methods=["POST"])
+def api_checkpoint_restore(cid):
+    """Undo one agent turn's file changes from its checkpoint snapshot."""
+    if not re.fullmatch(r"[A-Za-z0-9-]{6,80}", cid or ""):
+        return jsonify({"error": "Bad checkpoint id", "code": "bad_request"}), 400
+    ws = _chosen_ws()
+    manifest = ck_dir = None
+    if ws:
+        root = Path(ws)
+        for base in (root, root / "option-a", root / "option-b"):
+            mpath = base / ".arena-artifacts" / "checkpoints" / cid / "manifest.json"
+            if mpath.is_file():
+                try:
+                    manifest = json.loads(mpath.read_text(encoding="utf-8"))
+                    ck_dir = mpath.parent
+                except (OSError, ValueError):
+                    manifest = None
+                break
+    if not manifest or ck_dir is None:
+        return jsonify({"error": "Checkpoint not found", "code": "gone"}), 404
+    restored = removed = 0
+    for entry in manifest.get("entries") or []:
+        dest = Path(str(entry.get("abs") or ""))
+        if not dest.is_absolute():
+            continue
+        try:
+            if entry.get("existed") and entry.get("store"):
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes((ck_dir / "files" / str(entry["store"])).read_bytes())
+                restored += 1
+            elif not entry.get("existed") and dest.is_file():
+                dest.unlink()
+                removed += 1
+        except OSError:
+            LOG.exception("checkpoint restore failed for %s", dest)
+    return jsonify({"ok": True, "restored": restored, "removed": removed})
+
+
+def _delegate_is_research(call) -> bool:
+    params = call.get("params") or {}
+    return str(params.get("mode") or "research").strip().lower() != "work" or _perm_mode() == "plan"
+
+
+def _parallel_partner(lane_calls, call, precomputed):
+    """Next un-run research delegate_task in this round (for paired execution)."""
+    if not _delegate_is_research(call):
+        return None
+    seen = False
+    for other in lane_calls:
+        if other is call:
+            seen = True
+            continue
+        if seen and other.get("name") == "delegate_task" and id(other) not in precomputed \
+                and _delegate_is_research(other):
+            return other
+    return None
+
+
+def _fresh_client(client):
+    """Independent ArenaClient for a worker thread (Sessions are not thread-safe)."""
+    try:
+        clone = ArenaClient(cookie_str=getattr(client, "cookie_str", None))
+        clone.session.cookies.update(client.session.cookies)
+        clone.active_mode = client.active_mode
+        clone.active_modality = client.active_modality
+        return clone
+    except Exception:
+        LOG.exception("client clone failed; sharing the parent client")
+        return client
+
+
+def _run_parallel_research(client, conv, call, partner, lane, child_id, precomputed):
+    """Run two read-only sub-agents concurrently; yields SSE events.
+
+    Returns the current call's (ok, status, output, extra); the partner's
+    result is stashed in precomputed for the loop to consume when it reaches
+    that call.  Work-mode children never come here: writes stay sequential.
+    """
+    partner_child = generate_uuidv7()
+    ptask = str((partner.get("params") or {}).get("task") or "").strip()
+    pinfo = {"tool": "delegate_task", "model": lane, "name": "Sub-agent",
+             "summary": "Sub-agent: " + (" ".join(ptask.split())[:120] or "task"),
+             "child_id": partner_child, "inside": True, "path": ptask[:400]}
+    yield _sse(dict(pinfo, type="tool_call"))
+    events_q: queue.Queue = queue.Queue()
+    results: dict = {}
+    parent_tl = {"chat_id": getattr(_tl, "chat_id", None),
+                 "stop_event": getattr(_tl, "stop_event", None),
+                 "perm_override": getattr(_tl, "perm_override", None)}
+
+    def drive(key, c, cid):
+        for k, v in parent_tl.items():
+            setattr(_tl, k, v)
+        _tl.error = None
+        try:
+            gen = _run_subagent(_fresh_client(client), conv, c, lane, cid)
+            while True:
+                try:
+                    events_q.put(next(gen))
+                except StopIteration as stop:
+                    results[key] = stop.value
+                    break
+        except Exception as e:
+            LOG.exception("parallel sub-agent failed")
+            results[key] = (False, "error", f"{type(e).__name__}: {e}", {"child_id": cid})
+        finally:
+            events_q.put(None)
+
+    threads = [threading.Thread(target=drive, args=("a", call, child_id), daemon=True),
+               threading.Thread(target=drive, args=("b", partner, partner_child), daemon=True)]
+    for t in threads:
+        t.start()
+    done = idle = 0
+    while done < 2:
+        try:
+            ev = events_q.get(timeout=1)
+        except queue.Empty:
+            idle += 1
+            if idle % 10 == 0:
+                yield _sse({"type": "ping"})
+            continue
+        if ev is None:
+            done += 1
+        else:
+            yield ev
+    for t in threads:
+        t.join(timeout=5)
+    ok_b, status_b, output_b, extra_b = results.get("b") or (
+        False, "error", "sub-agent produced no result", {"child_id": partner_child})
+    precomputed[id(partner)] = {
+        "ok": ok_b, "status": status_b, "output": output_b,
+        "step": {"tool": "delegate_task", "summary": pinfo["summary"], "lane": lane,
+                 "diff": None, "ok": ok_b, "status": status_b,
+                 "child_id": extra_b.get("child_id"), "model": extra_b.get("model"),
+                 "mode": extra_b.get("mode")}}
+    return results.get("a") or (False, "error", "sub-agent produced no result", {"child_id": child_id})
+
+
+
+def _run_children_pair(client, conv: dict, jobs: list, lane: str):
+    """Drive two _run_subagent children concurrently, streaming both.
+
+    jobs: exactly two (call, child_id) pairs.  Returns a 2-list of the
+    children's (ok, status, output, extra) results, aligned with jobs.
+    Mirrors _run_parallel_research's drive loop (fresh client per child,
+    thread-local state copied in, events through a queue).
+    """
+    events_q: queue.Queue = queue.Queue()
+    results: dict = {}
+    parent_tl = {"chat_id": getattr(_tl, "chat_id", None),
+                 "stop_event": getattr(_tl, "stop_event", None),
+                 "perm_override": getattr(_tl, "perm_override", None)}
+
+    def drive(index, c, cid):
+        for k, v in parent_tl.items():
+            setattr(_tl, k, v)
+        _tl.error = None
+        try:
+            gen = _run_subagent(_fresh_client(client), conv, c, lane, cid)
+            while True:
+                try:
+                    events_q.put(next(gen))
+                except StopIteration as stop:
+                    results[index] = stop.value
+                    break
+        except Exception as e:
+            LOG.exception("parallel fan-out child failed")
+            results[index] = (False, "error", f"{type(e).__name__}: {e}", {"child_id": cid})
+        finally:
+            events_q.put(None)
+
+    threads = [threading.Thread(target=drive, args=(i, jobs[i][0], jobs[i][1]), daemon=True)
+               for i in range(2)]
+    for t in threads:
+        t.start()
+    finished = 0
+    while finished < 2:
+        item = events_q.get()
+        if item is None:
+            finished += 1
+            continue
+        yield item
+    for t in threads:
+        t.join(timeout=5)
+    return [results.get(i, (False, "error", "", {})) for i in range(2)]
+
+
+def _fanout_run(client, message: str, conv: dict, fanout_models: list):
+    """Ask several models the same prompt, then summarize the answers.
+
+    Each model answers in its own child chat nested under this one; this
+    chat's reply composes all answers plus a short comparison written by
+    one more child on Arena's automatic model.  Yields SSE; returns out.
+    """
+    answers = []
+    models = fanout_models[:4]
+    i = 0
+    while i < len(models) and not _stopped():
+        pair = models[i:i + 2]
+        i += 2
+        jobs, infos = [], []
+        for mid in pair:
+            child_id = generate_uuidv7()
+            call = {"name": "delegate_task",
+                    "params": {"task": message, "model": mid, "mode": "research", "fanout": True}}
+            info = {"tool": "delegate_task", "model": "a", "name": "Sub-agent",
+                    "summary": "Asking " + (_model_name(mid) or "a model"),
+                    "child_id": child_id, "inside": True, "path": message[:400]}
+            jobs.append((call, child_id))
+            infos.append((mid, info))
+            yield _sse(dict(info, type="tool_call"))
+        if len(jobs) == 2:  # two models at a time - same Arena-friendly cap
+            results = yield from _run_children_pair(client, conv, jobs, "a")
+        else:
+            results = [(yield from _run_subagent(client, conv, jobs[0][0], "a", jobs[0][1]))]
+        for (mid, info), (ok, status, output, extra) in zip(infos, results):
+            conv.setdefault("tools", []).append(
+                {"tool": "delegate_task", "summary": info["summary"], "lane": "a", "diff": None,
+                 "ok": ok, "status": status, "child_id": extra.get("child_id"),
+                 "model": extra.get("model"), "mode": extra.get("mode")})
+            yield _sse({"type": "tool_result", "model": "a", "tool": "delegate_task",
+                        "child_id": extra.get("child_id"), "ok": ok, "status": status,
+                        "output": (output or "")[:4000]})
+            answers.append((extra.get("model") or _model_name(mid) or "Model", output or ""))
+    if not answers:
+        return {"a": "", "b": ""}
+    parts = [f"**{name}**\n\n{(text or '').strip() or '(no answer)'}" for name, text in answers]
+    summary = ""
+    if len(answers) > 1 and not _stopped():
+        child_id = generate_uuidv7()
+        blob = "\n\n".join(f"--- Answer from {n} ---\n{(t or '')[:6000]}" for n, t in answers)
+        task = ("Compare the answers below to the same user request. Write a brief synthesis: "
+                "where they agree, where they differ, and which points look most reliable. "
+                "Do not repeat the answers.\n\nUser request:\n" + message + "\n\n" + blob)
+        call = {"name": "delegate_task",
+                "params": {"task": task, "mode": "research", "fanout": True}}
+        info = {"tool": "delegate_task", "model": "a", "name": "Sub-agent",
+                "summary": "Comparing the answers", "child_id": child_id,
+                "inside": True, "path": task[:400]}
+        yield _sse(dict(info, type="tool_call"))
+        ok, status, output, extra = yield from _run_subagent(client, conv, call, "a", child_id)
+        conv.setdefault("tools", []).append(
+            {"tool": "delegate_task", "summary": info["summary"], "lane": "a", "diff": None,
+             "ok": ok, "status": status, "child_id": extra.get("child_id"),
+             "model": extra.get("model"), "mode": extra.get("mode")})
+        yield _sse({"type": "tool_result", "model": "a", "tool": "delegate_task",
+                    "child_id": extra.get("child_id"), "ok": ok, "status": status,
+                    "output": (output or "")[:4000]})
+        summary = (output or "").strip() if ok else ""
+    composed = "\n\n---\n\n".join(parts)
+    if summary:
+        composed += "\n\n---\n\n**Summary**\n\n" + summary
+    yield _sse({"type": "text", "model": "a", "text": composed})
+    return {"a": composed, "b": ""}
+
 MAX_SUBAGENTS = 3
+_subagent_lock = threading.Lock()
 
 
 def _delegate_models() -> list:
@@ -3047,20 +3889,26 @@ def _run_subagent(client, parent_conv: dict, call: dict, lane: str, child_id: st
         smode = "research"
     model_id, model_name, auto = _resolve_delegate_model(params.get("model"))
     extra.update({"model": model_name, "mode": smode, "task": task[:300]})
-    ran = int(parent_conv.get("subagents_run") or 0)
-    if ran >= MAX_SUBAGENTS:
-        return False, "error", (f"Sub-agent limit reached ({MAX_SUBAGENTS} per turn). "
-                                "Finish the work yourself or ask the user to continue."), extra
-    parent_conv["subagents_run"] = ran + 1
-    intro = ("[Arena Desktop] You are a sub-agent handling a delegated task for the main agent "
-             "in a parent chat. Work only on the task below. When you are done, finish with a "
-             "compact structured summary: what you did or found, the files involved (paths and "
-             "line references where useful), and any open questions. Only that summary is "
-             "returned to the main agent.\n")
+    with _subagent_lock:
+        ran = int(parent_conv.get("subagents_run") or 0)
+        if ran >= MAX_SUBAGENTS and not (call.get("params") or {}).get("fanout"):
+            return False, "error", (f"Sub-agent limit reached ({MAX_SUBAGENTS} per turn). "
+                                    "Finish the work yourself or ask the user to continue."), extra
+        parent_conv["subagents_run"] = ran + 1
+    if params.get("fanout"):
+        intro = ("[Arena Desktop] Answer the user's request below directly and completely. "
+                 "Your full answer is shown to the user next to other models' answers, so do "
+                 "not summarize for a main agent and do not mention being a sub-agent.\n")
+    else:
+        intro = ("[Arena Desktop] You are a sub-agent handling a delegated task for the main agent "
+                 "in a parent chat. Work only on the task below. When you are done, finish with a "
+                 "compact structured summary: what you did or found, the files involved (paths and "
+                 "line references where useful), and any open questions. Only that summary is "
+                 "returned to the main agent.\n")
     if smode == "research":
         intro += "You are read-only: explore and report, do not modify anything.\n"
     child_message = intro + "\nTask:\n" + task
-    title = "Sub-agent: " + " ".join(task.split())[:44]
+    title = ("Fan-out: " if params.get("fanout") else "Sub-agent: ") + " ".join(task.split())[:44]
     child_history = [{"role": "user", "text": child_message}]
     child_conv = {"eval_id": None, "new": True, "mode": contracts.api_mode("direct"),
                   "modality": contracts.api_modality("text"), "model_a": model_id,
@@ -3086,7 +3934,15 @@ def _run_subagent(client, parent_conv: dict, call: dict, lane: str, child_id: st
         yield _sse({"type": "subagent", "status": "started", "child_id": child_id,
                     "task": task[:300], "model_name": model_name, "mode": smode, "lane": lane})
         gen = _agent_run(client, prefix + child_message, child_conv)
+        deadline = time.time() + CHILD_TIME_BUDGET
         while True:
+            if time.time() > deadline:
+                child_error = f"time budget exceeded ({CHILD_TIME_BUDGET // 60} min)"
+                try:
+                    gen.close()
+                except Exception:
+                    pass
+                break
             try:
                 ev = next(gen)
             except StopIteration as stop:
@@ -3099,7 +3955,7 @@ def _run_subagent(client, parent_conv: dict, call: dict, lane: str, child_id: st
             except ValueError:
                 continue
             etype = parsed.get("type")
-            if etype in ("permission", "permission_done", "ping", "question", "question_done"):
+            if etype in ("permission", "permission_done", "ping", "question", "question_done", "todos"):
                 yield ev
             elif etype == "notice":
                 yield _sse(dict(parsed, subagent=child_id))
@@ -3122,6 +3978,10 @@ def _run_subagent(client, parent_conv: dict, call: dict, lane: str, child_id: st
             reply["reasoning"] = reasoning
         if child_conv.get("tools"):
             reply["tools"] = child_conv["tools"]
+        ckpts = {l: (child_conv.get(f"_checkpoint_{l}") or {}).get("id")
+                 for l in ("a", "b") if (child_conv.get(f"_checkpoint_{l}") or {}).get("id")}
+        if ckpts:
+            reply["checkpoints"] = ckpts
         if child_error and not summary:
             reply["error"] = child_error
         child_history.append(reply)
@@ -3193,6 +4053,8 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                        + delegate_section + "\nUser message:\n" + message)
             conv["delegate_sent"] = True
     sig_counts: dict = {}
+    key_counts: dict = {}
+    loop_notes: list = []
     for rnd in range(1, agent.MAX_ROUNDS + 1):
         out = yield from _turn(client, content, conv)
         if out is None:
@@ -3213,6 +4075,18 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                 sig_counts[sig] = sig_counts.get(sig, 0) + 1
                 if sig_counts[sig] >= 4:
                     repeated = call.get("name") or "tool"
+                cparams = call.get("params") or {}
+                target_key = (call.get("name") or "tool",
+                              str(cparams.get("path") or cparams.get("pattern")
+                                  or (cparams.get("cmd") or "")[:40]))
+                key_counts[target_key] = key_counts.get(target_key, 0) + 1
+                if key_counts[target_key] == 3:
+                    loop_notes.append(
+                        f"[Arena Desktop] Notice: you have called {target_key[0]} on "
+                        f"'{target_key[1]}' three times. If it is not working, change "
+                        "approach instead of repeating it.")
+                elif key_counts[target_key] >= 5:
+                    repeated = repeated or f"{target_key[0]} on {target_key[1]}"
         if repeated:
             yield _sse({"type": "notice", "level": "warn",
                         "text": f"Stopped the tool loop: the model kept repeating the same call "
@@ -3220,11 +4094,94 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
             break
         mode = _perm_mode()
         results = {}
+        precomputed: dict = {}
         for l in lanes:
             results[l] = outcomes = []
             for call in calls[l]:
                 if _stopped():
                     outcomes.append((call, "skipped: the user pressed Stop", ""))
+                    continue
+                pre = precomputed.pop(id(call), None)
+                if pre is not None:
+                    outcomes.append((call, pre["status"], pre["output"]))
+                    conv.setdefault("tools", []).append(pre["step"])
+                    yield _sse({"type": "tool_result", "model": l, "tool": "delegate_task",
+                                "child_id": pre["step"].get("child_id"), "ok": pre["ok"],
+                                "status": pre["status"], "output": (pre["output"] or "")[:4000]})
+                    continue
+                if call["name"] in ("read_file", "read_files"):
+                    rparams = call.get("params") or {}
+                    if call["name"] == "read_files":
+                        raw_paths = []
+                        for key in ("paths", "files"):
+                            chunk = str(rparams.get(key) or "")
+                            raw_paths += [ln.strip() for ln in chunk.replace(",", "\n").splitlines() if ln.strip()]
+                        for i in range(1, 7):
+                            v = str(rparams.get(f"path{i}") or "").strip()
+                            if v:
+                                raw_paths.append(v)
+                        if rparams.get("path"):
+                            raw_paths.insert(0, str(rparams["path"]).strip())
+                        paths = list(dict.fromkeys(raw_paths))[:8]
+                    else:
+                        paths = [str(rparams.get("path") or "").strip()]
+                    ranged = {k: rparams[k] for k in ("start_line", "end_line") if rparams.get(k)}
+                    info = dict(tools[l].describe(
+                        {"name": "read_file", "params": {"path": paths[0] if paths and paths[0] else "."}}), model=l)
+                    info["tool"] = call["name"]
+                    if len(paths) > 1:
+                        info["summary"] = "Read " + ", ".join(paths)[:160]
+                    yield _sse(dict(info, type="tool_call"))
+                    if not paths or not paths[0]:
+                        ok, status, output = False, "error", (
+                            "read_files needs at least one path (one per line inside <paths>).")
+                    else:
+                        answer = yield from _permit(mode, "read_file", info)
+                        if answer != "allow":
+                            ok, output = False, ""
+                            status = ("blocked: plan mode is read-only" if mode == "plan"
+                                      else "blocked by safety rules") if answer == "blocked" else "denied by the user"
+                        else:
+                            cache = conv.setdefault("_read_cache", {})
+                            segments = []
+                            any_ok = False
+                            for rel in paths:
+                                try:
+                                    target, _inside = tools[l].resolve(rel)
+                                except Exception:
+                                    target = None
+                                sig = None
+                                if target is not None:
+                                    try:
+                                        st = target.stat()
+                                        sig = (st.st_mtime_ns, st.st_size)
+                                    except OSError:
+                                        sig = None
+                                ckey = (str(target), str(ranged.get("start_line") or ""),
+                                        str(ranged.get("end_line") or ""))
+                                if sig is not None and cache.get(ckey) == sig:
+                                    segments.append(f"== {rel} ==\n[unchanged since your last read - content not repeated]"
+                                                    if len(paths) > 1 else
+                                                    "[unchanged since your last read - content not repeated]")
+                                    any_ok = True
+                                    continue
+                                sub = {"name": "read_file",
+                                       "params": dict({"path": rel}, **(ranged if len(paths) == 1 else {}))}
+                                sub_ok, sub_out = tools[l].run(sub)
+                                if sub_ok and sig is not None:
+                                    cache[ckey] = sig
+                                any_ok = any_ok or sub_ok
+                                segments.append(f"== {rel} ==\n{sub_out}" if len(paths) > 1 else sub_out)
+                            ok = any_ok
+                            status = "ok" if any_ok else "error"
+                            output = "\n\n".join(segments)
+                    outcomes.append((call, status, output))
+                    conv.setdefault("tools", []).append(
+                        {"tool": call["name"], "summary": info.get("summary"), "lane": l,
+                         "diff": None, "ok": ok, "status": status})
+                    yield _sse({"type": "tool_result", "model": l, "tool": call["name"],
+                                "rel": info.get("rel"), "ok": ok, "status": status,
+                                "output": (output or "")[:4000]})
                     continue
                 if call["name"] == "ask_user":
                     qparams = call.get("params") or {}
@@ -3252,6 +4209,7 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                                     "question": question, "options": options, "custom": custom,
                                     "chat_id": parent_chat,
                                     "subagent": _QUESTIONS[qid]["subagent"]})
+                        _notify("Arena Desktop", "The model is waiting for your answer.", "question")
                         answer_text = yield from _wait_for(lambda: _question_answer(qid), QUESTION_TIMEOUT)
                         with _questions_lock:
                             _QUESTIONS.pop(qid, None)
@@ -3272,6 +4230,91 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                     yield _sse({"type": "tool_result", "model": l, "tool": "ask_user",
                                 "ok": ok, "status": status, "output": (output or "")[:4000]})
                     continue
+                if call["name"] == "propose_plan":
+                    pparams = call.get("params") or {}
+                    plan_text = str(pparams.get("plan") or pparams.get("content") or pparams.get("text") or "").strip()
+                    first_line = " ".join((plan_text.splitlines() or [""])[0].split())[:120]
+                    info = {"tool": "propose_plan", "model": l, "name": "Plan",
+                            "summary": "Plan: " + (first_line or "\u2026"),
+                            "inside": True, "path": plan_text[:400]}
+                    yield _sse(dict(info, type="tool_call"))
+                    answer_text = ""
+                    if not plan_text:
+                        ok, status, output = False, "error", "propose_plan needs a <plan> with the steps."
+                    else:
+                        qid = generate_uuidv7()
+                        parent_chat = getattr(_tl, "chat_id", None) or conv.get("chat_id")
+                        plan_options = ["Approve plan", "Cancel"]
+                        with _questions_lock:
+                            _QUESTIONS[qid] = {
+                                "id": qid, "chat_id": parent_chat, "kind": "plan",
+                                "question": "Proposed plan", "plan": plan_text[:4000],
+                                "options": plan_options, "custom": True, "lane": l,
+                                "subagent": (conv.get("chat_id") if conv.get("chat_id") != parent_chat else None),
+                                "answer": None}
+                        yield _sse({"type": "question", "id": qid, "lane": l, "model": l,
+                                    "kind": "plan", "question": "Proposed plan", "plan": plan_text[:4000],
+                                    "options": plan_options, "custom": True,
+                                    "chat_id": parent_chat,
+                                    "subagent": _QUESTIONS[qid]["subagent"]})
+                        _notify("Arena Desktop", "The model proposed a plan for your review.", "question")
+                        answer_text = yield from _wait_for(lambda: _question_answer(qid), QUESTION_TIMEOUT)
+                        with _questions_lock:
+                            _QUESTIONS.pop(qid, None)
+                        yield _sse({"type": "question_done", "id": qid, "lane": l,
+                                    "answer": answer_text or ""})
+                        low = (answer_text or "").strip().lower()
+                        if low == "approve plan":
+                            ok, status = True, "approved"
+                            output = ("The user approved your plan. Execute it now, step by step, "
+                                      "keeping the set_todos checklist updated as you go.")
+                        elif low == "cancel":
+                            ok, status = False, "cancelled"
+                            output = ("The user cancelled the plan. Make no changes; reply briefly "
+                                      "and ask how they would like to proceed.")
+                        elif answer_text:
+                            ok, status = True, "revise"
+                            output = (f'The user wants changes to the plan: "{answer_text}". '
+                                      "Revise the plan accordingly and present it again with "
+                                      "propose_plan - do not start editing yet.")
+                        else:
+                            ok, status = False, "timeout"
+                            output = ("The user did not review the plan in time. Do not make changes; "
+                                      "reply with the plan as plain text and finish.")
+                            answer_text = ""
+                    outcomes.append((call, status, output))
+                    conv.setdefault("tools", []).append(
+                        {"tool": "propose_plan", "summary": info["summary"], "lane": l, "diff": None,
+                         "ok": ok, "status": status, "plan": plan_text[:4000], "answer": answer_text})
+                    yield _sse({"type": "tool_result", "model": l, "tool": "propose_plan",
+                                "ok": ok, "status": status, "output": (output or "")[:4000]})
+                    continue
+                if call["name"] == "set_todos":
+                    tparams = call.get("params") or {}
+                    raw = str(tparams.get("todos") or tparams.get("items") or tparams.get("content") or "")
+                    items = _parse_todos(raw)
+                    done_n = sum(1 for it in items if it["status"] == "done")
+                    info = {"tool": "set_todos", "model": l, "name": "Checklist",
+                            "summary": f"Checklist: {done_n}/{len(items)} done",
+                            "inside": True, "path": raw[:400]}
+                    yield _sse(dict(info, type="tool_call"))
+                    if not items:
+                        ok, status, output = False, "error", (
+                            "set_todos needs a <todos> list, one step per line: "
+                            "[x] done, [~] in progress, [ ] pending.")
+                    else:
+                        ok, status = True, "ok"
+                        output = f"Checklist updated: {done_n}/{len(items)} done."
+                        conv["todos"] = items
+                        yield _sse({"type": "todos", "lane": l, "model": l,
+                                    "chat_id": conv.get("chat_id"), "items": items})
+                    outcomes.append((call, status, output))
+                    conv.setdefault("tools", []).append(
+                        {"tool": "set_todos", "summary": info["summary"], "lane": l, "diff": None,
+                         "ok": ok, "status": status, "todos": items})
+                    yield _sse({"type": "tool_result", "model": l, "tool": "set_todos",
+                                "ok": ok, "status": status, "output": output})
+                    continue
                 if call["name"] == "delegate_task":
                     child_id = generate_uuidv7()
                     task_text = str((call.get("params") or {}).get("task") or "").strip()
@@ -3284,7 +4327,12 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                         output = "delegate_task is not available inside a sub-agent; do the work directly."
                         extra = {"child_id": child_id}
                     else:
-                        ok, status, output, extra = yield from _run_subagent(client, conv, call, l, child_id)
+                        partner = _parallel_partner(calls[l], call, precomputed)
+                        if partner is not None:
+                            ok, status, output, extra = yield from _run_parallel_research(
+                                client, conv, call, partner, l, child_id, precomputed)
+                        else:
+                            ok, status, output, extra = yield from _run_subagent(client, conv, call, l, child_id)
                     outcomes.append((call, status, output))
                     conv.setdefault("tools", []).append(
                         {"tool": "delegate_task", "summary": info["summary"], "lane": l,
@@ -3355,8 +4403,12 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                 else:
                     answer = yield from _permit(mode, call["name"], info)
                     if answer == "allow":
+                        if call["name"] in ("write_file", "edit_file", "delete"):
+                            _checkpoint_capture(conv, l, info)
                         ok, output = tools[l].run(call)
                         status = "ok" if ok else "error"
+                        if ok and call["name"] in ("write_file", "edit_file", "delete"):
+                            _invalidate_read_cache(conv, info)
                     else:
                         ok, output = False, ""
                         status = ("blocked: plan mode is read-only" if mode == "plan" else "blocked by safety rules") \
@@ -3376,6 +4428,13 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
             content = agent.format_lane_results(results, artifact_dirs=lane_dirs)
         else:
             content = agent.format_results(results["a"], artifact_dir=root / agent.ARTIFACTS_DIR)
+        if loop_notes:
+            content += "\n" + "\n".join(loop_notes)
+            loop_notes = []
+        if rnd == agent.MAX_ROUNDS - 1:
+            content += ("\n[Arena Desktop] You are near the tool-round limit for this "
+                        "reply. Finish the current step now and answer with your final "
+                        "summary; do not start new tool work.")
         for l in lanes:
             total[l] += "\n\n"
         yield _sse({"type": "round", "n": rnd + 1})
@@ -3624,6 +4683,12 @@ def _api_chat_impl():
         _ui_modality = {"chat": "text", "webdev": "code"}.get(modality, modality)
         client.active_modality = modality
     model_a, model_b = data.get("model_id") or None, data.get("model_id_b") or None
+    fanout_models = [str(m) for m in (data.get("fanout_models") or [])
+                     if isinstance(m, (str, int)) and str(m)][0:4]
+    if len(fanout_models) < 2:
+        fanout_models = []
+    if fanout_models and not model_a:
+        model_a = fanout_models[0]
     if locked:
         if _ui_mode in ("direct", "side-by-side"):
             model_a, model_b = existing.get("model_a"), existing.get("model_b")
@@ -3872,14 +4937,16 @@ def _api_chat_impl():
                 send = note + send
                 yield _sse({"type": "notice", "text": "Sent your local edits to the AI: " + ", ".join(changed)})
         history_chars = _history_chars(history)
-        if tools_on:
+        if fanout_models:
+            out = yield from _fanout_run(client, message, conv, fanout_models)
+        elif tools_on:
             out = yield from _agent_run(client, send, conv)
         else:
             out = yield from _turn(client, send, conv)
         out = out or {"a": "", "b": ""}
         # conv carries this chat's own Arena session id; the shared client
         # Field is not used, so parallel chats cannot cross their sessions.
-        clean = agent.strip_tool_calls if tools_on else str
+        clean = agent.strip_tool_calls if (tools_on or fanout_models) else str
         reply = {"role": "assistant", "text": clean(out["a"]), "text_b": clean(out["b"]), "names": names}
         reasoning = conv.get("reasoning") or {}
         if reasoning.get("a"):
@@ -3888,6 +4955,10 @@ def _api_chat_impl():
             reply["reasoning_b"] = reasoning["b"]
         if conv["tools"]:
             reply["tools"] = conv["tools"]
+        ckpts = {l: (conv.get(f"_checkpoint_{l}") or {}).get("id")
+                 for l in ("a", "b") if (conv.get(f"_checkpoint_{l}") or {}).get("id")}
+        if ckpts:
+            reply["checkpoints"] = ckpts
         if conv.get("sandbox"):
             reply["sandbox"] = conv["sandbox"]
         if dual:
@@ -3924,9 +4995,12 @@ def _api_chat_impl():
                                 "Workspace Sync) to continue in a fresh session with a summary — "
                                 "otherwise replies may start coming back empty."})
         done_event = {"type": "done", "text_a": out["a"], "text_b": out["b"], "dual": dual,
-                      "chat_id": conv["chat_id"], "history_chars": total_chars}
+                      "chat_id": conv["chat_id"], "history_chars": total_chars,
+                      "msg_index": len(history) - 1}
         if reply.get("arena_message_ids"):
             done_event["arena_message_ids"] = reply["arena_message_ids"]
+        if reply.get("checkpoints"):
+            done_event["checkpoints"] = reply["checkpoints"]
         yield _sse(done_event)
 
     return Response(
@@ -4181,7 +5255,7 @@ def api_doctor():
         add("reCAPTCHA key", True, "matches the built-in key" if live == contracts.KEYS["v3"]
             else "arena.ai uses a new key; the engine reads it from the page, so chats keep working")
     try:
-        models = sync_models(force=False)
+        models = _catalog_models()
         add("Model catalog", bool(models), f"{len(models)} models" if models
             else "empty: arena.ai may have changed /nextjs-api/model-catalog")
     except Exception as e:

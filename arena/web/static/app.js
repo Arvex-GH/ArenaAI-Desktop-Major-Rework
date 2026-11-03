@@ -494,7 +494,7 @@
     engineShow() { return this.request('/api/engine/show', { method: 'POST', body: {} }); },
     engineHide() { return this.request('/api/engine/hide', { method: 'POST', body: {} }); },
     logout() { return this.request('/api/logout', { method: 'POST', body: {} }); },
-    getModels(modality, mode) { return this.request(`/api/models?mode=${encodeURIComponent(mode || '')}&modality=${encodeURIComponent(modality)}`); },
+    getModels(modality, mode, force = false) { return this.request(`/api/models?mode=${encodeURIComponent(mode || '')}&modality=${encodeURIComponent(modality)}${force ? '&force=1' : ''}`); },
     setMode(mode) { return this.request('/api/mode', { method: 'POST', body: { mode } }); },
     setModality(modality) { return this.request('/api/modality', { method: 'POST', body: { modality } }); },
     newChat() { return this.request('/api/new', { method: 'POST', body: {} }); },
@@ -514,6 +514,15 @@
     diagnostics() { return this.request('/api/diagnostics'); },
     getQuestions() { return this.request('/api/questions'); },
     answerQuestion(id, answer) { return this.request(`/api/questions/${encodeURIComponent(id)}`, { method: 'POST', body: { answer } }); },
+    searchChats(q) { return this.request(`/api/search?q=${encodeURIComponent(q)}`); },
+    forkChat(id, messageIndex) { return this.request(`/api/chats/${encodeURIComponent(id)}/fork`, { method: 'POST', body: { message_index: messageIndex } }); },
+    restoreCheckpoint(id) { return this.request(`/api/checkpoints/${encodeURIComponent(id)}/restore`, { method: 'POST', body: {} }); },
+    workspaceSnapshot(paths) { return this.request('/api/workspace/snapshot', { method: 'POST', body: { paths } }); },
+    getElo() { return this.request('/api/elo'); },
+    getAutomations() { return this.request('/api/automations'); },
+    saveAutomation(body) { return this.request('/api/automations', { method: 'POST', body }); },
+    deleteAutomation(id) { return this.request(`/api/automations/${encodeURIComponent(id)}`, { method: 'DELETE' }); },
+    runAutomation(id) { return this.request(`/api/automations/${encodeURIComponent(id)}/run`, { method: 'POST', body: {} }); },
     getHistory() { return this.request('/api/history'); },
     getPermissions() { return this.request('/api/permissions'); },
     decidePermission(id, decision) {
@@ -992,7 +1001,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '4.17.0',
+        app_version: '5.0.0',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -1190,6 +1199,15 @@
     async diagnostics() { await sleep(60); return { text: 'Arena Desktop (demo)\nDiagnostics are illustrative in demo mode.', demo: true }; },
     async getQuestions() { await sleep(40); return []; },
     async answerQuestion() { await sleep(40); return { ok: true, demo: true }; },
+    async searchChats() { await sleep(40); return []; },
+    async forkChat() { await sleep(40); return { ok: true, chat_id: null, demo: true }; },
+    async restoreCheckpoint() { await sleep(40); return { ok: true, restored: 0, removed: 0, demo: true }; },
+    async workspaceSnapshot() { await sleep(40); return { ok: true, text: '[Attached workspace files]\n\n--- demo.txt ---\nDemo file content.\n\n[/Attached workspace files]', chars: 90, files: 1, demo: true }; },
+    async getElo() { await sleep(40); return { enabled: true, models: {}, demo: true }; },
+    async getAutomations() { await sleep(40); return { items: demoStore.automations || [] }; },
+    async saveAutomation(body) { await sleep(40); const item = { id: body?.id || `demo-auto-${Date.now()}`, ...body }; demoStore.automations = [...(demoStore.automations || []).filter((x) => x.id !== item.id), item]; return { ok: true, item, demo: true }; },
+    async deleteAutomation(id) { await sleep(40); demoStore.automations = (demoStore.automations || []).filter((x) => x.id !== id); return { ok: true, demo: true }; },
+    async runAutomation() { await sleep(40); return { ok: true, demo: true }; },
     async archiveArenaChat(id) {
       demoStore.cloudChats = demoStore.cloudChats.filter((item) => item.eval_id !== id && item.id !== id);
       await sleep(120);
@@ -1645,6 +1663,10 @@ You can start with a more structured option: one script, short captions, and a c
     updateInfo: null,
     appSettings: null,
     pendingQuestions: [],
+    chatTodos: {},
+    fanoutModels: [],
+    eloModels: null,
+    searchResults: [],
     _rateLimitTimer: null,
     appVersion: '',
     workspaceChosen: false,
@@ -2630,7 +2652,7 @@ You can start with a more structured option: one script, short captions, and a c
     }
   }
 
-  async function loadModels(modality = state.modality, { quiet = false, mode = state.mode } = {}) {
+  async function loadModels(modality = state.modality, { quiet = false, mode = state.mode, force = false } = {}) {
     const requestId = ++state.modelsRequest;
     const selectionProblem = selectionIssue(mode, modality);
     if (selectionProblem || mode === 'battle' || mode === 'agent' || modality === 'video') {
@@ -2652,7 +2674,7 @@ You can start with a more structured option: one script, short captions, and a c
     updateComposerState();
     const promise = (async () => {
       try {
-        const raw = await API.getModels(modality, mode);
+        const raw = await API.getModels(modality, mode, force);
         if (requestId !== state.modelsRequest) return;
         state.models = modelArray(raw);
         state.modelsMode = mode;
@@ -2831,6 +2853,17 @@ You can start with a more structured option: one script, short captions, and a c
       });
     }
 
+    if (state.chatFilter.trim().length >= 2 && Array.isArray(state.searchResults) && state.searchResults.length) {
+      listNode.appendChild(chatGroupTitle('search', "In messages"));
+      state.searchResults.slice(0, 20).forEach((hit) => {
+        const row = el('button', { class: 'search-hit', type: 'button', title: hit.title || '' },
+          el('span', { class: 'search-hit-title', text: hit.title || 'Chat' }),
+          el('span', { class: 'search-hit-snippet', text: hit.snippet || '' }));
+        row.addEventListener('click', () => { void openChatAtMessage(hit.chat_id, hit.msg_index); });
+        listNode.appendChild(row);
+      });
+    }
+
     listNode.appendChild(chatGroupTitle('cloud', "Only on arena.ai"));
     if (!state.authenticated) {
       listNode.appendChild(el('div', { class: 'chat-group-note', text: "Log in to Arena to see the account chats from the website. Local dialogues above are available without logging in." }));
@@ -2965,6 +2998,12 @@ You can start with a more structured option: one script, short captions, and a c
     }
     if (state.workspace) {
       els.chatMeta.append(el('span', { class: 'meta-chip' }, iconEl('folder'), el('span', { text: workspaceName() })));
+    }
+    if (state.activeChatId && state.messages.length) {
+      const exp = el('button', { class: 'meta-chip meta-chip-btn', type: 'button', title: 'Download this chat as Markdown' },
+        iconEl('download'), el('span', { text: 'Export .md' }));
+      exp.addEventListener('click', () => exportChatMd());
+      els.chatMeta.appendChild(exp);
     }
   }
 
@@ -3413,6 +3452,7 @@ You can start with a more structured option: one script, short captions, and a c
 
   function renderTurn(turn, pairIndex = -1) {
     const wrapper = el('section', { class: 'message-turn', 'aria-label': "Dialogue turn" });
+    if (turn.msgEnd != null) wrapper.setAttribute('data-msg-end', String(turn.msgEnd));
     if (turn.user) wrapper.appendChild(userMessageNode(turn.user));
     const lanes = turn.lanes || {};
     const order = Object.keys(lanes).filter((key) => lanes[key]);
@@ -3430,6 +3470,8 @@ You can start with a more structured option: one script, short captions, and a c
     if (turn.error && !laneHasError) {
       wrapper.appendChild(el('div', { class: 'message-error', role: 'alert' }, iconEl('alert'), el('span', { text: turn.error })));
     }
+    const turnActions = renderTurnActions(turn);
+    if (turnActions) wrapper.appendChild(turnActions);
     return wrapper;
   }
 
@@ -3440,7 +3482,8 @@ You can start with a more structured option: one script, short captions, and a c
         id: String(q.id), chatId: q.chat_id || q.chatId || null, lane: q.lane === 'b' ? 'b' : 'a',
         question: textValue(q.question),
         options: Array.isArray(q.options) ? q.options.map(textValue).filter(Boolean) : [],
-        custom: q.custom !== false, subagent: q.subagent || null
+        custom: q.custom !== false, subagent: q.subagent || null,
+        kind: q.kind === 'plan' ? 'plan' : 'question', plan: textValue(q.plan)
       })).filter((q) => q.id && q.id !== 'undefined');
       updatePendingPermissionsBadge();
       if (state.view === 'chat') renderMessages();
@@ -3464,25 +3507,27 @@ You can start with a more structured option: one script, short captions, and a c
 
   function renderQuestionCard(q) {
     const card = el('div', { class: 'permission-card question-card', 'data-question-card': q.id });
+    const isPlan = q.kind === 'plan';
     const head = el('div', { class: 'permission-head' },
-      el('span', { class: 'permission-icon' }, iconEl('help')),
+      el('span', { class: 'permission-icon' }, iconEl(isPlan ? 'check' : 'help')),
       el('div', { class: 'permission-heading' },
-        el('p', { class: 'permission-title', text: q.subagent ? 'Sub-agent asks' : 'The model asks' }),
-        el('p', { class: 'permission-subtitle', text: 'Generation is paused until you answer' })));
+        el('p', { class: 'permission-title', text: isPlan ? (q.subagent ? 'Sub-agent plan' : 'Proposed plan') : (q.subagent ? 'Sub-agent asks' : 'The model asks') }),
+        el('p', { class: 'permission-subtitle', text: isPlan ? 'Approve to let the model execute it' : 'Generation is paused until you answer' })));
     const body = el('div', { class: 'permission-body' },
-      el('p', { class: 'permission-note', text: q.question }));
+      isPlan ? el('pre', { class: 'plan-text', text: q.plan || q.question })
+             : el('p', { class: 'permission-note', text: q.question }));
     if (q.options.length) {
       const row = el('div', { class: 'question-options' });
-      q.options.forEach((opt) => {
-        const b = el('button', { class: 'button button-small', type: 'button' }, el('span', { text: opt }));
+      q.options.forEach((opt, idx) => {
+        const b = el('button', { class: 'button button-small' + (isPlan && idx > 0 ? ' button-quiet' : ''), type: 'button' }, el('span', { text: opt }));
         b.addEventListener('click', () => { void answerQuestionUI(q, opt, card); });
         row.appendChild(b);
       });
       body.appendChild(row);
     }
     if (q.custom) {
-      const input = el('input', { class: 'input', type: 'text', placeholder: 'Your answer\u2026', 'aria-label': 'Your answer' });
-      const send = el('button', { class: 'button button-small', type: 'button' }, iconEl('check'), el('span', { text: 'Answer' }));
+      const input = el('input', { class: 'input', type: 'text', placeholder: isPlan ? 'Describe changes to the plan\u2026' : 'Your answer\u2026', 'aria-label': 'Your answer' });
+      const send = el('button', { class: 'button button-small', type: 'button' }, iconEl('check'), el('span', { text: isPlan ? 'Revise' : 'Answer' }));
       send.addEventListener('click', () => { void answerQuestionUI(q, input.value, card); });
       input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); void answerQuestionUI(q, input.value, card); }
@@ -3499,6 +3544,297 @@ You can start with a more structured option: one script, short captions, and a c
     if (!mine.length) return null;
     const section = el('section', { class: 'message-turn', 'aria-label': 'Question from the model' });
     mine.forEach((q) => section.appendChild(renderQuestionCard(q)));
+    return section;
+  }
+
+  /* ------- v5: model pins / Elo / chat utilities ------- */
+  const FAV_KEY = 'arenaDesktop.modelFavs';
+  const HIDDEN_KEY = 'arenaDesktop.modelHidden';
+
+  function modelPinSet(key) {
+    try {
+      const raw = JSON.parse(localStorage.getItem(key) || '[]');
+      return new Set(Array.isArray(raw) ? raw.map(String) : []);
+    } catch { return new Set(); }
+  }
+
+  function toggleModelPin(key, id) {
+    const set = modelPinSet(key);
+    const sid = String(id);
+    if (set.has(sid)) set.delete(sid); else set.add(sid);
+    try { localStorage.setItem(key, JSON.stringify([...set])); } catch { /* private mode */ }
+    return set.has(sid);
+  }
+
+  function eloForModel(model) {
+    const all = state.eloModels;
+    if (!all || !model) return null;
+    const slug = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    return all[String(model.id || '').toLowerCase()] || all[slug(model.id)] || all[slug(model.name)] || null;
+  }
+
+  function ensureElo(rerender) {
+    if (state.eloModels !== null || state._eloLoading) return;
+    state._eloLoading = true;
+    API.getElo().then((data) => {
+      state.eloModels = (data && data.enabled !== false && data.models) ? data.models : {};
+      state._eloLoading = false;
+      if (typeof rerender === 'function') rerender();
+    }).catch(() => { state.eloModels = {}; state._eloLoading = false; });
+  }
+
+  function exportChatMd() {
+    const id = state.activeChatId;
+    if (!id) return;
+    if (state.demo) {
+      const text = state.messages.map((turn) => {
+        const parts = [];
+        if (turn.user?.content) parts.push(`## User\n\n${turn.user.content}`);
+        Object.values(turn.lanes || {}).forEach((lane) => { if (lane.text) parts.push(`## ${lane.modelName || 'Assistant'}\n\n${lane.text}`); });
+        return parts.join('\n\n');
+      }).join('\n\n');
+      const blob = new Blob([`# ${state.activeChatTitle || 'Chat'}\n\n${text}`], { type: 'text/markdown' });
+      const a = el('a', { href: URL.createObjectURL(blob), download: 'chat.md' });
+      document.body.appendChild(a); a.click(); a.remove();
+      return;
+    }
+    const a = el('a', { href: `/api/chats/${encodeURIComponent(id)}/export.md`, download: '' });
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  async function openChatAtMessage(chatId, msgIndex) {
+    await openChat(chatId);
+    window.setTimeout(() => {
+      const turns = [...(els.messageList?.querySelectorAll('[data-msg-end]') || [])];
+      const target = turns.find((n) => Number(n.dataset.msgEnd) >= Number(msgIndex)) || turns[turns.length - 1];
+      if (target) {
+        target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        target.classList.add('turn-flash');
+        window.setTimeout(() => target.classList.remove('turn-flash'), 1600);
+      }
+    }, 350);
+  }
+
+  async function forkFromTurn(turn) {
+    if (!state.activeChatId || turn.msgEnd == null) return;
+    try {
+      const res = await API.forkChat(state.activeChatId, turn.msgEnd);
+      if (res?.chat_id) {
+        await loadChats({ silent: true }).catch(() => undefined);
+        await openChat(res.chat_id);
+        toast('Forked into a new chat (fresh Arena session; context carried over as a summary).', 'info', 'Fork created');
+      } else {
+        toast('Fork is not available in the demo.', 'info');
+      }
+    } catch (error) { toast(errorMessage(error), 'error', 'Fork failed'); }
+  }
+
+  async function undoTurnChanges(turn, button) {
+    const ids = Object.values(turn.checkpoints || {}).filter(Boolean);
+    if (!ids.length) return;
+    if (!button.dataset.armed) {
+      button.dataset.armed = '1';
+      const label = button.querySelector('span:last-child');
+      if (label) label.textContent = 'Click again to undo';
+      window.setTimeout(() => { delete button.dataset.armed; renderMessages(); }, 3000);
+      return;
+    }
+    button.disabled = true;
+    try {
+      let restored = 0; let removed = 0;
+      for (const id of ids) {
+        const res = await API.restoreCheckpoint(id);
+        restored += Number(res?.restored) || 0;
+        removed += Number(res?.removed) || 0;
+      }
+      toast(`Undone: ${restored} file(s) restored, ${removed} created file(s) removed.`, 'info', 'Checkpoint restored');
+      if (state.workspacePanelOpen) void loadWorkspaceTree('.', { force: true });
+      renderMessages();
+    } catch (error) { toast(errorMessage(error), 'error', 'Undo failed'); button.disabled = false; }
+  }
+
+  function renderTurnActions(turn) {
+    const streaming = Object.values(turn.lanes || {}).some((lane) => lane?.streaming);
+    const hasCk = Boolean(turn.checkpoints && Object.values(turn.checkpoints).some(Boolean));
+    if (streaming || (!hasCk && turn.msgEnd == null)) return null;
+    const row = el('div', { class: 'turn-actions' });
+    if (hasCk) {
+      const undo = el('button', { class: 'button button-small button-quiet', type: 'button', title: 'Restore the files this turn changed from the checkpoint taken beforehand' },
+        iconEl('refresh'), el('span', { text: 'Undo file changes' }));
+      undo.addEventListener('click', () => { void undoTurnChanges(turn, undo); });
+      row.appendChild(undo);
+    }
+    if (turn.msgEnd != null) {
+      const fork = el('button', { class: 'button button-small button-quiet', type: 'button', title: 'Continue from here in a new chat' },
+        iconEl('git-branch'), el('span', { text: 'Fork from here' }));
+      fork.addEventListener('click', () => { void forkFromTurn(turn); });
+      row.appendChild(fork);
+    }
+    return row;
+  }
+
+  function openAttachMenu() {
+    if (!state.workspace) { els.fileInput?.click(); return; }
+    const content = el('div');
+    const list = el('div', { class: 'popover-list' });
+    list.appendChild(popoverOption({
+      title: 'Upload files', desc: attachmentHint(), icon: 'plus',
+      onClick: () => { closePopover(); els.fileInput?.click(); }
+    }));
+    list.appendChild(popoverOption({
+      title: 'Attach workspace files as text', desc: 'Insert file contents into the prompt (works in every mode)', icon: 'file',
+      onClick: () => { closePopover(); void openSnapshotPicker(); }
+    }));
+    content.appendChild(list);
+    openPopover(els.attachButton, { title: 'Attach', content });
+  }
+
+  async function collectWorkspaceFiles() {
+    const out = [];
+    const walk = async (path, depth) => {
+      if (depth > 3 || out.length >= 300) return;
+      let data;
+      try { data = await API.getWorkspaceTree(path); } catch { return; }
+      const entries = Array.isArray(data?.entries) ? data.entries : (Array.isArray(data) ? data : []);
+      for (const e of entries) {
+        const name = String(e?.name || '');
+        if (!name || name === '.arena-artifacts' || name === '.git') continue;
+        const rel = String(e?.path || (path === '.' ? name : `${path}/${name}`));
+        const isDir = Boolean(e?.is_dir ?? e?.dir ?? (e?.type === 'dir') ?? (e?.kind === 'folder'));
+        if (isDir) await walk(rel, depth + 1);
+        else out.push(rel);
+        if (out.length >= 300) break;
+      }
+    };
+    await walk('.', 0);
+    return out;
+  }
+
+  async function openSnapshotPicker() {
+    const content = el('div');
+    content.appendChild(el('p', { class: 'modal-copy', text: 'Pick files; their contents are inserted into the prompt as one text block (up to about 40k characters).' }));
+    const list = el('div', { class: 'snapshot-list' }, el('span', { class: 'loading-block' }, el('span', { class: 'mini-spinner' }), el('span', { text: 'Loading files…' })));
+    content.appendChild(list);
+    const addBtn = el('button', { class: 'button button-small', type: 'button', disabled: true }, el('span', { text: 'Insert selected' }));
+    content.appendChild(el('div', { class: 'popover-foot' }, el('span'), addBtn));
+    openPopover(els.attachButton, { title: 'Workspace files as text', content, wide: true });
+    const files = await collectWorkspaceFiles();
+    clear(list);
+    if (!files.length) { list.appendChild(el('p', { class: 'modal-copy', text: 'No files found in the workspace.' })); return; }
+    const picked = new Set();
+    files.forEach((rel) => {
+      const box = el('input', { type: 'checkbox' });
+      box.addEventListener('change', () => {
+        if (box.checked) picked.add(rel); else picked.delete(rel);
+        addBtn.disabled = !picked.size;
+        const label = addBtn.querySelector('span');
+        if (label) label.textContent = `Insert selected (${picked.size})`;
+      });
+      list.appendChild(el('label', { class: 'snapshot-item' }, box, el('span', { text: rel })));
+    });
+    addBtn.addEventListener('click', async () => {
+      addBtn.disabled = true;
+      try {
+        const res = await API.workspaceSnapshot([...picked]);
+        if (res?.text && els.prompt) {
+          els.prompt.value = `${res.text}\n\n${els.prompt.value}`;
+          updateComposerState();
+          focusComposer();
+          toast(`Inserted ${res.files} file(s), ${res.chars} characters.`, 'info', 'Workspace snapshot');
+        }
+        closePopover();
+      } catch (error) { toast(errorMessage(error), 'error', 'Snapshot failed'); addBtn.disabled = false; }
+    });
+  }
+
+  function initJumpPill() {
+    const content = els.content;
+    const list = els.messageList;
+    if (!content || !list || document.getElementById('jumpPill')) return;
+    const pill = el('div', { class: 'jump-pill', id: 'jumpPill', hidden: true });
+    const mk = (label, title, fn) => {
+      const b = el('button', { class: 'jump-pill-btn', type: 'button', title, 'aria-label': title }, el('span', { text: label }));
+      b.addEventListener('click', fn);
+      return b;
+    };
+    const jump = (dir) => {
+      const turns = [...list.querySelectorAll('.message-turn')].filter((n) => n.querySelector('.message-user'));
+      if (!turns.length) return;
+      const top = content.scrollTop + 80;
+      let target = null;
+      if (dir < 0) {
+        for (let i = turns.length - 1; i >= 0; i -= 1) { if (turns[i].offsetTop < top - 40) { target = turns[i]; break; } }
+        target = target || turns[0];
+      } else {
+        target = turns.find((n) => n.offsetTop > top + 40) || turns[turns.length - 1];
+      }
+      content.scrollTo({ top: Math.max(0, target.offsetTop - 60), behavior: 'smooth' });
+    };
+    pill.append(
+      mk('↑', 'Previous message', () => jump(-1)),
+      mk('↓', 'Next message', () => jump(1)),
+      mk('⤓', 'Jump to latest', () => content.scrollTo({ top: content.scrollHeight, behavior: 'smooth' }))
+    );
+    content.appendChild(pill);
+    content.addEventListener('scroll', () => {
+      const dist = content.scrollHeight - content.scrollTop - content.clientHeight;
+      pill.hidden = dist < 300;
+    }, { passive: true });
+  }
+
+  let _rlSwitchBtn = null;
+  function syncRateLimitAccountHint(rateLimitLeft) {
+    try {
+      const others = (state.status?.accounts || []).filter((a) => a && !a.current && a.id);
+      const show = rateLimitLeft > 0 && others.length > 0 && !state.demo && els.composerSecondaryHint;
+      if (!show) { if (_rlSwitchBtn) _rlSwitchBtn.hidden = true; return; }
+      if (!_rlSwitchBtn) {
+        _rlSwitchBtn = el('button', { class: 'button button-small button-quiet rl-switch', type: 'button' },
+          iconEl('user'), el('span', { text: 'Switch account & resend' }));
+        _rlSwitchBtn.addEventListener('click', async () => {
+          const other = (state.status?.accounts || []).find((a) => a && !a.current && a.id);
+          if (!other) return;
+          _rlSwitchBtn.disabled = true;
+          try {
+            await API.switchAccount(other.id);
+            state.rateLimitUntil = 0;
+            toast(`Switched to ${other.email || other.name || 'the other account'} — press Send again.`, 'info', 'Account switched');
+            await loadStatus().catch(() => undefined);
+          } catch (error) { toast(errorMessage(error), 'error', 'Switch failed'); }
+          _rlSwitchBtn.disabled = false;
+          updateComposerState();
+        });
+        els.composerSecondaryHint.after(_rlSwitchBtn);
+      }
+      _rlSwitchBtn.hidden = false;
+    } catch { /* decorative hint */ }
+  }
+
+  function activeTodos() {
+    const items = state.chatTodos[String(state.activeChatId || '')];
+    return Array.isArray(items) ? items.filter((it) => it && it.text) : [];
+  }
+
+  function renderUnattachedTodos() {
+    const items = activeTodos();
+    if (!items.length) return null;
+    const done = items.filter((it) => it.status === 'done').length;
+    const section = el('section', { class: 'message-turn', 'aria-label': 'Task checklist' });
+    const card = el('div', { class: 'permission-card todos-card' });
+    const head = el('div', { class: 'permission-head' },
+      el('span', { class: 'permission-icon' }, iconEl('check')),
+      el('div', { class: 'permission-heading' },
+        el('p', { class: 'permission-title', text: 'Checklist' }),
+        el('p', { class: 'permission-subtitle', text: `${done}/${items.length} done` })));
+    const list = el('ul', { class: 'todos-list' });
+    items.forEach((it) => {
+      const mark = it.status === 'done' ? '\u2713' : (it.status === 'doing' ? '\u25B8' : '\u25CB');
+      list.appendChild(el('li', { class: `todo-item is-${it.status === 'done' || it.status === 'doing' ? it.status : 'pending'}` },
+        el('span', { class: 'todo-mark', text: mark }),
+        el('span', { class: 'todo-text', text: it.text })));
+    });
+    card.append(head, el('div', { class: 'permission-body' }, list));
+    section.appendChild(card);
     return section;
   }
 
@@ -3576,6 +3912,8 @@ You can start with a more structured option: one script, short captions, and a c
     if (unattached) els.messageList.appendChild(unattached);
     const questions = renderUnattachedQuestions();
     if (questions) els.messageList.appendChild(questions);
+    const todos = renderUnattachedTodos();
+    if (todos) els.messageList.appendChild(todos);
 
     if (content) {
       if (!preserveScroll || wasNearBottom) {
@@ -3844,7 +4182,9 @@ You can start with a more structured option: one script, short captions, and a c
     } else if (state.mode === 'side-by-side') {
       els.contextModel.textContent = `${currentModelA()?.name || 'A not selected'} ↔ ${currentModelB()?.name || 'B not selected'}`;
     } else if (!isAgent) {
-      els.contextModel.textContent = currentModelA()?.name || 'Select a model';
+      els.contextModel.textContent = (state.mode === 'direct' && state.fanoutModels?.length >= 2)
+        ? `${state.fanoutModels.length} models · fan-out`
+        : (currentModelA()?.name || 'Select a model');
     }
     if (els.contextPending) els.contextPending.hidden = !(state.pendingChanges > 0);
   }
@@ -3936,6 +4276,7 @@ You can start with a more structured option: one script, short captions, and a c
       else els.composerSecondaryHint.textContent = "Attachments are not supported by the server";
     }
 
+    syncRateLimitAccountHint(rateLimitLeft);
     const locked = chatLocked();
     syncWorkspaceSyncToggle();
     syncCompactChip();
@@ -4229,6 +4570,8 @@ You can start with a more structured option: one script, short captions, and a c
             }, 'b');
           }
           if (item.error) current.error = textValue(item.error);
+          current.msgEnd = messages.indexOf(item);
+          if (item.checkpoints) current.checkpoints = item.checkpoints;
           current.vote = item.vote || null;
           current.arenaIds = item.arena_message_ids || null;
           current.revealed = Boolean(item.names?.a || item.names?.b);
@@ -4237,9 +4580,17 @@ You can start with a more structured option: one script, short captions, and a c
             const lane = current.lanes[key] || (current.lanes[key] = emptyLane(key));
             const stepDetail = step.tool === 'ask_user' && step.question
               ? `${step.question}${step.answer ? `\n\u2192 ${step.answer}` : ''}`
-              : step.summary;
-            const activity = normalizeActivity({ ...step, name: step.tool === 'ask_user' ? 'Question' : step.name, detail: stepDetail, status: step.status || (step.ok ? 'ok' : 'error') }, 'tool');
+              : (step.tool === 'propose_plan' && step.plan
+                ? `${step.plan}${step.answer ? `\n\u2192 ${step.answer}` : ''}`
+                : step.summary);
+            const stepName = step.tool === 'ask_user' ? 'Question'
+              : (step.tool === 'propose_plan' ? 'Plan' : (step.tool === 'set_todos' ? 'Checklist' : step.name));
+            const activity = normalizeActivity({ ...step, name: stepName, detail: stepDetail, status: step.status || (step.ok ? 'ok' : 'error') }, 'tool');
             if (activity) lane.activities.push(activity);
+            if (step.tool === 'set_todos' && Array.isArray(step.todos) && step.todos.length) {
+              const hid = String(raw?.chat_id || raw?.id || state.activeChatId || '');
+              if (hid) state.chatTodos[hid] = step.todos;
+            }
           }
           for (const step of (Array.isArray(item.sandbox) ? item.sandbox : [])) {
             const key = step.model === 'b' ? 'b' : 'a';
@@ -4249,6 +4600,10 @@ You can start with a more structured option: one script, short captions, and a c
           }
         } else {
           addLane(item);
+          if (current) {
+            current.msgEnd = messages.indexOf(item);
+            if (item.checkpoints) current.checkpoints = item.checkpoints;
+          }
         }
         continue;
       }
@@ -4884,14 +5239,26 @@ You can start with a more structured option: one script, short captions, and a c
         id: String(event.id), chatId: event.chat_id || generation.chatId, lane: key,
         question: textValue(event.question),
         options: Array.isArray(event.options) ? event.options.map(textValue).filter(Boolean) : [],
-        custom: event.custom !== false, subagent: event.subagent || null
+        custom: event.custom !== false, subagent: event.subagent || null,
+        kind: event.kind === 'plan' ? 'plan' : 'question', plan: textValue(event.plan)
       };
       if (!state.pendingQuestions.some((x) => x.id === q.id)) state.pendingQuestions.push(q);
       updatePendingPermissionsBadge();
       if (String(q.chatId) !== String(state.activeChatId)) {
-        toast('The model is asking a question in another chat.', 'warning', 'Question');
+        toast(q.kind === 'plan' ? 'The model proposed a plan in another chat.' : 'The model is asking a question in another chat.', 'warning', q.kind === 'plan' ? 'Plan' : 'Question');
       } else {
-        announce('The model asks a question. Your answer is needed.');
+        announce(q.kind === 'plan' ? 'The model proposed a plan. Review it to continue.' : 'The model asks a question. Your answer is needed.');
+      }
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'todos') {
+      const tchat = String(event.chat_id || generation.chatId || '');
+      if (tchat && Array.isArray(event.items)) {
+        state.chatTodos[tchat] = event.items.map((it) => ({
+          text: textValue(it?.text),
+          status: it?.status === 'done' ? 'done' : (it?.status === 'doing' ? 'doing' : 'pending')
+        })).filter((it) => it.text);
       }
       scheduleChatRender();
       return;
@@ -5073,6 +5440,8 @@ You can start with a more structured option: one script, short captions, and a c
       if (event.arena_message_ids && typeof event.arena_message_ids === 'object') {
         turn.arenaIds = event.arena_message_ids;
       }
+      if (event.checkpoints) turn.checkpoints = event.checkpoints;
+      if (typeof event.msg_index === 'number') turn.msgEnd = event.msg_index;
       if (event.error) {
         generation.hadError = true;
         const message = textValue(event.error);
@@ -5533,6 +5902,9 @@ You can start with a more structured option: one script, short captions, and a c
         body.model_id_b = state.modelBId;
       }
       const sentAttachments = turnAttachmentsFromComposer();
+      if (state.mode === 'direct' && Array.isArray(state.fanoutModels) && state.fanoutModels.length >= 2) {
+        body.fanout_models = [...state.fanoutModels];
+      }
       if (sentAttachments.length) body.attachments = sentAttachments;
 
       const turn = makeGenerationTurn(text, chatId, sentAttachments);
@@ -5928,9 +6300,15 @@ You can start with a more structured option: one script, short captions, and a c
     content.appendChild(list);
     const footer = el('div', { class: 'popover-foot' },
       el('span', { class: 'modal-copy', style: { margin: '0', fontSize: '9px' }, text: `${modalityMeta(state.modality).label} · ${state.models.length} of models` }),
+      (state.mode === 'direct' && state.modality === 'text' && effectiveLane === 'a')
+        ? el('button', {
+          class: 'button button-small button-quiet', type: 'button',
+          onclick: () => { closePopover(); openFanoutPicker(anchor); }
+        }, iconEl('layers'), el('span', { text: state.fanoutModels?.length >= 2 ? `Fan-out: ${state.fanoutModels.length}` : 'Ask several' }))
+        : null,
       el('button', {
         class: 'icon-button tiny', type: 'button', 'aria-label': "Update the model list",
-        onclick: async () => { await loadModels(state.modality); renderModelOptions(); }
+        onclick: async () => { await loadModels(state.modality, { force: true }); renderModelOptions(); }
       }, iconEl('refresh'))
     );
     content.appendChild(footer);
@@ -5945,15 +6323,19 @@ You can start with a more structured option: one script, short captions, and a c
         list.appendChild(el('div', { class: 'popover-empty' }, el('span', { text: state.modelsError })));
         list.appendChild(el('div', { class: 'popover-foot' }, el('span'), el('button', {
           class: 'button button-small button-quiet', type: 'button',
-          onclick: () => { void loadModels(state.modality).then(renderModelOptions); }
+          onclick: () => { void loadModels(state.modality, { force: true }).then(renderModelOptions); }
         }, iconEl('refresh'), el('span', { text: "Retry" }))));
         return;
       }
       const query = searchInput.value.trim().toLocaleLowerCase('en');
+      ensureElo(renderModelOptions);
+      const favs = modelPinSet(FAV_KEY);
+      const hidden = modelPinSet(HIDDEN_KEY);
       const filtered = state.models.filter((model) => {
+        if (hidden.has(String(model.id)) && !query) return false;
         if (!query) return true;
         return `${model.name} ${model.org} ${model.capabilities.join(' ')}`.toLocaleLowerCase('en').includes(query);
-      });
+      }).sort((x, y) => (favs.has(String(y.id)) ? 1 : 0) - (favs.has(String(x.id)) ? 1 : 0));
       if (!filtered.length) {
         list.appendChild(el('div', { class: 'popover-empty', text: state.models.length ? "Models not found." : "The server did not return models for this type." }));
         return;
@@ -5961,7 +6343,14 @@ You can start with a more structured option: one script, short captions, and a c
       const selectedId = effectiveLane === 'b' ? state.modelBId : state.modelAId;
       filtered.forEach((model) => {
         const conflicts = effectiveLane === 'b' && String(state.modelAId) === String(model.id);
-        const meta = [model.rank ? `#${model.rank}` : '', model.arena_score ? `rating ${model.arena_score}` : ''].filter(Boolean).join(' · ');
+        const capsText = (model.capabilities || []).join(' ').toLowerCase();
+        const elo = eloForModel(model);
+        const meta = [
+          elo?.rank ? `Elo #${elo.rank}` : (model.rank ? `#${model.rank}` : ''),
+          elo?.score ? `${elo.score}` : (model.arena_score ? `rating ${model.arena_score}` : ''),
+          (capsText.includes('vision') || capsText.includes('image')) ? 'Vision' : '',
+          (capsText.includes('pdf') || capsText.includes('document')) ? 'Docs' : ''
+        ].filter(Boolean).join(' · ');
         const option = popoverOption({
           title: model.name,
           desc: `${model.org || "Unknown organization"}${model.capabilities.length ? ` · ${model.capabilities.slice(0, 3).join(' · ')}` : ''}`,
@@ -5983,8 +6372,23 @@ You can start with a more structured option: one script, short captions, and a c
             text: initialLetters(model.name)
           });
         option.insertBefore(iconWrap, option.firstChild);
+        const isFav = favs.has(String(model.id));
+        const isHidden = hidden.has(String(model.id));
+        const favBtn = el('span', { class: `model-pin${isFav ? ' is-fav' : ''}`, role: 'button', tabindex: '-1',
+          title: isFav ? 'Unpin from top' : 'Pin to top', 'aria-label': isFav ? 'Unpin model' : 'Pin model' },
+          el('span', { class: 'model-pin-glyph', text: isFav ? '★' : '☆' }));
+        favBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleModelPin(FAV_KEY, model.id); renderModelOptions(); });
+        option.appendChild(favBtn);
+        const hideBtn = el('span', { class: 'model-pin', role: 'button', tabindex: '-1',
+          title: isHidden ? 'Unhide model' : 'Hide model', 'aria-label': isHidden ? 'Unhide model' : 'Hide model' }, iconEl('x'));
+        hideBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleModelPin(HIDDEN_KEY, model.id); renderModelOptions(); });
+        option.appendChild(hideBtn);
+        if (isHidden) option.classList.add('is-hidden-model');
         list.appendChild(option);
       });
+      if (hidden.size && !query) {
+        list.appendChild(el('div', { class: 'popover-empty', text: `${hidden.size} hidden model(s) — type to search to see and unhide them.` }));
+      }
     };
 
     searchInput.addEventListener('input', renderModelOptions);
@@ -6002,6 +6406,57 @@ You can start with a more structured option: one script, short captions, and a c
   /* ---------------------------------------------------------------------- */
   /* Modal infrastructure                                                  */
   /* ---------------------------------------------------------------------- */
+  function openFanoutPicker(anchor) {
+    const content = el('div');
+    content.appendChild(el('p', { class: 'modal-copy', text: 'The same prompt goes to 2–4 models; you get every answer plus a short comparison. Each answer also stays as its own sub-chat.' }));
+    const searchWrap = el('div', { class: 'popover-search' }, iconEl('search'));
+    const searchInput = el('input', { type: 'search', placeholder: 'Find a model', autocomplete: 'off', 'aria-label': 'Search for a model' });
+    searchWrap.appendChild(searchInput);
+    content.appendChild(searchWrap);
+    const list = el('div', { class: 'popover-list', role: 'listbox', 'aria-label': 'Fan-out models' });
+    content.appendChild(list);
+    const chosen = new Set((state.fanoutModels || []).map(String));
+    if (!chosen.size) [...modelPinSet(FAV_KEY)].slice(0, 3).forEach((id) => chosen.add(id));
+    const useBtn = el('button', { class: 'button button-small', type: 'button' }, el('span', { text: 'Use these' }));
+    const clearBtn = el('button', { class: 'button button-small button-quiet', type: 'button' }, el('span', { text: 'Turn off' }));
+    content.appendChild(el('div', { class: 'popover-foot' }, clearBtn, useBtn));
+    const renderFanout = () => {
+      clear(list);
+      const q = searchInput.value.trim().toLocaleLowerCase('en');
+      state.models.filter((m) => !q || `${m.name} ${m.org}`.toLocaleLowerCase('en').includes(q)).forEach((model) => {
+        const on = chosen.has(String(model.id));
+        list.appendChild(popoverOption({
+          title: model.name, desc: model.org || '', icon: '', selected: on,
+          onClick: () => {
+            if (on) chosen.delete(String(model.id));
+            else if (chosen.size >= 4) { toast('At most 4 models per fan-out.', 'warning'); return; }
+            else chosen.add(String(model.id));
+            renderFanout();
+          }
+        }));
+      });
+      useBtn.disabled = chosen.size < 2;
+      const label = useBtn.querySelector('span');
+      if (label) label.textContent = chosen.size >= 2 ? `Use ${chosen.size} models` : 'Use these';
+    };
+    searchInput.addEventListener('input', renderFanout);
+    renderFanout();
+    useBtn.addEventListener('click', () => {
+      state.fanoutModels = [...chosen];
+      if (state.fanoutModels.length && !state.modelAId) selectModel('a', state.fanoutModels[0]);
+      closePopover();
+      renderComposerContext();
+      toast(`Fan-out on: the next prompt goes to ${state.fanoutModels.length} models.`, 'info', 'Ask several models');
+      focusComposer();
+    });
+    clearBtn.addEventListener('click', () => {
+      state.fanoutModels = [];
+      closePopover();
+      renderComposerContext();
+    });
+    openPopover(anchor || els.modeButton, { title: 'Ask several models', subtitle: 'Direct · Text', content, wide: true, initialFocus: searchInput });
+  }
+
   let modalSequence = 0;
 
   function mountModal({ title, subtitle = '', size = '', content, actions = [], onMount, onClose }) {
@@ -6731,6 +7186,7 @@ You can start with a more structured option: one script, short captions, and a c
       { id: 'permissions', label: 'Permissions', icon: 'shield' },
       { id: 'workspace', label: 'Folder', icon: 'folder' },
       { id: 'memory', label: 'Memory', icon: 'layers' },
+      { id: 'automations', label: 'Automations', icon: 'clock' },
       { id: 'about', label: 'About', icon: 'info' }
     ];
     let currentTab = tabDefs.some((tab) => tab.id === initialTab) ? initialTab : 'connection';
@@ -6993,6 +7449,105 @@ You can start with a more structured option: one script, short captions, and a c
       return wrap;
     }
 
+    function renderAutomationsPanel() {
+      const wrap = el('div');
+      wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Automations' }));
+      wrap.appendChild(el('p', { class: 'setting-desc', text: 'Scheduled Local Agent runs. Each run becomes its own chat. Unattended runs use the permission mode picked per automation (Plan = read-only).' }));
+      const listWrap = el('div', { class: 'automations-list' });
+      wrap.appendChild(listWrap);
+
+      const nameIn = el('input', { class: 'input', type: 'text', placeholder: 'Name (e.g. Morning report)' });
+      const promptIn = el('textarea', { class: 'input', rows: '3', placeholder: 'Prompt for the agent…' });
+      const kindSel = el('select', { class: 'input' },
+        el('option', { value: 'daily', text: 'Daily at…' }),
+        el('option', { value: 'hourly', text: 'Hourly' }),
+        el('option', { value: 'every', text: 'Every N minutes' }));
+      const timeIn = el('input', { class: 'input', type: 'time', value: '09:00' });
+      const minsIn = el('input', { class: 'input', type: 'number', value: '120', min: '5' });
+      const permSel = el('select', { class: 'input' },
+        el('option', { value: 'plan', text: 'Plan (read-only)' }),
+        el('option', { value: 'bypassPermissions', text: 'Full access (unattended)' }));
+      const syncKind = () => {
+        timeIn.hidden = kindSel.value !== 'daily';
+        minsIn.hidden = kindSel.value !== 'every';
+      };
+      kindSel.addEventListener('change', syncKind);
+      let editingId = null;
+      const saveBtn = settingsActionButton('Add automation', 'plus', async () => {
+        const schedule = kindSel.value === 'daily' ? `daily ${timeIn.value || '09:00'}`
+          : kindSel.value === 'hourly' ? 'hourly' : `every ${Math.max(5, Number(minsIn.value) || 60)}m`;
+        try {
+          const body = { name: nameIn.value.trim(), prompt: promptIn.value.trim(), schedule, permission: permSel.value, enabled: true };
+          if (editingId) body.id = editingId;
+          await API.saveAutomation(body);
+          nameIn.value = ''; promptIn.value = '';
+          if (editingId) {
+            editingId = null;
+            saveBtn.querySelector('span').textContent = 'Add automation';
+            formTitle.textContent = 'New automation';
+          }
+          toast('Automation saved.', 'info', 'Automations');
+          void fill();
+        } catch (error) { toast(errorMessage(error), 'error', 'Automations'); }
+      }, { variant: 'primary' });
+      const formTitle = el('h3', { class: 'modal-section-title', text: 'New automation' });
+      wrap.appendChild(formTitle);
+      wrap.appendChild(el('div', { class: 'automation-form' }, nameIn, promptIn,
+        el('div', { class: 'automation-form-row' }, kindSel, timeIn, minsIn, permSel), saveBtn));
+      syncKind();
+
+      const fill = async () => {
+        clear(listWrap);
+        let items = [];
+        try { items = (await API.getAutomations())?.items || []; } catch { /* offline */ }
+        if (!items.length) {
+          listWrap.appendChild(el('p', { class: 'setting-desc', text: 'No automations yet.' }));
+          return;
+        }
+        items.forEach((item) => {
+          const last = item.last_run ? new Date(Number(item.last_run) * 1000).toLocaleString() : 'never';
+          const enabledBox = el('input', { type: 'checkbox', class: 'switch-input', checked: item.enabled !== false, 'aria-label': 'Enabled' });
+          enabledBox.addEventListener('change', async () => {
+            try { await API.saveAutomation({ ...item, enabled: enabledBox.checked }); }
+            catch (error) { toast(errorMessage(error), 'error', 'Automations'); }
+          });
+          const row = el('div', { class: 'automation-row' },
+            el('div', { class: 'automation-main' },
+              el('span', { class: 'automation-name', text: item.name || 'Automation' }),
+              el('span', { class: 'setting-desc', text: `${item.schedule} · ${item.permission === 'bypassPermissions' ? 'full access' : 'plan'} · last run: ${last}` }),
+              el('span', { class: 'automation-prompt', text: item.prompt || '' })),
+            el('label', { class: 'switch' }, enabledBox, el('span', { class: 'switch-track', 'aria-hidden': 'true' })),
+            settingsActionButton('Edit', 'sliders', async () => {
+              editingId = item.id;
+              nameIn.value = item.name || '';
+              promptIn.value = item.prompt || '';
+              permSel.value = item.permission === 'bypassPermissions' ? 'bypassPermissions' : 'plan';
+              const sched = String(item.schedule || '');
+              if (sched.startsWith('daily')) {
+                kindSel.value = 'daily';
+                timeIn.value = (sched.match(/\d{2}:\d{2}/) || ['09:00'])[0];
+              } else if (sched === 'hourly') kindSel.value = 'hourly';
+              else { kindSel.value = 'every'; minsIn.value = (sched.match(/\d+/) || ['60'])[0]; }
+              syncKind();
+              saveBtn.querySelector('span').textContent = 'Save changes';
+              formTitle.textContent = 'Edit automation';
+              nameIn.focus();
+            }),
+            settingsActionButton('Run now', 'play', async () => {
+              try { await API.runAutomation(item.id); toast('Automation started — its chat appears in the list shortly.', 'info', 'Automations'); }
+              catch (error) { toast(errorMessage(error), 'error', 'Automations'); }
+            }),
+            settingsActionButton('Delete', 'trash', async () => {
+              try { await API.deleteAutomation(item.id); void fill(); }
+              catch (error) { toast(errorMessage(error), 'error', 'Automations'); }
+            }));
+          listWrap.appendChild(row);
+        });
+      };
+      void fill();
+      return wrap;
+    }
+
     function renderAboutPanel() {
       const wrap = el('div');
       wrap.appendChild(el('div', { class: 'about-mark' }, iconEl('spark')));
@@ -7036,6 +7591,27 @@ You can start with a more structured option: one script, short captions, and a c
       wrap.appendChild(el('label', { class: 'setting-toggle-row' },
         el('span', { text: 'Check for updates automatically' }),
         el('span', { class: 'switch' }, updToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
+      const betaToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: Boolean(cfg.beta_updates), 'aria-label': 'Beta update channel' });
+      betaToggle.addEventListener('change', async () => {
+        await API.saveSettings({ beta_updates: betaToggle.checked });
+        state.appSettings = { ...(state.appSettings || {}), beta_updates: betaToggle.checked };
+        const fresh = await API.updateCheck(true).catch(() => null);
+        if (fresh) state.updateInfo = fresh;
+        toast(betaToggle.checked ? 'Beta channel on: pre-releases count as updates.' : 'Back to stable releases only.', 'info', 'Updates');
+        refreshPanel();
+      });
+      wrap.appendChild(el('label', { class: 'setting-toggle-row' },
+        el('span', { text: 'Beta update channel (include pre-releases)' }),
+        el('span', { class: 'switch' }, betaToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
+      const eloToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: cfg.elo_enabled !== false, 'aria-label': 'Leaderboard Elo in model picker' });
+      eloToggle.addEventListener('change', async () => {
+        await API.saveSettings({ elo_enabled: eloToggle.checked });
+        state.appSettings = { ...(state.appSettings || {}), elo_enabled: eloToggle.checked };
+        state.eloModels = eloToggle.checked ? null : {};
+      });
+      wrap.appendChild(el('label', { class: 'setting-toggle-row' },
+        el('span', { text: 'Show leaderboard Elo in the model picker' }),
+        el('span', { class: 'switch' }, eloToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
       const trayToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: Boolean(cfg.tray_enabled), 'aria-label': 'Keep in system tray when closed' });
       trayToggle.addEventListener('change', async () => {
         await API.saveSettings({ tray_enabled: trayToggle.checked });
@@ -7070,6 +7646,7 @@ You can start with a more structured option: one script, short captions, and a c
       if (tab === 'permissions') return renderPermissionsPanel();
       if (tab === 'workspace') return renderWorkspacePanel();
       if (tab === 'memory') return renderMemoryPanel();
+      if (tab === 'automations') return renderAutomationsPanel();
       if (tab === 'about') return renderAboutPanel();
       return renderConnectionPanel();
     }
@@ -8475,7 +9052,31 @@ You can start with a more structured option: one script, short captions, and a c
       state.chatFilter = els.chatSearch.value;
       els.clearChatSearch.hidden = !state.chatFilter;
       renderChats();
+      window.clearTimeout(state._searchTimer);
+      const q = state.chatFilter.trim();
+      if (q.length >= 2) {
+        state._searchTimer = window.setTimeout(async () => {
+          try {
+            const hits = await API.searchChats(q);
+            if (state.chatFilter.trim() === q) {
+              state.searchResults = Array.isArray(hits) ? hits : [];
+              renderChats();
+            }
+          } catch { /* server offline: title filter still works */ }
+        }, 300);
+      } else if (state.searchResults.length) {
+        state.searchResults = [];
+      }
     });
+    initJumpPill();
+    window.__quickAsk = (text) => {
+      const t = String(text || '').trim();
+      if (!t) return;
+      const begin = () => {
+        if (els.prompt) { els.prompt.value = t; updateComposerState(); void sendMessage(); }
+      };
+      Promise.resolve(createNewChat({ focus: false })).then(begin).catch(begin);
+    };
     els.clearChatSearch?.addEventListener('click', () => {
       if (!els.chatSearch) return;
       els.chatSearch.value = '';
@@ -8530,7 +9131,7 @@ You can start with a more structured option: one script, short captions, and a c
 
     /* Attachments: +, file picker, paste, drag & drop */
     els.attachButton?.addEventListener('click', () => {
-      if (!els.attachButton.disabled) els.fileInput?.click();
+      if (!els.attachButton.disabled) openAttachMenu();
     });
     els.fileInput?.addEventListener('change', () => {
       addFiles(els.fileInput.files);

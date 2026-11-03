@@ -2551,3 +2551,271 @@ def test_ask_user_timeout_proceeds_with_assumption(web, monkeypatch, tmp_path):
     gone = c.post("/api/questions/11111111-1111-7111-8111-111111111111",
                   json={"answer": "Redis"})
     assert gone.status_code == 404
+
+
+def _answer_question_when(c, predicate, answer, timeout=15):
+    import time as _time
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        for q in c.get("/api/questions").get_json():
+            if predicate(q):
+                res = c.post(f"/api/questions/{q['id']}", json={"answer": answer})
+                assert res.status_code == 200, res.get_data(as_text=True)
+                return q
+        _time.sleep(0.1)
+    raise AssertionError("question never appeared")
+
+
+def test_propose_plan_revise_then_approve(web, monkeypatch, tmp_path):
+    import threading as _threading
+    appmod, c, cfg, use, sent, cid, ws = _delegate_parent(web, tmp_path, monkeypatch)
+    plan1 = ('<tool name="propose_plan"><plan>1. Rewrite everything\n'
+             '2. Delete the old code</plan></tool>')
+    plan2 = ('<tool name="propose_plan"><plan>1. Small refactor of parser.py\n'
+             '2. Run tests</plan></tool>')
+    use(FakeResp(["a0:" + json.dumps(plan1)]),
+        FakeResp(["a0:" + json.dumps(plan2)]),
+        FakeResp(['a0:"Executed"']))
+    result = {}
+
+    def run():
+        client2 = appmod.app.test_client()
+        result["events"] = events(client2.post("/api/chat", json={
+            "message": "plan it", "chat_id": cid}))
+
+    thread = _threading.Thread(target=run, daemon=True)
+    thread.start()
+    q1 = _answer_question_when(
+        c, lambda q: q.get("kind") == "plan", "too risky, keep the old code")
+    assert "Rewrite everything" in q1["plan"]
+    assert q1["options"] == ["Approve plan", "Cancel"]
+    _answer_question_when(
+        c, lambda q: q.get("kind") == "plan" and "Small refactor" in (q.get("plan") or ""),
+        "Approve plan")
+    thread.join(timeout=20)
+    assert not thread.is_alive()
+    contents = " ".join(s_[1]["userMessage"]["content"] for s_ in sent)
+    assert "wants changes to the plan" in contents
+    assert "approved your plan" in contents
+    saved = appmod._load_chat(cid)
+    steps = [t for m in saved["messages"] for t in (m.get("tools") or [])
+             if t.get("tool") == "propose_plan"]
+    assert [t["status"] for t in steps] == ["revise", "approved"]
+
+
+def test_propose_plan_timeout_blocks_execution(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent, cid, ws = _delegate_parent(web, tmp_path, monkeypatch)
+    monkeypatch.setattr(appmod, "QUESTION_TIMEOUT", 2)
+    plan = '<tool name="propose_plan"><plan>1. Something big</plan></tool>'
+    use(FakeResp(["a0:" + json.dumps(plan)]), FakeResp(['a0:"Plan only"']))
+    events(c.post("/api/chat", json={"message": "plan", "chat_id": cid}))
+    assert "did not review the plan in time" in sent[-1][1]["userMessage"]["content"]
+
+
+def test_set_todos_emits_event_and_persists(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent, cid, ws = _delegate_parent(web, tmp_path, monkeypatch)
+    todos = ('<tool name="set_todos"><todos>[x] Read the code\n'
+             '[~] Fix the bug\n[ ] Run tests</todos></tool>')
+    use(FakeResp(["a0:" + json.dumps(todos)]), FakeResp(['a0:"Done"']))
+    ev = events(c.post("/api/chat", json={"message": "fix", "chat_id": cid}))
+    todo_events = [e for e in ev if e.get("type") == "todos"]
+    assert todo_events and len(todo_events[0]["items"]) == 3
+    assert todo_events[0]["items"][0]["status"] == "done"
+    assert todo_events[0]["items"][1]["status"] == "doing"
+    assert todo_events[0]["chat_id"] == cid
+    saved = appmod._load_chat(cid)
+    step = next(t for m in saved["messages"] for t in (m.get("tools") or [])
+                if t.get("tool") == "set_todos")
+    assert step["summary"] == "Checklist: 1/3 done"
+    assert step["todos"][2] == {"text": "Run tests", "status": "pending"}
+
+
+def test_parse_todos_markers_and_agents_md(web, tmp_path):
+    appmod = web[0]
+    items = appmod._parse_todos("- [x] A\n[>] B\nC plain\n\n[ ] D\n* [~] E")
+    assert [i["status"] for i in items] == ["done", "doing", "pending", "pending", "doing"]
+    assert [i["text"] for i in items] == ["A", "B", "C plain", "D", "E"]
+    (tmp_path / "AGENTS.md").write_text("Always run pytest before finishing.",
+                                        encoding="utf-8")
+    block, h1 = appmod._memory_block(str(tmp_path))
+    assert "Project instructions (AGENTS.md" in block
+    assert "pytest" in block
+    (tmp_path / "AGENTS.md").write_text("Changed instructions.", encoding="utf-8")
+    block, h2 = appmod._memory_block(str(tmp_path))
+    assert "Changed instructions" in block and h2 != h1
+
+
+def test_read_files_batch_and_dedupe(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent, cid, ws = _delegate_parent(web, tmp_path, monkeypatch)
+    (ws / "a.txt").write_text("hello-a", encoding="utf-8")
+    (ws / "b.txt").write_text("hello-b", encoding="utf-8")
+    call = '<tool name="read_files"><paths>a.txt\nb.txt</paths></tool>'
+    use(FakeResp(["a0:" + json.dumps(call)]),
+        FakeResp(["a0:" + json.dumps(call)]),
+        FakeResp(['a0:"Read them"']))
+    events(c.post("/api/chat", json={"message": "read both twice", "chat_id": cid}))
+    bodies = [s_[1]["userMessage"]["content"] for s_ in sent]
+    assert "hello-a" in bodies[1] and "hello-b" in bodies[1]
+    assert bodies[2].count("unchanged since your last read") == 2
+
+
+def test_checkpoint_capture_and_undo(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent, cid, ws = _delegate_parent(web, tmp_path, monkeypatch)
+    cfg["permission_mode"] = "bypassPermissions"
+    (ws / "cfg.txt").write_text("original", encoding="utf-8")
+    write = ('<tool name="write_file"><path>cfg.txt</path>'
+             '<content>changed-by-agent</content></tool>')
+    use(FakeResp(["a0:" + json.dumps(write)]), FakeResp(['a0:"Updated"']))
+    events(c.post("/api/chat", json={"message": "change cfg", "chat_id": cid}))
+    assert (ws / "cfg.txt").read_text(encoding="utf-8") == "changed-by-agent"
+    saved = appmod._load_chat(cid)
+    reply = [m for m in saved["messages"] if m.get("role") == "assistant"][-1]
+    ckid = (reply.get("checkpoints") or {}).get("a")
+    assert ckid
+    res = c.post(f"/api/checkpoints/{ckid}/restore")
+    assert res.get_json()["restored"] == 1
+    assert (ws / "cfg.txt").read_text(encoding="utf-8") == "original"
+
+
+def test_parallel_research_children(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent, cid, ws = _delegate_parent(web, tmp_path, monkeypatch)
+    two = ('<tool name="delegate_task"><task>Find X</task><mode>research</mode></tool>'
+           '<tool name="delegate_task"><task>Find Y</task><mode>research</mode></tool>')
+    use(FakeResp(["a0:" + json.dumps(two)]),
+        FakeResp(['a0:"Finding one"']),
+        FakeResp(['a0:"Finding two"']),
+        FakeResp(['a0:"Combined"']))
+    ev = events(c.post("/api/chat", json={"message": "research both", "chat_id": cid}))
+    started = [e for e in ev if e.get("type") == "subagent" and e.get("status") == "started"]
+    assert len(started) == 2
+    final_send = sent[-1][1]["userMessage"]["content"]
+    assert "Finding one" in final_send and "Finding two" in final_send
+
+
+def test_fanout_three_models_and_summary(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent, cid, ws = _delegate_parent(web, tmp_path, monkeypatch)
+    fresh = "22222222-2222-7222-8222-222222222222"
+    use(FakeResp(['a0:"Answer from M1"']), FakeResp(['a0:"Answer from M2"']),
+        FakeResp(['a0:"Answer from M3"']), FakeResp(['a0:"They mostly agree"']))
+    ev = events(c.post("/api/chat", json={
+        "message": "Explain entropy", "chat_id": fresh, "mode": "direct",
+        "modality": "text", "model_id": "m1", "fanout_models": ["m1", "m2", "m3"]}))
+    done = [e for e in ev if e.get("type") == "done"][-1]
+    for fragment in ("Answer from M1", "Answer from M3", "They mostly agree"):
+        assert fragment in done["text_a"]
+    saved = appmod._load_chat(fresh)
+    steps = [t for m in saved["messages"] for t in (m.get("tools") or [])]
+    assert len(steps) == 4  # 3 models + summary child
+    child = appmod._load_chat(steps[0]["child_id"])
+    assert child["parent_id"] == fresh
+
+
+def test_search_export_fork(web):
+    appmod, c = web[0], web[1]
+    cid = "33333333-3333-7333-8333-333333333333"
+    appmod._save_chat(cid, title="Needle chat", mode="direct", modality="text",
+                      model_a="m1", eval_id="e" * 8,
+                      messages=[{"role": "user", "text": "where is the needle"},
+                                {"role": "assistant", "text": "In the haystack", "text_b": "",
+                                 "names": {"a": "Model One", "b": None}}])
+    hits = c.get("/api/search?q=needle").get_json()
+    assert hits and hits[0]["chat_id"] == cid and hits[0]["msg_index"] == 0
+    md = c.get(f"/api/chats/{cid}/export.md").get_data(as_text=True)
+    assert "# Needle chat" in md and "## User" in md and "In the haystack" in md
+    fork = c.post(f"/api/chats/{cid}/fork", json={"message_index": 0}).get_json()
+    fdata = appmod._load_chat(fork["chat_id"])
+    assert len(fdata["messages"]) == 1 and fdata["eval_id"] is None
+    assert fdata["title"].endswith("(fork)")
+    assert fdata.get("pending_digest")
+
+
+def test_workspace_snapshot(web, monkeypatch, tmp_path):
+    appmod, c, cfg, use, sent, cid, ws = _delegate_parent(web, tmp_path, monkeypatch)
+    (ws / "one.py").write_text("print('one')", encoding="utf-8")
+    (ws / "pkg").mkdir()
+    (ws / "pkg" / "two.py").write_text("print('two')", encoding="utf-8")
+    res = c.post("/api/workspace/snapshot",
+                 json={"paths": ["one.py", "pkg", "../escape.txt"]}).get_json()
+    assert res["files"] == 2
+    assert "print('one')" in res["text"] and "pkg/two.py" in res["text"]
+
+
+def test_automations_crud_due_and_run(web, monkeypatch):
+    import time as _time
+    appmod, c, cfg, use, sent = web
+    bad = c.post("/api/automations", json={
+        "name": "X", "prompt": "Y", "schedule": "whenever"})
+    assert bad.status_code == 400
+    ok = c.post("/api/automations", json={
+        "name": "Morning report", "prompt": "Summarize the project",
+        "schedule": "daily 09:30", "permission": "plan"}).get_json()
+    aid = ok["item"]["id"]
+    assert c.get("/api/automations").get_json()["items"]
+    assert appmod._automation_due({"enabled": True, "schedule": "daily 00:01", "last_run": 0})
+    assert not appmod._automation_due({"enabled": True, "schedule": "every 60m",
+                                       "last_run": int(_time.time())})
+    assert not appmod._automation_due({"enabled": False, "schedule": "hourly", "last_run": 0})
+    use(FakeResp(['a0:"Report: all good"']))
+    assert c.post(f"/api/automations/{aid}/run").status_code == 200
+    chat = None
+    for _ in range(100):
+        for item in appmod._list_chats():
+            if str(item.get("title") or "").startswith("Auto: Morning"):
+                data = appmod._load_chat(item["id"])
+                if any(m.get("role") == "assistant" for m in data["messages"]):
+                    chat = data
+                    break
+        if chat:
+            break
+        _time.sleep(0.1)
+    assert chat and "Report: all good" in chat["messages"][-1]["text"]
+    assert c.delete(f"/api/automations/{aid}").get_json()["ok"]
+
+
+def test_beta_update_channel_and_elo(web, monkeypatch):
+    appmod, c, cfg, use, sent = web
+    cfg["beta_updates"] = True
+
+    class R:
+        status_code = 200
+
+        def json(self):
+            return [{"tag_name": "v9.9.9-beta", "html_url": "u", "draft": False,
+                     "prerelease": True}]
+
+    monkeypatch.setattr(appmod.requests, "get", lambda *a, **k: R())
+    data = c.get("/api/update-check?force=1").get_json()
+    assert data["channel"] == "beta" and data["latest"] == "9.9.9-beta" and data["prerelease"]
+
+    appmod._elo_cache.update(t=0.0, models={})
+    monkeypatch.setattr(appmod, "_elo_fetch",
+                        lambda: {"model-x": {"rank": 3, "score": 1490, "board": "text"}})
+    elo = c.get("/api/elo").get_json()
+    assert elo["models"]["model-x"]["rank"] == 3
+    cfg["elo_enabled"] = False
+    assert c.get("/api/elo").get_json()["enabled"] is False
+
+
+def test_shell_refusal_and_idle_kill(monkeypatch, tmp_path):
+    from arena import agent as agent_mod
+    monkeypatch.setattr(agent_mod, "SHELL_IDLE_LIMIT", 1)
+    assert "not run" in agent_mod.run_shell_command("vim file.txt", tmp_path)
+    out = agent_mod.run_shell_command(
+        "python3 -c \"import time; time.sleep(30)\"", tmp_path)
+    assert "killed after 1s without output" in out
+    assert agent_mod.run_shell_command("echo hi", tmp_path).endswith("hi")
+
+
+def test_api_models_force_uses_authed_catalog_fetch(web, monkeypatch):
+    appmod, c = web[0], web[1]
+    seen = {}
+
+    def fake_sync(cookie=None, force=False, fetch_json=None):
+        seen.update(force=force, fetch_json=fetch_json)
+        return []
+
+    monkeypatch.setattr(appmod, "sync_models", fake_sync)
+    res = c.get("/api/models?mode=direct&modality=text&force=1")
+    assert res.status_code == 200
+    assert seen["force"] is True
+    assert seen["fetch_json"] is appmod._catalog_fetch_json

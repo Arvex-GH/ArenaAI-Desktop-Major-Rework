@@ -122,10 +122,16 @@ def get_org_color(org_name: str) -> str:
     return DYNAMIC_COLOR_PALETTE[idx]
 
 
-def sync_models(cookie: Optional[str] = None, force: bool = False) -> List[Dict[str, Any]]:
+def sync_models(cookie: Optional[str] = None, force: bool = False,
+                fetch_json=None) -> List[Dict[str, Any]]:
     """
     Dynamically fetch and update the model catalog from arena.ai.
     Uses disk caching with TTL; force=True bypasses cache.
+
+    `fetch_json` lets the web app supply its signed-in transport (browser
+    engine / session cookies): the public endpoint answers 403 to
+    anonymous requests, which used to freeze the catalog on the last
+    successful anonymous fetch forever (new models never appeared).
     """
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -148,9 +154,12 @@ def sync_models(cookie: Optional[str] = None, force: bool = False) -> List[Dict[
         headers["Cookie"] = cookie
 
     try:
-        r = requests.get(f"{BASE_URL}{API_PREFIX}/model-catalog", headers=headers, timeout=12)
-        r.raise_for_status()
-        raw_catalog = r.json()
+        if fetch_json is not None:
+            raw_catalog = fetch_json()
+        else:
+            r = requests.get(f"{BASE_URL}{API_PREFIX}/model-catalog", headers=headers, timeout=12)
+            r.raise_for_status()
+            raw_catalog = r.json()
     except Exception:
         if CACHE_FILE.exists():
             try:
@@ -163,7 +172,16 @@ def sync_models(cookie: Optional[str] = None, force: bool = False) -> List[Dict[
     models: List[Dict[str, Any]] = []
     seen = set()
 
-    for arena_block in raw_catalog:
+    if isinstance(raw_catalog, dict):
+        for key in ("arenas", "data", "catalog", "blocks", "models"):
+            if isinstance(raw_catalog.get(key), list):
+                raw_catalog = raw_catalog[key]
+                break
+        else:
+            raw_catalog = []
+    for arena_block in raw_catalog or []:
+        if not isinstance(arena_block, dict):
+            continue
         arena_name = arena_block.get("arena", "text")
         for m in arena_block.get("models", []):
             m_id = m.get("id")
@@ -180,7 +198,11 @@ def sync_models(cookie: Optional[str] = None, force: bool = False) -> List[Dict[
                 # Arena's catalog schema defines this as a boolean.  Do not
                 # default a missing flag to selectable: model catalogs also
                 # contain Battle/leaderboard entries that users may not pick.
-                user_selectable = m.get("userSelectable") is True
+                # Accept the truthy encodings a JSON schema drift could
+                # produce (1 / "true") without weakening the missing-flag rule.
+                _flag = m.get("userSelectable", m.get("user_selectable"))
+                user_selectable = (_flag is True or _flag == 1
+                                   or (isinstance(_flag, str) and _flag.lower() == "true"))
                 capabilities = m.get("capabilities", {})
 
                 # Tag router model
@@ -230,12 +252,25 @@ def get_popular_models(all_models: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 def _capability_maps(model: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     caps = model.get("capabilities") if isinstance(model.get("capabilities"), dict) else {}
     inputs = caps.get("inputCapabilities") if isinstance(caps.get("inputCapabilities"), dict) else {}
+    if not inputs and isinstance(caps.get("input"), dict):
+        inputs = caps["input"]
     outputs = caps.get("outputCapabilities") if isinstance(caps.get("outputCapabilities"), dict) else {}
+    if not outputs and isinstance(caps.get("output"), dict):
+        outputs = caps["output"]
     return inputs, outputs
 
 
 def _truthy_capability(value: Any) -> bool:
-    return value is True or (isinstance(value, dict) and bool(value))
+    # Capability values have been booleans or small dicts so far; accept
+    # list/string/number encodings too so a schema drift on a brand-new
+    # model cannot silently make it unsupported everywhere.
+    if value is True:
+        return True
+    if isinstance(value, (dict, list)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1", "supported")
+    return isinstance(value, (int, float)) and value != 0
 
 
 def _video_input_required(model: Dict[str, Any]) -> bool:

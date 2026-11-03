@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.17.0-8b5cf6?style=flat-square" alt="Version 4.17.0" />
+  <img src="https://img.shields.io/badge/version-5.0.0-8b5cf6?style=flat-square" alt="Version 5.0.0" />
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue?style=flat-square" alt="Windows 10/11" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776ab?style=flat-square" alt="Python 3.11+" />
   <img src="https://img.shields.io/badge/models-400%2B%20via%20arena.ai-10b981?style=flat-square" alt="400+ models via arena.ai" />
@@ -72,6 +72,25 @@ The app orchestrates chats, tools, files and permissions around it.
   folder and only a preview travels back (the model reads the full file only if it needs to),
   repeated output lines collapse, `read_file` reads line ranges, and a model that keeps repeating
   the same tool call is stopped automatically.
+- **Ask several models at once**: in Direct, fan one prompt out to 2–4 models you pick; every
+  answer lands in its own sub-chat and the main chat gets all answers plus a short comparison.
+- **Undo agent changes**: before the agent overwrites or deletes a file, a checkpoint snapshot is
+  taken — every turn that changed files gets a one-click Undo that restores the originals.
+- **Full-text chat search, Markdown export, fork-from-any-message**, and attaching whole
+  workspace files/folders as prompt text for modes without tools.
+- **Automations**: scheduled Local Agent runs (daily / hourly / every N minutes) with a
+  per-automation permission mode; each run becomes its own chat.
+- **Faster, harder to hang**: parallel read-only sub-agents, batched file reads with
+  unchanged-file deduplication, a 90-second stream watchdog, an idle-timeout on shell
+  commands (interactive programs are refused up front), and loop detection with a
+  wrap-up warning before the round limit.
+- **Model picker upgrades**: pin favorites, hide the rest, Vision/Docs capability badges and
+  optional leaderboard Elo next to each model — sourced from daily public snapshots.
+- **Plan approval & live checklist**: before substantial changes the agent can present its plan
+  as a card — **Approve**, **Cancel**, or send revisions in your own words — then keep a visible
+  `set_todos` checklist updated as it works, so you always see what's done and what's next.
+  Project instructions from **AGENTS.md** in the workspace root are picked up automatically
+  alongside MEMORY.md.
 - **The model can ask you**: with the `ask_user` tool the Local Agent (and its sub-agents) can pause
   mid-task and ask a clarifying question with 2–4 answer options plus a free-text field — your
   answer returns to the model and the work continues, instead of it guessing on a fork that
