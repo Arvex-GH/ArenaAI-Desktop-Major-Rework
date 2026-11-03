@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.1.0-8b5cf6?style=flat-square" alt="Version 5.1.0" />
+  <img src="https://img.shields.io/badge/version-5.1.5-8b5cf6?style=flat-square" alt="Version 5.1.5" />
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue?style=flat-square" alt="Windows 10/11" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776ab?style=flat-square" alt="Python 3.11+" />
   <img src="https://img.shields.io/badge/models-400%2B%20via%20arena.ai-10b981?style=flat-square" alt="400+ models via arena.ai" />
@@ -139,7 +139,15 @@ The app orchestrates chats, tools, files and permissions around it.
 - Arena-matching interface: dark theme, unified composer chips, centered home composer,
   resizable sidebar/workspace panels (sizes are remembered), English-only UI.
 - Friendly errors: rate limits explain which limit hit and when it resets (daily spend, per-modality,
-  per-model, new-account video gate) instead of a bare “429”.
+  per-model, new-account video gate) instead of a bare “429”. Built-in request pacing spaces out
+  bursts and queues a resend until Arena's reset, so short throttles stop killing tasks (it does
+  not raise Arena's daily usage limit; strength is adjustable in Settings).
+- Daily-limit survival (v5.1.5): Settings → Usage logs the app's own sends per account/day with a
+  rate-limit history; agent turns go on a context diet (repeated listings/searches answered from
+  cache until files change, Compact offered earlier); research subagents default to light
+  (Mini/Flash/Lite-class) models and light models are badged in the picker. An explicitly opt-in
+  account failover can continue a task on another saved account when the daily cap hits — off by
+  default, because rotating accounts around Arena's daily limit is a fair-use grey zone.
 
 <p align="center">
   <img src="docs/screenshots/agent-mode.png" alt="Agent Mode with Workspace Sync (demo data)" width="900" />

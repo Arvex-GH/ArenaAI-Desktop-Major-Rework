@@ -406,7 +406,7 @@ def classify_error(status: int, text: str = "", headers=None) -> Dict[str, Any]:
         wait_s = 60
         if reset:
             import time as _time
-            wait_s = max(5, min(86400, int(reset - _time.time())))
+            wait_s = max(1, min(86400, int(reset - _time.time())))
         if DAILY_SPEND_LIMIT_MESSAGE in low:
             if wait_text:
                 return out("rate_limit", f"You've reached your Arena daily usage limit. Try again in {wait_text}.", True, wait_s)
@@ -429,6 +429,8 @@ def classify_error(status: int, text: str = "", headers=None) -> Dict[str, Any]:
             return out("rate_limit", "That model is rate-limited on Arena right now. Wait a moment, or pick another model.", True, wait_s)
         if wait_text and wait_text != "a moment":
             return out("rate_limit", f"Arena is rate-limiting this account. Try again in {wait_text}.", True, wait_s)
+        if reset:
+            return out("rate_limit", "Arena is rate-limiting this account. Wait a moment, then send again.", True, wait_s)
         return out("rate_limit", "Arena is rate-limiting this account. Wait about a minute, then send again.", True, 60)
     if "cannot pass model for battle" in low:
         return out("bad_request", "Battle mode picks the models for you. Switch to Direct to choose one.")

@@ -502,7 +502,9 @@ class FakeResp:
 @pytest.fixture
 def web(tmp_path, monkeypatch):
     from arena.web import app as appmod
-    cfg = {}
+    # pacing off by default in tests (it sleeps real seconds); pacing
+    # tests opt in with tiny intervals.
+    cfg = {"pacing": False}
     monkeypatch.setattr(appmod, "load_config", lambda: dict(cfg))
     monkeypatch.setattr(appmod, "save_config", lambda c: cfg.update(c))
     catalog = [
@@ -520,6 +522,8 @@ def web(tmp_path, monkeypatch):
     monkeypatch.setattr(workspace, "PROJECTS_DIR", tmp_path / "projects")
     monkeypatch.setattr(appmod, "COOKIE_FILE", tmp_path / "cookies.txt")
     monkeypatch.setattr(appmod, "CHATS_DIR", tmp_path / "chats")
+    monkeypatch.setattr(appmod, "USAGE_FILE", tmp_path / "usage.json")
+    monkeypatch.setattr(appmod, "_USAGE", None)
     monkeypatch.setattr(appmod.ENGINE, "window", None)
     monkeypatch.setattr(appmod, "_client", FakeClient())
     monkeypatch.setattr(appmod, "_ui_mode", "battle")
@@ -2888,6 +2892,236 @@ def test_auto_retry_skips_long_rate_limit(web, monkeypatch):
     assert not [e for e in ev if e["type"] == "auto_retry"]
     errs = [e for e in ev if e["type"] == "error"]
     assert errs and errs[0]["code"] == "rate_limit"
+    assert len(sent) == 1
+
+
+def _acquire_permit(appmod, conv):
+    got = []
+    started = time.monotonic()
+    gen = appmod._pacer_acquire(conv)
+    try:
+        while True:
+            got.append(next(gen))
+    except StopIteration as stop:
+        return stop.value, got, time.monotonic() - started
+
+
+def _pacing_cfg(appmod, cfg, **overrides):
+    appmod._PACER_LANES.clear()
+    cfg.update(pacing=True, pacing_text_interval=0.05, pacing_media_interval=0.05,
+               pacing_burst=3, pacing_max_wait=10.0)
+    cfg.update(overrides)
+
+
+def test_pacer_note_429_backs_off(web):
+    appmod, _c, cfg, _use, _sent = web
+    _pacing_cfg(appmod, cfg)
+    appmod._pacer_note_429({"modality": "chat"}, 30)
+    lane = appmod._PACER_LANES["text"]
+    assert lane["interval"] == 0.1  # doubled from the 0.05 base
+    assert lane["tokens"] == 0.0
+    assert lane["cooldown_until"] > time.monotonic() + 25
+
+
+def test_pacer_bucket_spaces_sends(web):
+    appmod, _c, cfg, _use, _sent = web
+    _pacing_cfg(appmod, cfg, pacing_text_interval=0.3, pacing_burst=1)
+    conv = {"modality": "chat"}
+    first, _ev, fast = _acquire_permit(appmod, conv)
+    assert fast < 0.2 and first.counted
+    first.release()
+    second, _ev, slow = _acquire_permit(appmod, conv)
+    assert slow >= 0.2  # had to wait for the single token to refill
+    second.release()
+    second.release()  # idempotent
+    assert appmod._PACER_LANES["text"]["in_flight"] == 0
+
+
+def test_pacer_concurrency_cap(web):
+    appmod, _c, cfg, _use, _sent = web
+    _pacing_cfg(appmod, cfg, pacing_burst=10)
+    conv = {"modality": "chat"}
+    one, _e, _t = _acquire_permit(appmod, conv)
+    two, _e, _t = _acquire_permit(appmod, conv)
+    done = threading.Event()
+    holder = {}
+
+    def third():
+        holder["permit"], _ev, _el = _acquire_permit(appmod, conv)
+        done.set()
+
+    worker = threading.Thread(target=third, daemon=True)
+    worker.start()
+    assert not done.wait(0.35)  # text lane caps at 2 in flight
+    one.release()
+    assert done.wait(2.0)
+    holder["permit"].release()
+    two.release()
+    worker.join(timeout=2)
+
+
+def test_pacer_notice_after_long_queue(web):
+    appmod, _c, cfg, _use, _sent = web
+    _pacing_cfg(appmod, cfg)
+    lane = appmod._pacer_lane("text")
+    lane["cooldown_until"] = time.monotonic() + 3.2
+    permit, got, elapsed = _acquire_permit(appmod, {"modality": "chat"})
+    assert elapsed >= 3.0
+    notices = [g for g in got if '"notice"' in str(g)]
+    assert notices and "Pacing requests" in str(notices[0])
+    permit.release()
+
+
+def test_pacing_disabled_is_noop(web):
+    appmod, _c, cfg, _use, _sent = web
+    appmod._PACER_LANES.clear()  # fixture default: pacing off
+    lane = appmod._pacer_lane("text")
+    lane["cooldown_until"] = time.monotonic() + 60
+    permit, _got, elapsed = _acquire_permit(appmod, {"modality": "chat"})
+    assert elapsed < 0.2 and not permit.counted
+
+
+def test_pacing_queues_resend_until_reset(web, monkeypatch):
+    appmod, c, cfg, use, sent = web
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    _no_backoff(appmod, monkeypatch)
+    _pacing_cfg(appmod, cfg)
+    limited = FakeResp(status=429, text="rate limited")
+    limited.headers = {"Retry-After": "1"}
+    use(limited, FakeResp([_tool_line("After the reset")]))
+    started = time.monotonic()
+    ev = events(c.post("/api/chat", json={"message": "hi", "mode": "direct",
+                                          "modality": "text", "model_id": "m1", "tools": False}))
+    assert time.monotonic() - started >= 0.8  # resend waited out the cooldown
+    assert [e for e in ev if e["type"] == "auto_retry"]
+    assert not [e for e in ev if e["type"] == "error"]
+    assert ev[-1]["type"] == "done" and ev[-1]["text_a"] == "After the reset"
+    assert len(sent) == 2
+
+
+def test_usage_telemetry_counts_sends_and_429(web, monkeypatch):
+    appmod, c, _cfg, use, _sent = web
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    _no_backoff(appmod, monkeypatch)
+    use(FakeResp([_tool_line("one")]))
+    ev = events(c.post("/api/chat", json={"message": "hi", "mode": "direct",
+                                          "modality": "text", "model_id": "m1", "tools": False}))
+    assert ev[-1]["type"] == "done"
+    limited = FakeResp(status=429, text="rate limited")
+    limited.headers = {"Retry-After": "30"}
+    use(limited)
+    ev = events(c.post("/api/chat", json={"message": "hi", "mode": "direct",
+                                          "modality": "text", "model_id": "m1", "tools": False}))
+    assert [e for e in ev if e["type"] == "error"]
+    usage = c.get("/api/usage").get_json()
+    today = usage["days"][usage["today"]]
+    acct = next(iter(today.values()))
+    assert acct["sends"] == 2 and acct["rate_limits"] == 1
+    assert usage["events"] and 25 <= usage["events"][0]["wait"] <= 30
+
+
+def test_ls_output_cached_within_turn(web):
+    appmod, c, cfg, use, _sent = web
+    cfg["permission_mode"] = "bypassPermissions"
+    appmod._ui_mode = "agent"
+    ls = _tool_line('<tool name="ls"><path>.</path></tool>')
+    use(FakeResp([ls]), FakeResp([ls]),
+        FakeResp([_tool_line('<tool name="write_file"><path>note.txt</path><content>hi</content></tool>')]),
+        FakeResp([ls]),
+        FakeResp([_tool_line("All done.")]))
+    ev = events(c.post("/api/chat", json={"message": "look, write, look again"}))
+    results = [e for e in ev if e["type"] == "tool_result"]
+    assert len(results) == 4
+    assert "not repeated to save context" not in results[0]["output"]
+    assert "not repeated to save context" in results[1]["output"]  # identical repeat: cached
+    assert "not repeated to save context" not in results[3]["output"]  # write invalidated it
+    assert "note.txt" in results[3]["output"]
+    assert ev[-1]["type"] == "done"
+
+
+def test_resolve_delegate_model_cheap_research(web, monkeypatch):
+    appmod, _c, cfg, _use, _sent = web
+    monkeypatch.setattr(appmod, "_delegate_models",
+                        lambda: [("gpt-x-mini", "GPT X Mini"), ("opus-max", "Opus Max")])
+    mid, _name, auto = appmod._resolve_delegate_model("", "research")
+    assert mid == "gpt-x-mini" and auto is True
+    assert appmod._resolve_delegate_model("Opus Max", "research")[0] == "opus-max"
+    assert appmod._resolve_delegate_model("", "work")[0] != "gpt-x-mini"
+    cfg["cheap_subagents"] = False
+    assert appmod._resolve_delegate_model("", "research")[0] != "gpt-x-mini"
+
+
+def _failover_setup(appmod, monkeypatch, store):
+    monkeypatch.setattr(appmod, "_accounts_load", lambda: json.loads(json.dumps(store)))
+    switched = []
+
+    def fake_activate(cookie, method):
+        switched.append(cookie)
+        store["current"] = "b2"
+        return None, True
+
+    monkeypatch.setattr(appmod, "_activate_cookie", fake_activate)
+    monkeypatch.setattr(appmod, "_sync_current_account_cookie", lambda ck: None)
+    return switched
+
+
+def test_account_failover_continues_on_daily_limit(web, monkeypatch):
+    appmod, c, cfg, use, sent = web
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    _no_backoff(appmod, monkeypatch)
+    cfg["account_failover"] = True
+    store = {"current": "a1", "accounts": [
+        {"id": "a1", "email": "first@local.invalid", "cookie": "c1"},
+        {"id": "b2", "email": "second@local.invalid", "cookie": "c2"}]}
+    switched = _failover_setup(appmod, monkeypatch, store)
+    daily = FakeResp(status=429, text='{"error":"daily spend limit reached"}')
+    daily.headers = {"Retry-After": "7200"}
+    use(daily, FakeResp([_tool_line("Continued answer")]))
+    ev = events(c.post("/api/chat", json={"message": "hi", "mode": "direct",
+                                          "modality": "text", "model_id": "m1", "tools": False}))
+    assert switched == ["c2"]
+    assert [e for e in ev if e["type"] == "account_switched"]
+    assert not [e for e in ev if e["type"] == "error"]
+    assert ev[-1]["type"] == "done" and ev[-1]["text_a"] == "Continued answer"
+    assert len(sent) == 2
+    assert "continued conversation" in sent[1][1]["userMessage"]["content"]
+
+
+def test_account_failover_requires_optin(web, monkeypatch):
+    appmod, c, _cfg, use, sent = web
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    _no_backoff(appmod, monkeypatch)
+    store = {"current": "a1", "accounts": [
+        {"id": "a1", "email": "first@local.invalid", "cookie": "c1"},
+        {"id": "b2", "email": "second@local.invalid", "cookie": "c2"}]}
+    switched = _failover_setup(appmod, monkeypatch, store)
+    daily = FakeResp(status=429, text='{"error":"daily spend limit reached"}')
+    daily.headers = {"Retry-After": "7200"}
+    use(daily)
+    ev = events(c.post("/api/chat", json={"message": "hi", "mode": "direct",
+                                          "modality": "text", "model_id": "m1", "tools": False}))
+    assert switched == []  # default OFF: no silent account rotation
+    assert [e for e in ev if e["type"] == "error"]
+    assert len(sent) == 1
+
+
+def test_account_failover_skips_when_other_chats_generate(web, monkeypatch):
+    appmod, c, cfg, use, sent = web
+    appmod._ui_mode, appmod._ui_modality = "direct", "text"
+    _no_backoff(appmod, monkeypatch)
+    cfg["account_failover"] = True
+    store = {"current": "a1", "accounts": [
+        {"id": "a1", "email": "first@local.invalid", "cookie": "c1"},
+        {"id": "b2", "email": "second@local.invalid", "cookie": "c2"}]}
+    switched = _failover_setup(appmod, monkeypatch, store)
+    monkeypatch.setattr(appmod, "_active_generations", 3)
+    daily = FakeResp(status=429, text='{"error":"daily spend limit reached"}')
+    daily.headers = {"Retry-After": "7200"}
+    use(daily)
+    ev = events(c.post("/api/chat", json={"message": "hi", "mode": "direct",
+                                          "modality": "text", "model_id": "m1", "tools": False}))
+    assert switched == []  # switching re-points the whole app: never mid-flight for others
+    assert [e for e in ev if e["type"] == "error"]
     assert len(sent) == 1
 
 

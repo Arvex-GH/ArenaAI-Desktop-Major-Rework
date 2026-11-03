@@ -11,3 +11,6 @@ data/
 .claude/
 .pytest_cache/
 .code-review-graph/
+
+# release binary rides along for one-command gh release, never committed
+Arena-Desktop.exe

@@ -71,7 +71,7 @@ def main(path: str) -> int:
                    and b"createPairwiseFeedback" in engine))
 
     app = modules["arena.web.app"]
-    checks.append(("app: APP_VERSION 5.1.0", b"5.1.0" in app))
+    checks.append(("app: APP_VERSION 5.1.5", b"5.1.5" in app))
     checks.append(("app: native create direct with genuine-cx ladder",
                    b"genuine-cx+connectors" in app and b"_native_drive" not in app))
     checks.append(("app: turn-complete record detection + drain resume",
@@ -103,7 +103,7 @@ def main(path: str) -> int:
                    b"is_turn_complete_record" in native and b"trigger-control" in native))
 
     index = entries.get("arena/web/static/index.html", b"")
-    checks.append(("index.html: assets v=5.1.0", b"?v=5.1.0" in index))
+    checks.append(("index.html: assets v=5.1.5", b"?v=5.1.5" in index))
     checks.append(("index.html: Arena dropdown chips + resize handles, no segmented bars",
                    b'id="modeButton"' in index and b'id="modalityButton"' in index
                    and b'id="sidebarResize"' in index and b'id="workspaceResize"' in index
@@ -121,7 +121,7 @@ def main(path: str) -> int:
                    and b"cookie-policy" in index))
 
     app_js = entries.get("arena/web/static/app.js", b"")
-    checks.append(("app.js: demo app_version 5.1.0", b"app_version: '5.1.0'" in app_js))
+    checks.append(("app.js: demo app_version 5.1.5", b"app_version: '5.1.5'" in app_js))
     checks.append(("app.js: cloud chat open passes title",
                    b"openArenaChat(id, type, title)" in app_js))
     checks.append(("app.js: Arena dropdowns + vote + chat lock",
@@ -206,6 +206,7 @@ def main(path: str) -> int:
                    and b"Arena Personal" not in index + app_js + style))
 
     agent_m = modules["arena.agent"]
+    contracts_m = modules["arena.contracts"]
     checks.append(("v5.1: auto-continue + soft anti-loop + delete_subagent",
                    b"_turn_auto" in app and b"auto_retry" in app
                    and b"blocked: repeated call" in app and b"delete_subagent" in app
@@ -214,6 +215,21 @@ def main(path: str) -> int:
                    b"scrollBottomBtn" in app_js and b"Add an account with cookies" in app_js
                    and b"auto_continue" in app_js
                    and b"Arena asked to wait before sending again" not in app_js))
+    checks.append(("v5.1.1: adaptive pacing governor + precise 429 waits",
+                   b"_pacer_acquire" in app and b"_pacer_note_429" in app
+                   and b"Pacing requests to stay under Arena" in app
+                   and b"Wait a moment, then send again" in contracts_m))
+    checks.append(("v5.1.1 UI: pacing toggle + strength preset",
+                   b"Pace requests (avoid Arena rate limits)" in app_js
+                   and b"pacing_preset" in app_js))
+    checks.append(("v5.1.5: usage telemetry + agent diet + light subagents",
+                   b"/api/usage" in app and b"_usage_note_send" in app
+                   and b"not repeated to save context" in app
+                   and b"_LIGHT_MODEL_TOKENS" in app))
+    checks.append(("v5.1.5: opt-in account failover + Usage tab UI",
+                   b"_activate_failover" in app and b"account_switched" in app
+                   and b"Usage &amp; Arena limits" in app_js
+                   and b"Continue on another account at daily limit" in app_js))
     models_m = modules["arena.models"]
     checks.append(("catalog: signed-in fetch + force refresh (new models appear)",
                    b"_catalog_fetch_json" in app and b"model catalog fetch failed" in app

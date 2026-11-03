@@ -263,7 +263,7 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "5.1.0"
+APP_VERSION = "5.1.5"
 
 
 @app.after_request
@@ -1171,6 +1171,16 @@ def api_settings():
     cfg.update(data)
     save_config(cfg)
     return jsonify({"ok": True})
+
+
+@app.route("/api/usage")
+def api_usage():
+    import datetime
+    store = _usage()
+    return jsonify({"today": datetime.date.today().isoformat(),
+                    "current_account": _current_account_id(),
+                    "days": store.get("days") or {},
+                    "events": list(reversed(store.get("events") or []))})
 
 
 @app.route("/api/mode", methods=["POST"])
@@ -2897,6 +2907,239 @@ def _line_events(r, conv: dict):
     return out
 
 
+# ----------------------------------------------------------------------
+# Usage telemetry (v5.1.5): the app counts its own Arena sends per
+# account/day and logs every 429, so Settings -> Usage can show where
+# the daily balance goes. Best-effort: it must never break a send.
+USAGE_FILE = COOKIE_FILE.parent / "usage.json"
+_USAGE = None
+_USAGE_SENDS_SINCE_SAVE = 0
+
+
+def _usage() -> dict:
+    global _USAGE
+    if _USAGE is None:
+        try:
+            data = json.loads(USAGE_FILE.read_text(encoding="utf-8"))
+            _USAGE = data if isinstance(data, dict) else {}
+        except Exception:
+            _USAGE = {}
+        _USAGE.setdefault("days", {})
+        _USAGE.setdefault("events", [])
+    return _USAGE
+
+
+def _usage_save() -> None:
+    try:
+        USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        USAGE_FILE.write_text(json.dumps(_usage(), ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _usage_account():
+    try:
+        store = _accounts_load()
+        current = store.get("current")
+        record = next((a for a in store.get("accounts") or [] if a.get("id") == current), None)
+        if record:
+            return str(record.get("id") or "current"), (record.get("email") or record.get("name") or "")
+    except Exception:
+        pass
+    return "current", ""
+
+
+def _usage_day() -> dict:
+    import datetime
+    days = _usage()["days"]
+    today = datetime.date.today().isoformat()
+    for old in sorted(days)[:-14]:
+        if old != today:
+            days.pop(old, None)
+    return days.setdefault(today, {})
+
+
+def _usage_blank(email=""):
+    return {"email": email, "sends": 0, "by_modality": {}, "models": {}, "rate_limits": 0}
+
+
+def _usage_note_send(conv) -> None:
+    global _USAGE_SENDS_SINCE_SAVE
+    try:
+        account_id, email = _usage_account()
+        acct = _usage_day().setdefault(account_id, _usage_blank(email))
+        if email:
+            acct["email"] = email
+        acct["sends"] = int(acct.get("sends") or 0) + 1
+        lane = _pacer_lane_key(conv)
+        by_mod = acct.setdefault("by_modality", {})
+        by_mod[lane] = int(by_mod.get(lane) or 0) + 1
+        model = str((conv or {}).get("model_a") or "")
+        if model:
+            models = acct.setdefault("models", {})
+            models[model] = int(models.get(model) or 0) + 1
+        _USAGE_SENDS_SINCE_SAVE += 1
+        if _USAGE_SENDS_SINCE_SAVE >= 10:
+            _USAGE_SENDS_SINCE_SAVE = 0
+            _usage_save()
+    except Exception:
+        pass
+
+
+def _usage_note_429(conv, err) -> None:
+    try:
+        account_id, email = _usage_account()
+        acct = _usage_day().setdefault(account_id, _usage_blank(email))
+        acct["rate_limits"] = int(acct.get("rate_limits") or 0) + 1
+        events = _usage()["events"]
+        events.append({"ts": int(time.time()), "account": email or account_id,
+                       "modality": _pacer_lane_key(conv),
+                       "model": str((conv or {}).get("model_a") or ""),
+                       "wait": (err or {}).get("wait"),
+                       "message": str((err or {}).get("message") or "")[:200]})
+        del events[:-50]
+        _usage_save()
+    except Exception:
+        pass
+
+
+# ----------------------------------------------------------------------
+# Adaptive request pacing (v5.1.1): a client-side governor in front of
+# every chat send. Short Arena throttles are mostly triggered by bursts
+# (parallel chats, sub-agents, fan-out, retries), so sends pass a
+# per-lane token bucket with a concurrency cap; observed 429 resets
+# teach it to slow down and queue until the reset instead of erroring.
+# Daily-quota waits (hours) are never queued - they surface as before.
+_PACER_PRESETS = {
+    "gentle": {"text_interval": 3.0, "media_interval": 10.0, "burst": 3, "max_wait": 90.0},
+    "strict": {"text_interval": 6.0, "media_interval": 20.0, "burst": 2, "max_wait": 120.0},
+}
+_PACER_LOCK = threading.Lock()
+_PACER_LANES: dict = {}
+
+
+def _pacing_params() -> dict:
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    params = dict(_PACER_PRESETS.get(str(cfg.get("pacing_preset") or "gentle"),
+                                      _PACER_PRESETS["gentle"]))
+    params["enabled"] = cfg.get("pacing", True) is not False
+    for key in ("text_interval", "media_interval", "burst", "max_wait"):
+        value = cfg.get("pacing_" + key)
+        if isinstance(value, (int, float)) and value >= 0:
+            params[key] = float(value)
+    return params
+
+
+def _pacer_lane_key(conv) -> str:
+    return "media" if str((conv or {}).get("modality") or "") in ("image", "video") else "text"
+
+
+def _pacer_lane(key: str) -> dict:
+    lane = _PACER_LANES.get(key)
+    if lane is None:
+        lane = {"tokens": None, "last_refill": 0.0, "interval": None,
+                "cooldown_until": 0.0, "in_flight": 0, "last_429": 0.0}
+        _PACER_LANES[key] = lane
+    return lane
+
+
+class _PacerPermit:
+    __slots__ = ("lane", "counted", "released")
+
+    def __init__(self, lane=None, counted=False):
+        self.lane, self.counted, self.released = lane, counted, False
+
+    def release(self):
+        if self.released:
+            return
+        self.released = True
+        if self.counted and self.lane is not None:
+            with _PACER_LOCK:
+                self.lane["in_flight"] = max(0, self.lane["in_flight"] - 1)
+
+
+def _pacer_acquire(conv):
+    """Wait for a send slot; yields a pacing notice/pings, returns a permit."""
+    params = _pacing_params()
+    if not params["enabled"]:
+        return _PacerPermit()
+    key = _pacer_lane_key(conv)
+    base = params["media_interval"] if key == "media" else params["text_interval"]
+    burst = max(1, int(params["burst"]))
+    max_wait = float(params["max_wait"])
+    concurrency = 1 if key == "media" else 2
+    waited = 0.0
+    noticed = False
+    ping_at = 10.0
+    while True:
+        with _PACER_LOCK:
+            lane = _pacer_lane(key)
+            now = time.monotonic()
+            if lane["interval"] is None:
+                lane["interval"] = base
+                lane["tokens"] = float(burst)
+                lane["last_refill"] = now
+            if lane["last_429"] and now - lane["last_429"] > 300:
+                lane["interval"] = base
+                lane["last_429"] = 0.0
+            interval = max(0.0, float(lane["interval"]))
+            if interval > 0:
+                gained = (now - lane["last_refill"]) / interval
+                if gained > 0:
+                    lane["tokens"] = min(float(burst), (lane["tokens"] or 0.0) + gained)
+                    lane["last_refill"] = now
+            cooldown_left = lane["cooldown_until"] - now
+            wait_needed = 0.0
+            if 0 < cooldown_left <= max_wait:
+                wait_needed = cooldown_left
+            elif lane["in_flight"] >= concurrency:
+                wait_needed = 0.2
+            elif (lane["tokens"] or 0.0) >= 1.0:
+                lane["tokens"] -= 1.0
+                lane["in_flight"] += 1
+                return _PacerPermit(lane, counted=True)
+            elif interval > 0:
+                wait_needed = (1.0 - (lane["tokens"] or 0.0)) * interval
+            if _stopped() or waited > max_wait:
+                # Never trap the user: send anyway (Stop pressed, or the
+                # remaining wait is quota-scale rather than a burst window).
+                lane["in_flight"] += 1
+                return _PacerPermit(lane, counted=True)
+        step = min(max(wait_needed, 0.05), 0.5)
+        time.sleep(step)
+        waited += step
+        if waited > 3 and not noticed:
+            noticed = True
+            yield _sse({"type": "notice",
+                        "text": "Pacing requests to stay under Arena's rate limits — sending in a few seconds."})
+        if waited >= ping_at:
+            ping_at += 10.0
+            yield _sse({"type": "ping"})
+
+
+def _pacer_note_429(conv, wait_seconds) -> None:
+    try:
+        wait = float(wait_seconds or 0)
+    except (TypeError, ValueError):
+        wait = 0
+    key = _pacer_lane_key(conv)
+    params = _pacing_params()
+    base = params["media_interval"] if key == "media" else params["text_interval"]
+    with _PACER_LOCK:
+        lane = _pacer_lane(key)
+        now = time.monotonic()
+        current = lane["interval"] if lane["interval"] is not None else base
+        lane["interval"] = min(max(current * 2, base), 60.0)
+        lane["tokens"] = 0.0
+        lane["last_refill"] = now
+        if wait > 0:
+            lane["cooldown_until"] = max(lane["cooldown_until"], now + min(wait, 86400.0))
+        lane["last_429"] = now
+
+
 def _turn(client: ArenaClient, content: str, conv: dict):
     """Send one message and stream the answer. Yields SSE events; returns {"a": text, "b": text},
     or None after sending an error event."""
@@ -2917,60 +3160,68 @@ def _turn(client: ArenaClient, content: str, conv: dict):
             yield _sse({"type": "error", "code": "bad_request", "message": str(e), "retry": False})
             return None
         v2 = None
-        r = _send(client, path, body)
-        LOG.info("chat %s: HTTP %s (v2 token sent: %s)", conv["chat_id"][:8], r.status_code, bool(body.get("recaptchaV2Token")))
-        if r.status_code == 200:
-            conv["new"] = False
-            conv["attachments"] = None  # sent with this turn; not again
-            # The pairwise vote addresses the two assistant messages by the
-            # client-generated ids from this very request body.
-            conv["last_arena_ids"] = {"a": body.get("modelAMessageId"),
-                                      "b": body.get("modelBMessageId")}
-            out = yield from _line_events(r, conv)
-            if _engine_on():
-                ENGINE.sync_to(client)
-            return out
-        err = contracts.classify_error(r.status_code, r.text if r.status_code else (r.error or ""),
-                                       headers=getattr(r, "headers", None))
-        LOG.info("chat %s: %s - %s", conv["chat_id"][:8], err.get("code"), str(err.get("message", ""))[:200])
-        if r.status_code == 0 and _engine_on() and ENGINE.challenge == "cloudflare":
-            err["code"] = "cloudflare"
-        if err["code"] == "challenge" and _engine_on():
-            ENGINE.request_human_check()
-            yield _sse({"type": "challenge", "kind": "recaptcha", "message": "arena.ai wants a quick human check. "
-                        "Tick the box in the arena.ai window; your message is resent right after."})
-            token = yield from _wait_for(
-                lambda: ENGINE.take_v2_token() or (ENGINE.challenge != "recaptcha" and "closed"), 300)
-            if token == "closed":
-                token = ENGINE.take_v2_token()
-            LOG.info("chat %s: human check %s", conv["chat_id"][:8], "passed" if token else "not finished")
-            if not token:
-                ENGINE.cancel_check()
-                yield _sse({"type": "error", "code": "challenge", "retry": True,
-                            "message": "The human check was not finished, so nothing was sent."})
-                return None
-            yield _sse({"type": "challenge_done"})
-            v2 = token
-            continue
-        if err["code"] == "cloudflare" and _engine_on():
-            if ENGINE.ready():
-                ENGINE.show_cloudflare()
-            yield _sse({"type": "challenge", "kind": "cloudflare",
-                        "message": "arena.ai is showing a Cloudflare check. Finish it in the arena.ai window."})
-            if not (yield from _wait_for(ENGINE.ready, 300)):
-                yield _sse({"type": "error", "code": "cloudflare", "retry": True,
-                            "message": "The Cloudflare check was not finished."})
-                return None
-            yield _sse({"type": "challenge_done"})
-            continue
-        if err["code"] == "eval_gone" and not conv["new"]:
-            conv.update(new=True, eval_id=None)
-            yield _sse({"type": "notice", "text": "arena.ai no longer has this conversation, so a new one was started."})
-            continue
-        if err["code"] in ("challenge", "cloudflare"):
-            err["message"] += " Open Arena Desktop (Arena-Desktop.exe): it shows arena.ai's check so you can finish it."
-        yield _sse(dict(err, type="error"))
-        return None
+        permit = yield from _pacer_acquire(conv)
+        try:
+            r = _send(client, path, body)
+            _usage_note_send(conv)
+            LOG.info("chat %s: HTTP %s (v2 token sent: %s)", conv["chat_id"][:8], r.status_code, bool(body.get("recaptchaV2Token")))
+            if r.status_code == 200:
+                conv["new"] = False
+                conv["attachments"] = None  # sent with this turn; not again
+                # The pairwise vote addresses the two assistant messages by the
+                # client-generated ids from this very request body.
+                conv["last_arena_ids"] = {"a": body.get("modelAMessageId"),
+                                          "b": body.get("modelBMessageId")}
+                out = yield from _line_events(r, conv)
+                if _engine_on():
+                    ENGINE.sync_to(client)
+                return out
+            err = contracts.classify_error(r.status_code, r.text if r.status_code else (r.error or ""),
+                                           headers=getattr(r, "headers", None))
+            if err["code"] == "rate_limit":
+                _pacer_note_429(conv, err.get("wait"))
+                _usage_note_429(conv, err)
+            LOG.info("chat %s: %s - %s", conv["chat_id"][:8], err.get("code"), str(err.get("message", ""))[:200])
+            if r.status_code == 0 and _engine_on() and ENGINE.challenge == "cloudflare":
+                err["code"] = "cloudflare"
+            if err["code"] == "challenge" and _engine_on():
+                ENGINE.request_human_check()
+                yield _sse({"type": "challenge", "kind": "recaptcha", "message": "arena.ai wants a quick human check. "
+                            "Tick the box in the arena.ai window; your message is resent right after."})
+                token = yield from _wait_for(
+                    lambda: ENGINE.take_v2_token() or (ENGINE.challenge != "recaptcha" and "closed"), 300)
+                if token == "closed":
+                    token = ENGINE.take_v2_token()
+                LOG.info("chat %s: human check %s", conv["chat_id"][:8], "passed" if token else "not finished")
+                if not token:
+                    ENGINE.cancel_check()
+                    yield _sse({"type": "error", "code": "challenge", "retry": True,
+                                "message": "The human check was not finished, so nothing was sent."})
+                    return None
+                yield _sse({"type": "challenge_done"})
+                v2 = token
+                continue
+            if err["code"] == "cloudflare" and _engine_on():
+                if ENGINE.ready():
+                    ENGINE.show_cloudflare()
+                yield _sse({"type": "challenge", "kind": "cloudflare",
+                            "message": "arena.ai is showing a Cloudflare check. Finish it in the arena.ai window."})
+                if not (yield from _wait_for(ENGINE.ready, 300)):
+                    yield _sse({"type": "error", "code": "cloudflare", "retry": True,
+                                "message": "The Cloudflare check was not finished."})
+                    return None
+                yield _sse({"type": "challenge_done"})
+                continue
+            if err["code"] == "eval_gone" and not conv["new"]:
+                conv.update(new=True, eval_id=None)
+                yield _sse({"type": "notice", "text": "arena.ai no longer has this conversation, so a new one was started."})
+                continue
+            if err["code"] in ("challenge", "cloudflare"):
+                err["message"] += " Open Arena Desktop (Arena-Desktop.exe): it shows arena.ai's check so you can finish it."
+            yield _sse(dict(err, type="error"))
+            return None
+        finally:
+            permit.release()
     yield _sse({"type": "error", "code": "http", "retry": True, "message": "arena.ai kept refusing the message."})
     return None
 
@@ -2991,6 +3242,63 @@ def _auto_continue_on() -> bool:
         return load_config().get("auto_continue", True) is not False
     except Exception:
         return True
+
+
+def _account_failover_on() -> bool:
+    # Opt-in only (default OFF): rotating accounts to work around a daily
+    # cap is a fair-use grey zone, so the user enables this knowingly.
+    try:
+        return load_config().get("account_failover") is True
+    except Exception:
+        return False
+
+
+def _failover_target():
+    """Another saved account with a session, or None. Also refuses while
+    anything besides the calling turn is generating: switching accounts
+    re-points the whole app (engine + client)."""
+    try:
+        with _generation_lock:
+            if _active_generations > 1:
+                return None
+        store = _accounts_load()
+        current = store.get("current")
+        return next((a for a in store.get("accounts") or []
+                     if a.get("id") != current and (a.get("cookie") or "")
+                     and not a.get("expired")), None)
+    except Exception:
+        return None
+
+
+def _activate_failover(target) -> bool:
+    """Perform the actual switch to `target` (blocking; engine import may
+    take a few seconds). Mirrors the manual switch endpoint's internals."""
+    try:
+        try:
+            _sync_current_account_cookie(get_client().cookie_str)
+        except Exception:
+            pass
+        _resp, ok = _activate_cookie(target.get("cookie") or "", "account-failover")
+        if not ok:
+            _mark_account_expired(target.get("id"))
+            return False
+        _PACER_LANES.clear()  # new account: pacing starts from a clean slate
+        return True
+    except Exception:
+        LOG.exception("account failover failed")
+        return False
+
+
+def _failover_seed(conv, content: str) -> str:
+    """First message for the fresh session on the new account: the chat
+    digest (same seeding as Compact/Fork) followed by the pending content."""
+    try:
+        chat = _load_chat(str((conv or {}).get("chat_id") or "")) or {}
+        if chat.get("messages"):
+            return _digest_block(_build_digest(chat)) + (content or "")
+    except Exception:
+        pass
+    return content
 
 
 _AUTO_RETRY_CODES = {"network", "server", "model", "stalled", "empty"}
@@ -3016,6 +3324,7 @@ def _turn_auto(client, content, conv):
     accumulated = {"a": "", "b": ""}
     send_content = content
     attempt_no = 0
+    failed_over = False
 
     def merged(o):
         if o is None:
@@ -3081,11 +3390,42 @@ def _turn_auto(client, content, conv):
             wait = float((fail_err or {}).get("wait") or 0)
         except (TypeError, ValueError):
             wait = 0
-        retryable = code in _AUTO_RETRY_CODES or (code == "rate_limit" and 0 < wait <= 20)
+        # With pacing on, the resend queues precisely until Arena's reset,
+        # so a longer rate-limit window is worth auto-continuing; without
+        # pacing only short windows are (immediate retries would just 429).
+        rl_window = 95 if _pacing_params()["enabled"] else 20
+        retryable = code in _AUTO_RETRY_CODES or (code == "rate_limit" and 0 < wait <= rl_window)
         if attempts_left <= 0 or not retryable or _stopped():
-            for raw_item, _p in held:
-                yield raw_item
-            return merged(out)
+            # Daily-scale limit + opt-in account failover (v5.1.5): switch
+            # to another saved account and continue in a digest-seeded
+            # fresh session instead of dying here. Once per turn.
+            target = None
+            if (code == "rate_limit" and wait >= 600 and not failed_over
+                    and not _stopped() and _account_failover_on()):
+                target = _failover_target()
+            if target is None:
+                for raw_item, _p in held:
+                    yield raw_item
+                return merged(out)
+            label = target.get("email") or target.get("name") or "another account"
+            yield _sse({"type": "notice",
+                        "text": f"Daily limit reached on this account — switching to {label} and continuing in a fresh session…"})
+            if not _activate_failover(target):
+                for raw_item, _p in held:
+                    yield raw_item
+                return merged(out)
+            failed_over = True
+            _tl.error = None
+            client = get_client()
+            conv.update(new=True, eval_id=None)
+            yield _sse({"type": "account_switched", "email": label})
+            yield _sse({"type": "auto_retry", "attempt": attempt_no, "max": 2,
+                        "code": "account_switch",
+                        "dropped": {"a": len((out or {}).get("a") or ""),
+                                    "b": len((out or {}).get("b") or "")}})
+            accumulated = {"a": "", "b": ""}
+            send_content = _failover_seed(conv, content)
+            continue
 
         attempts_left -= 1
         _tl.error = None  # the held whole-turn error is not final
@@ -3668,6 +4008,7 @@ _ckpt_lock = threading.Lock()
 
 
 def _invalidate_read_cache(conv, info):
+    conv.pop("_output_cache", None)  # listings/searches may have changed too
     cache = conv.get("_read_cache")
     if not cache:
         return
@@ -4011,7 +4352,24 @@ def _delegate_models() -> list:
     return [(mid, _model_name(mid) or mid) for mid in sorted(ids)[:14]]
 
 
-def _resolve_delegate_model(raw) -> tuple:
+_LIGHT_MODEL_TOKENS = ("mini", "flash", "lite", "haiku", "nano")
+
+
+def _light_model(mid, name) -> bool:
+    """Heuristic 'small/fast tier' test - such models usually burn much
+    less of Arena's daily balance than frontier flagships."""
+    blob = f"{mid} {name}".lower()
+    return any(tok in blob for tok in _LIGHT_MODEL_TOKENS)
+
+
+def _cheap_subagents_on() -> bool:
+    try:
+        return load_config().get("cheap_subagents", True) is not False
+    except Exception:
+        return True
+
+
+def _resolve_delegate_model(raw, mode="research") -> tuple:
     """Resolve a parent's <model> choice to (model_id, display_name, auto)."""
     text = str(raw or "").strip()
     if text:
@@ -4023,6 +4381,12 @@ def _resolve_delegate_model(raw) -> tuple:
         for mid, name in models:
             if low in name.lower() or low in str(mid).lower():
                 return mid, name, False
+    if str(mode or "research").lower() != "work" and _cheap_subagents_on():
+        # Research grunt work on a light model by default (v5.1.5): the
+        # parent can always name a stronger model explicitly.
+        for mid, name in _delegate_models():
+            if _light_model(mid, name):
+                return mid, name, True
     auto = _auto_agent_model()
     if auto:
         mid = auto.get("model_id", auto.get("id"))
@@ -4048,7 +4412,8 @@ def _run_subagent(client, parent_conv: dict, call: dict, lane: str, child_id: st
     smode = str(params.get("mode") or "research").strip().lower()
     if smode not in ("research", "work") or _perm_mode() == "plan":
         smode = "research"
-    model_id, model_name, auto = _resolve_delegate_model(params.get("model"))
+    model_id, model_name, auto = _resolve_delegate_model(
+        params.get("model"), "work" if params.get("fanout") else params.get("mode"))
     extra.update({"model": model_name, "mode": smode, "task": task[:300]})
     with _subagent_lock:
         ran = int(parent_conv.get("subagents_run") or 0)
@@ -4288,6 +4653,40 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                     yield _sse({"type": "tool_result", "model": l, "tool": call["name"],
                                 "ok": ok, "status": status, "output": output[:4000]})
                     continue
+                if call["name"] in ("ls", "search"):
+                    # Diet (v5.1.5): the same listing/search repeated in one
+                    # turn re-bills its whole output as context. Answer from
+                    # cache until anything in this turn mutates files.
+                    info = dict(tools[l].describe(call), model=l)
+                    yield _sse(dict(info, type="tool_call"))
+                    try:
+                        out_key = json.dumps([call["name"], call.get("params") or {}],
+                                             sort_keys=True, ensure_ascii=False)
+                    except (TypeError, ValueError):
+                        out_key = repr(call)
+                    cache = conv.setdefault("_output_cache", {})
+                    answer = yield from _permit(mode, call["name"], info)
+                    if answer != "allow":
+                        ok, output = False, ""
+                        status = ("blocked: plan mode is read-only" if mode == "plan"
+                                  else "blocked by safety rules") if answer == "blocked" else "denied by the user"
+                    elif out_key in cache:
+                        ok, status = True, "ok"
+                        output = ("[Arena Desktop] Same result as earlier in this turn - "
+                                  "not repeated to save context. It has not changed since.")
+                    else:
+                        ok, output = tools[l].run(call)
+                        status = "ok" if ok else "error"
+                        if ok:
+                            cache[out_key] = True
+                    outcomes.append((call, status, output))
+                    conv.setdefault("tools", []).append(
+                        {"tool": call["name"], "summary": info.get("summary"), "lane": l,
+                         "diff": info.get("diff"), "ok": ok, "status": status})
+                    yield _sse({"type": "tool_result", "model": l, "tool": call["name"],
+                                "rel": info.get("rel"), "ok": ok, "status": status,
+                                "output": (output or "")[:4000]})
+                    continue
                 if call["name"] in ("read_file", "read_files"):
                     rparams = call.get("params") or {}
                     if call["name"] == "read_files":
@@ -4513,6 +4912,8 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                         else:
                             ok, status, output, extra = yield from _run_subagent(client, conv, call, l, child_id)
                     outcomes.append((call, status, output))
+                    if extra.get("mode") == "work":
+                        conv.pop("_output_cache", None)  # child may have edited files
                     conv.setdefault("tools", []).append(
                         {"tool": "delegate_task", "summary": info["summary"], "lane": l,
                          "diff": None, "ok": ok, "status": status,
@@ -4620,6 +5021,8 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                             _checkpoint_capture(conv, l, info)
                         ok, output = tools[l].run(call)
                         status = "ok" if ok else "error"
+                        if call["name"] == "run_cmd":
+                            conv.pop("_output_cache", None)
                         if ok and call["name"] in ("write_file", "edit_file", "delete"):
                             _invalidate_read_cache(conv, info)
                     else:
@@ -5201,7 +5604,10 @@ def _api_chat_impl():
                                 "means Arena's context limit for this chat was reached — press Compact "
                                 "(next to Workspace Sync) to continue here with a fresh context."})
         total_chars = _history_chars(history)
-        if history_chars < CONTEXT_WARN_CHARS <= total_chars:
+        # Tool chats re-bill the whole history every round, so nudge
+        # towards Compact earlier than in plain chats (v5.1.5).
+        warn_at = CONTEXT_WARN_CHARS * 5 // 8 if tools_on else CONTEXT_WARN_CHARS
+        if history_chars < warn_at <= total_chars:
             yield _sse({"type": "notice", "level": "warn",
                         "text": f"This conversation is getting long (~{total_chars // 1000}k characters) "
                                 "and may be close to Arena's context limit. Press Compact (next to "

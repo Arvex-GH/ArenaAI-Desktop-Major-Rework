@@ -512,6 +512,7 @@
     exportSettings() { return this.request('/api/settings/export'); },
     importSettings(bundle) { return this.request('/api/settings/import', { method: 'POST', body: bundle }); },
     diagnostics() { return this.request('/api/diagnostics'); },
+    getUsage() { return this.request('/api/usage'); },
     getQuestions() { return this.request('/api/questions'); },
     answerQuestion(id, answer) { return this.request(`/api/questions/${encodeURIComponent(id)}`, { method: 'POST', body: { answer } }); },
     searchChats(q) { return this.request(`/api/search?q=${encodeURIComponent(q)}`); },
@@ -1001,7 +1002,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '5.1.0',
+        app_version: '5.1.5',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -1197,6 +1198,13 @@
     async exportSettings() { await sleep(60); return { app: 'Arena Desktop', version: 1, config: {}, memory_global: demoStore.memoryGlobal || '', memory_workspace: demoStore.memoryWorkspace || '', mcp: null, demo: true }; },
     async importSettings(bundle = {}) { await sleep(60); if (typeof bundle.memory_global === 'string') demoStore.memoryGlobal = bundle.memory_global; return { ok: true, backup: 'demo', demo: true }; },
     async diagnostics() { await sleep(60); return { text: 'Arena Desktop (demo)\nDiagnostics are illustrative in demo mode.', demo: true }; },
+    async getUsage() {
+      await sleep(40);
+      const today = new Date().toISOString().slice(0, 10);
+      return { today, current_account: 'demo',
+        days: { [today]: { demo: { email: 'demo@local.invalid', sends: 42, by_modality: { text: 38, media: 4 }, models: { 'gpt-x-mini': 20, 'opus-max': 12 }, rate_limits: 1 } } },
+        events: [{ ts: Math.floor(Date.now() / 1000) - 3600, account: 'demo@local.invalid', modality: 'text', model: 'opus-max', wait: 7200, message: "You've reached your Arena daily usage limit." }], demo: true };
+    },
     async getQuestions() { await sleep(40); return []; },
     async answerQuestion() { await sleep(40); return { ok: true, demo: true }; },
     async searchChats() { await sleep(40); return []; },
@@ -5417,6 +5425,10 @@ You can start with a more structured option: one script, short captions, and a c
       void loadChats({ silent: true });
       return;
     }
+    if (type === 'account_switched') {
+      void loadStatus({ quiet: true }).then(() => { updateAccountUI(); updateConnectionUI(); });
+      return;
+    }
     if (type === 'error') {
       const message = textValue(event.message ?? event.error ?? event.detail ?? 'The server reported an error.');
       generation.hadError = true;
@@ -6362,7 +6374,8 @@ You can start with a more structured option: one script, short captions, and a c
           elo?.rank ? `Elo #${elo.rank}` : (model.rank ? `#${model.rank}` : ''),
           elo?.score ? `${elo.score}` : (model.arena_score ? `rating ${model.arena_score}` : ''),
           (capsText.includes('vision') || capsText.includes('image')) ? 'Vision' : '',
-          (capsText.includes('pdf') || capsText.includes('document')) ? 'Docs' : ''
+          (capsText.includes('pdf') || capsText.includes('document')) ? 'Docs' : '',
+          /(mini|flash|lite|haiku|nano)/i.test(`${model.id || ''} ${model.name || ''}`) ? 'Light (saves daily balance)' : ''
         ].filter(Boolean).join(' · ');
         const option = popoverOption({
           title: model.name,
@@ -7207,6 +7220,7 @@ You can start with a more structured option: one script, short captions, and a c
       { id: 'workspace', label: 'Folder', icon: 'folder' },
       { id: 'memory', label: 'Memory', icon: 'layers' },
       { id: 'automations', label: 'Automations', icon: 'clock' },
+      { id: 'usage', label: 'Usage', icon: 'chart' },
       { id: 'about', label: 'About', icon: 'info' }
     ];
     let currentTab = tabDefs.some((tab) => tab.id === initialTab) ? initialTab : 'connection';
@@ -7568,7 +7582,74 @@ You can start with a more structured option: one script, short captions, and a c
       return wrap;
     }
 
-    function renderAboutPanel() {
+    function renderUsagePanel() {
+    const wrap = el('div', 'memory-panel');
+    const humanWait = (w) => {
+      const s = Number(w) || 0;
+      if (!s) return '';
+      if (s < 90) return `resets in ~${Math.round(s)}s`;
+      if (s < 5400) return `resets in ~${Math.round(s / 60)}m`;
+      return `resets in ~${Math.round(s / 3600)}h`;
+    };
+    const fill = async () => {
+      const body = $('#usageBody', wrap);
+      if (!body) return;
+      let data = null;
+      try { data = await API.getUsage(); } catch (_err) { /* shown below */ }
+      if (!data || !data.days) {
+        body.innerHTML = '<p class="modal-note">Usage data is unavailable right now.</p>';
+        return;
+      }
+      const days = data.days || {};
+      const todayKey = data.today || '';
+      const today = days[todayKey] || {};
+      const accountRow = (id, a) => {
+        const models = Object.entries(a.models || {})
+          .sort((x, y) => y[1] - x[1]).slice(0, 5)
+          .map(([m, n]) => `${m} \u00D7${n}`).join(', ');
+        const byMod = a.by_modality || {};
+        const bits = [`${a.sends || 0} sends`,
+          `text ${byMod.text || 0}`, `media ${byMod.media || 0}`,
+          `${a.rate_limits || 0} rate limits`];
+        return `<div class="modal-field-row" style="align-items:flex-start">
+          <span class="modal-field-label">${esc(a.email || id)}</span>
+          <span class="muted">${esc(bits.join(' \u00B7 '))}${models ? `<br>${esc(models)}` : ''}</span></div>`;
+      };
+      const todayHtml = Object.keys(today).length
+        ? Object.entries(today).map(([id, a]) => accountRow(id, a)).join('')
+        : '<p class="modal-note">No sends recorded yet today.</p>';
+      const past = Object.entries(days).filter(([d]) => d !== todayKey).sort((x, y) => (x[0] < y[0] ? 1 : -1));
+      const pastHtml = past.map(([d, accts]) => {
+        const sends = Object.values(accts).reduce((n, a) => n + (a.sends || 0), 0);
+        const limits = Object.values(accts).reduce((n, a) => n + (a.rate_limits || 0), 0);
+        return `<div class="modal-field-row"><span class="modal-field-label">${esc(d)}</span><span class="muted">${sends} sends \u00B7 ${limits} rate limits</span></div>`;
+      }).join('');
+      const eventsHtml = (data.events || []).slice(0, 10).map((ev) => {
+        const when = ev.ts ? new Date(ev.ts * 1000).toLocaleString() : '';
+        const what = [ev.modality, ev.model].filter(Boolean).join(' \u00B7 ');
+        return `<div class="modal-field-row" style="align-items:flex-start">
+          <span class="modal-field-label">${esc(when)}</span>
+          <span class="muted">${esc([what, humanWait(ev.wait)].filter(Boolean).join(' \u00B7 '))}${ev.message ? `<br>${esc(String(ev.message).slice(0, 140))}` : ''}</span></div>`;
+      }).join('') || '<p class="modal-note">No rate limits recorded. Nice.</p>';
+      body.innerHTML = `
+        <h4 class="modal-mini-title">Today</h4>
+        ${todayHtml}
+        <h4 class="modal-mini-title">Recent rate limits</h4>
+        ${eventsHtml}
+        ${past.length ? `<h4 class="modal-mini-title">Previous days</h4>${pastHtml}` : ''}`;
+    };
+    wrap.innerHTML = `
+      <h3 class="modal-section-title">Usage &amp; Arena limits</h3>
+      <p class="modal-note">Arena now meters every account with a daily balance that resets every 24 hours; heavier models and longer contexts spend more of it, and each agent round re-sends the whole conversation. The numbers below are this app\u2019s own send log \u2014 Arena\u2019s official counter may differ (it also counts arena.ai web use).</p>
+      <div class="modal-field-row"><span class="modal-field-label">Send log</span>
+        <button class="btn ghost small" id="usageRefresh" type="button">Refresh</button></div>
+      <div id="usageBody"><p class="modal-note">Loading usage\u2026</p></div>`;
+    $('#usageRefresh', wrap)?.addEventListener('click', () => { void fill(); });
+    requestAnimationFrame(() => { void fill(); });
+    return wrap;
+  }
+
+  function renderAboutPanel() {
       const wrap = el('div');
       wrap.appendChild(el('div', { class: 'about-mark' }, iconEl('spark')));
       wrap.appendChild(el('h3', { class: 'about-title', text: 'Arena Desktop' }));
@@ -7640,6 +7721,45 @@ You can start with a more structured option: one script, short captions, and a c
       wrap.appendChild(el('label', { class: 'setting-toggle-row' },
         el('span', { text: 'Auto-continue on error (up to 2 attempts)' }),
         el('span', { class: 'switch' }, acToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
+      const pacingToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: cfg.pacing !== false, 'aria-label': 'Pace requests to avoid Arena rate limits' });
+      const pacingPreset = el('select', { class: 'input', 'aria-label': 'Pacing strength' },
+        el('option', { value: 'gentle', text: 'Gentle' }),
+        el('option', { value: 'strict', text: 'Strict' }));
+      pacingPreset.value = cfg.pacing_preset === 'strict' ? 'strict' : 'gentle';
+      pacingPreset.disabled = cfg.pacing === false;
+      pacingToggle.addEventListener('change', async () => {
+        await API.saveSettings({ pacing: pacingToggle.checked });
+        state.appSettings = { ...(state.appSettings || {}), pacing: pacingToggle.checked };
+        pacingPreset.disabled = !pacingToggle.checked;
+      });
+      pacingPreset.addEventListener('change', async () => {
+        await API.saveSettings({ pacing_preset: pacingPreset.value });
+        state.appSettings = { ...(state.appSettings || {}), pacing_preset: pacingPreset.value };
+      });
+      wrap.appendChild(el('label', { class: 'setting-toggle-row' },
+        el('span', { text: 'Pace requests (avoid Arena rate limits)' }),
+        el('span', { class: 'switch' }, pacingToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
+      wrap.appendChild(el('label', { class: 'setting-toggle-row' },
+        el('span', { text: 'Pacing strength' }), pacingPreset));
+      wrap.appendChild(el('p', { class: 'setting-desc', text: 'Pacing spaces out outgoing requests and queues a resend until Arena\u2019s reset instead of failing on a 429. It does not raise Arena\u2019s daily usage limit \u2014 tasks just run steadier.' }));
+      const cheapToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: cfg.cheap_subagents !== false, 'aria-label': 'Lighter models for research subagents' });
+      cheapToggle.addEventListener('change', async () => {
+        await API.saveSettings({ cheap_subagents: cheapToggle.checked });
+        state.appSettings = { ...(state.appSettings || {}), cheap_subagents: cheapToggle.checked };
+      });
+      wrap.appendChild(el('label', { class: 'setting-toggle-row' },
+        el('span', { text: 'Lighter models for research subagents' }),
+        el('span', { class: 'switch' }, cheapToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
+      const failoverToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: cfg.account_failover === true, 'aria-label': 'Continue on another account at daily limit' });
+      failoverToggle.addEventListener('change', async () => {
+        await API.saveSettings({ account_failover: failoverToggle.checked });
+        state.appSettings = { ...(state.appSettings || {}), account_failover: failoverToggle.checked };
+        if (failoverToggle.checked) toast('When a daily limit hits mid-task, the app will switch to another saved account and continue in a fresh session. Rotating accounts to work around a daily cap conflicts with Arena fair-use expectations and may flag the accounts \u2014 use only if you understand the risk.', 'info', 'Account failover');
+      });
+      wrap.appendChild(el('label', { class: 'setting-toggle-row' },
+        el('span', { text: 'Continue on another account at daily limit' }),
+        el('span', { class: 'switch' }, failoverToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
+      wrap.appendChild(el('p', { class: 'setting-desc', text: 'Failover is off by default on purpose: rotating accounts around a daily cap is a fair-use grey zone, and accounts on the same IP may share one limit anyway. See the Usage tab for your send log.' }));
       const trayToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: Boolean(cfg.tray_enabled), 'aria-label': 'Keep in system tray when closed' });
       trayToggle.addEventListener('change', async () => {
         await API.saveSettings({ tray_enabled: trayToggle.checked });
@@ -7675,6 +7795,7 @@ You can start with a more structured option: one script, short captions, and a c
       if (tab === 'workspace') return renderWorkspacePanel();
       if (tab === 'memory') return renderMemoryPanel();
       if (tab === 'automations') return renderAutomationsPanel();
+      if (tab === 'usage') return renderUsagePanel();
       if (tab === 'about') return renderAboutPanel();
       return renderConnectionPanel();
     }
