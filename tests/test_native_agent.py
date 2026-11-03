@@ -191,3 +191,16 @@ def test_agentic_import_messages_from_parts_and_content():
     assert history_sync.agentic_last_event_id({"session": {"messages": [], "lastEventId": "9"}}) == "9"
     assert history_sync.agentic_last_event_id({"messages": []}) is None
     assert history_sync.agentic_last_event_id(None) is None
+
+
+def test_native_audio_files_map_to_audio_kind():
+    from arena import native_agent
+    out = native_agent.map_chunk(
+        {"type": "file", "url": "https://cdn.example.com/voice.mp3",
+         "mediaType": "audio/mpeg", "filename": "voice.mp3"}, {})
+    assert out and out[0]["type"] == "media" and out[0]["kind"] == "audio"
+    out = native_agent.map_chunk(
+        {"type": "data-media", "data": {"url": "https://cdn.example.com/a.wav"}}, {})
+    assert out and out[0]["kind"] == "audio"
+    # Unknown chunks are tolerated and yield nothing.
+    assert native_agent.map_chunk({"type": "mystery-kind", "x": 1}, {}) == []

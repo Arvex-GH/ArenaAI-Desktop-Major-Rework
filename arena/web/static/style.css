@@ -1095,6 +1095,23 @@ mark.find-hit-current { background: #d9a441; color: #1b1a17; }
 }
 .install-card-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
 
+/* Rich workspace file previews (v5.5.1) */
+.file-preview-media {
+  display: flex; justify-content: center; align-items: center;
+  background: #171a19; border: 1px solid #2e3432; border-radius: 10px;
+  padding: 12px;
+}
+.file-preview-media img { max-width: 100%; max-height: 68vh; object-fit: contain; border-radius: 6px; }
+.file-preview-media video { max-width: 100%; max-height: 68vh; border-radius: 6px; }
+.file-preview-media audio { width: min(520px, 100%); }
+.file-preview-frame {
+  width: 100%; height: min(70vh, 720px);
+  border: 1px solid #2e3432; border-radius: 10px; background: #fff;
+}
+.file-preview-markdown { padding: 4px 2px; }
+.media-frame.is-audio { padding: 10px 12px; }
+.media-frame.is-audio audio { width: 100%; }
+
 /* Sources, media and activity */
 .sources { margin-top: 13px; padding-top: 10px; border-top: 1px solid #303635; }
 .sources-title { display: flex; align-items: center; gap: 5px; margin: 0 0 7px; color: #8b948e; font-size: 9.5px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; }

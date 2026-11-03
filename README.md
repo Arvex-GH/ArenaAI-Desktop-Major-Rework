@@ -142,6 +142,10 @@ The app orchestrates chats, tools, files and permissions around it.
   per-model, new-account video gate) instead of a bare “429”. Built-in request pacing spaces out
   bursts and queues a resend until Arena's reset, so short throttles stop killing tasks (it does
   not raise Arena's daily usage limit; strength is adjustable in Settings).
+- **Rich workspace previews** (v5.5.1): clicking a file renders HTML/SVG in a sandboxed frame
+  (relative CSS/images from the same folder load too), Markdown as a document, images,
+  audio, video and PDF inline; text/code keeps the classic read-only view with Copy and
+  Download; anything else offers Download. Agent-produced audio plays in chat as well.
 - **Agent Gateway** (v5.5, off by default): the genuine Arena Agent can use selected local MCP
   servers on your PC (Blender, Roblox Studio, files…). With both opt-ins on, a temporary
   pairing-protected Cloudflare tunnel session starts automatically with Workspace Sync and new

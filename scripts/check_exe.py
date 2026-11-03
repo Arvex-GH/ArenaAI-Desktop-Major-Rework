@@ -71,7 +71,7 @@ def main(path: str) -> int:
                    and b"createPairwiseFeedback" in engine))
 
     app = modules["arena.web.app"]
-    checks.append(("app: APP_VERSION 5.5.0", b"5.5.0" in app))
+    checks.append(("app: APP_VERSION 5.5.1", b"5.5.1" in app))
     checks.append(("app: native create direct with genuine-cx ladder",
                    b"genuine-cx+connectors" in app and b"_native_drive" not in app))
     checks.append(("app: turn-complete record detection + drain resume",
@@ -103,7 +103,7 @@ def main(path: str) -> int:
                    b"is_turn_complete_record" in native and b"trigger-control" in native))
 
     index = entries.get("arena/web/static/index.html", b"")
-    checks.append(("index.html: assets v=5.5.0", b"?v=5.5.0" in index))
+    checks.append(("index.html: assets v=5.5.1", b"?v=5.5.1" in index))
     checks.append(("index.html: Arena dropdown chips + resize handles, no segmented bars",
                    b'id="modeButton"' in index and b'id="modalityButton"' in index
                    and b'id="sidebarResize"' in index and b'id="workspaceResize"' in index
@@ -235,6 +235,11 @@ def main(path: str) -> int:
                    and b"Message queued" in app_js and b"arena-drafts-v1" in app_js
                    and b"find-hit" in app_js and b"/api/workspace/download" in app))
     gateway_m = modules["arena.gateway"]
+    native_m = modules["arena.native_agent"]
+    checks.append(("v5.5.1: rich workspace previews + agent audio",
+                   b"/api/workspace/preview/" in app
+                   and b"file-preview-frame" in app_js
+                   and b"_note_unknown" in native_m and b"is-audio" in app_js))
     components_m = modules["arena.components"]
     checks.append(("v5.5: Agent Gateway tunnel sessions + injection",
                    b"/v1/jobs" in gateway_m and b"trycloudflare" in gateway_m

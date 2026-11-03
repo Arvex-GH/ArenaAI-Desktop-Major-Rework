@@ -10,10 +10,35 @@ HTTPS requests against the /ai-proxy data plane (PAT bearer auth).
 """
 
 import json
+import logging
 import os
 import time
 import urllib.parse
 import uuid
+
+LOG = logging.getLogger(__name__)
+
+_KNOWN_STRUCTURAL = {
+    "start", "start-step", "finish", "finish-step", "text-start", "text-end",
+    "reasoning-start", "reasoning-end", "tool-input-start", "tool-input-delta",
+    "tool-input-end", "message-metadata", "raw",
+}
+_SEEN_UNKNOWN: set = set()
+
+
+def _note_unknown(chunk) -> None:
+    """Log the shape (kind + keys only, never values) of stream chunks this
+    client does not understand yet, once per kind per process. Upstream
+    media-choice/reveal flows will show up here first."""
+    try:
+        kind = str((chunk or {}).get("type") or "")
+        if not kind or kind in _KNOWN_STRUCTURAL or kind in _SEEN_UNKNOWN:
+            return
+        _SEEN_UNKNOWN.add(kind)
+        keys = sorted(str(k) for k in (chunk or {}).keys())
+        LOG.info("native: unknown chunk kind=%s keys=%s", kind, ",".join(keys))
+    except Exception:
+        pass
 
 TURN_COMPLETE = "trigger:turn-complete"
 DEFAULT_TIMEZONE = "Europe/Moscow"
@@ -350,7 +375,8 @@ def map_chunk(chunk, tool_names: dict) -> list:
         if isinstance(url, str) and url.startswith(("http://", "https://")):
             media_type = str(chunk.get("mediaType") or chunk.get("mimeType") or "")
             media_kind = ("image" if media_type.startswith("image/")
-                          else "video" if media_type.startswith("video/") else "file")
+                          else "video" if media_type.startswith("video/")
+                          else "audio" if media_type.startswith("audio/") else "file")
             return [{
                 "type": "media", "model": "a", "kind": media_kind, "url": url,
                 "title": str(chunk.get("filename") or "Agent file"),
@@ -367,11 +393,18 @@ def map_chunk(chunk, tool_names: dict) -> list:
             url = data.get("url")
             if isinstance(url, str) and url.startswith(("http://", "https://")):
                 lower = url.lower()
-                media_kind = ("image" if lower.split("?")[0].endswith(
-                    (".png", ".jpg", ".jpeg", ".webp", ".gif")) else "file")
+                tail = lower.split("?")[0]
+                media_kind = ("image" if tail.endswith(
+                    (".png", ".jpg", ".jpeg", ".webp", ".gif"))
+                    else "audio" if tail.endswith(
+                    (".mp3", ".wav", ".ogg", ".opus", ".m4a", ".flac"))
+                    else "video" if tail.endswith((".mp4", ".webm", ".mov"))
+                    else "file")
                 return [{
                     "type": "media", "model": "a", "kind": media_kind, "url": url,
                     "title": str(data.get("title") or data.get("filename") or "Agent file"),
                 }]
+        _note_unknown(chunk)
         return []
+    _note_unknown(chunk)
     return []

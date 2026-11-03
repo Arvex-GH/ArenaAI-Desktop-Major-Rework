@@ -914,6 +914,7 @@
       { name: 'src', path: 'src', is_dir: true, size: 0 },
       { name: 'tests', path: 'tests', is_dir: true, size: 0 },
       { name: 'README.md', path: 'README.md', is_dir: false, size: 421 },
+      { name: 'page.html', path: 'page.html', is_dir: false, size: 512 },
       { name: 'notes.txt', path: 'notes.txt', is_dir: false, size: 188 }
     ],
     src: [
@@ -927,6 +928,7 @@
 
   const demoWorkspaceFileData = {
     'README.md': "# Photo Studio (demo)\n\nThis is a demonstration file in the browser. The real local folder was not read.",
+    'page.html': "<!doctype html>\n<title>Demo page</title>\n<style>body{font-family:system-ui;background:#101418;color:#e8f0e9;padding:24px}h1{color:#9fd8ae}</style>\n<h1>Demo HTML preview</h1>\n<p>Rendered in a sandboxed frame.</p>",
     'notes.txt': "Demo notes: check the light, the grid, and the mobile version. No actions were performed on the computer.",
     'src/app.py': "# Demo file\n\ndef main() -> None:\n    print(\"Arena Desktop demo\")\n",
     'src/normalize.py': 'def normalize_name(value: str) -> str:\n    return " ".join(value.strip().split()).casefold()\n',
@@ -2303,7 +2305,7 @@ You can start with a more structured option: one script, short captions, and a c
   function normalizeMedia(raw) {
     if (!raw || typeof raw !== 'object') return null;
     const kindRaw = String(raw.kind ?? raw.type ?? raw.media_type ?? '').toLowerCase();
-    const kind = kindRaw.includes('video') ? 'video' : 'image';
+    const kind = kindRaw.includes('video') ? 'video' : kindRaw.includes('audio') ? 'audio' : 'image';
     const url = safeUrl(raw.url ?? raw.src ?? raw.media_url ?? raw.file ?? '', { image: true });
     const poster = safeUrl(raw.poster ?? raw.thumbnail ?? raw.preview ?? '', { image: true });
     if (!url && !poster) return null;
@@ -3398,7 +3400,10 @@ You can start with a more structured option: one script, short captions, and a c
         }, iconEl('download'))
       );
       let frame;
-      if (media.kind === 'video' && media.url) {
+      if (media.kind === 'audio' && media.url) {
+        frame = el('div', { class: 'media-frame is-audio' },
+          el('audio', { controls: true, preload: 'metadata', src: media.url, 'aria-label': media.alt }));
+      } else if (media.kind === 'video' && media.url) {
         const video = el('video', {
           controls: true, preload: 'metadata', poster: media.poster || false,
           'aria-label': media.alt
@@ -8927,37 +8932,129 @@ You can start with a more structured option: one script, short captions, and a c
     await loadWorkspaceTree(entry.path);
   }
 
+  const PREVIEW_KINDS = {
+    image: new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'ico']),
+    audio: new Set(['mp3', 'wav', 'ogg', 'oga', 'opus', 'm4a', 'flac', 'aac']),
+    video: new Set(['mp4', 'webm', 'mov', 'm4v', 'mkv']),
+    html: new Set(['html', 'htm', 'xhtml']),
+    markdown: new Set(['md', 'markdown', 'mdx']),
+    pdf: new Set(['pdf'])
+  };
+
+  function previewKindFor(name) {
+    const ext = String(name || '').toLowerCase().split('.').pop();
+    for (const [kind, set] of Object.entries(PREVIEW_KINDS)) if (set.has(ext)) return kind;
+    return 'text';
+  }
+
+  function workspacePreviewUrl(path) {
+    return '/api/workspace/preview/' + String(path || '').split('/').map(encodeURIComponent).join('/');
+  }
+
   async function openWorkspaceFilePreview(entry) {
     if (!entry || entry.is_dir) return;
+    const kind = previewKindFor(entry.name || entry.path);
+    const downloadAction = {
+      label: 'Download', variant: 'quiet', icon: 'download',
+      onClick: async () => {
+        try {
+          const blob = await API.downloadWorkspaceFile(entry.path);
+          const url = URL.createObjectURL(blob);
+          const link = el('a', { href: url, download: entry.name || 'file' });
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 4000);
+        } catch (error) { toast(errorMessage(error), 'error', 'Download failed'); }
+        return false;
+      }
+    };
+    const open = (bodyNodes, actions) => mountModal({
+      title: entry.name,
+      subtitle: `${entry.path}${entry.size ? ` \u00B7 ${formatBytes(entry.size)}` : ''}`,
+      size: 'large',
+      content: el('div', {}, ...bodyNodes),
+      actions: actions || [downloadAction, { label: 'Close', variant: 'primary', autofocus: true }]
+    });
     try {
+      if (kind === 'image') {
+        const src = state.demo
+          ? URL.createObjectURL(await API.downloadWorkspaceFile(entry.path))
+          : workspacePreviewUrl(entry.path);
+        open([el('div', { class: 'file-preview-media' }, el('img', { src, alt: entry.name }))]);
+        return;
+      }
+      if (kind === 'audio' || kind === 'video') {
+        const src = state.demo
+          ? URL.createObjectURL(await API.downloadWorkspaceFile(entry.path))
+          : workspacePreviewUrl(entry.path);
+        const media = kind === 'audio'
+          ? el('audio', { controls: true, src, preload: 'metadata' })
+          : el('video', { controls: true, src, preload: 'metadata' });
+        open([el('div', { class: 'file-preview-media' }, media)]);
+        return;
+      }
+      if (kind === 'pdf' && !state.demo) {
+        open([el('iframe', { class: 'file-preview-frame', src: workspacePreviewUrl(entry.path), title: entry.name })]);
+        return;
+      }
+      if (kind === 'html') {
+        if (state.demo) {
+          const raw = await API.getWorkspaceFile(entry.path);
+          open([el('iframe', { class: 'file-preview-frame', sandbox: 'allow-scripts', srcdoc: String(raw?.content ?? ''), title: entry.name })]);
+        } else {
+          open([
+            el('div', { class: 'note-box' }, iconEl('shield'), el('span', { text: 'Rendered in a sandboxed frame: scripts run, but the page cannot reach the app or your Arena account.' })),
+            el('iframe', { class: 'file-preview-frame', sandbox: 'allow-scripts allow-modals allow-popups', src: workspacePreviewUrl(entry.path), title: entry.name })
+          ]);
+        }
+        return;
+      }
       const raw = await API.getWorkspaceFile(entry.path);
       const content = String(raw?.content ?? '');
-      const shown = content.length > 250000 ? `${content.slice(0, 250000)}
-
-… [preview truncated]` : content;
-      const body = el('div', {},
-        el('div', { class: 'note-box' }, iconEl('info'), el('span', { text: "Preview is read-only. To modify the file, open the folder in your editor." })),
-        el('pre', { class: 'file-preview-pre', text: shown || "[empty file]" })
-      );
-      mountModal({
-        title: entry.name,
-        subtitle: `${raw?.path || entry.path}${entry.size ? ` · ${formatBytes(entry.size)}` : ''}`,
-        size: 'large',
-        content: body,
-        actions: [
+      if (kind === 'markdown') {
+        const rendered = el('div', { class: 'markdown file-preview-markdown' });
+        rendered.appendChild(renderMarkdown(content.slice(0, 250000)));
+        open([
+          el('div', { class: 'note-box' }, iconEl('info'), el('span', { text: 'Rendered Markdown preview (read-only).' })),
+          rendered
+        ], [
           {
-            label: "Copy", variant: 'quiet', icon: 'copy',
+            label: 'Copy', variant: 'quiet', icon: 'copy',
             onClick: async () => {
               const ok = await copyText(content);
-              toast(ok ? "File content copied." : "Failed to copy the file.", ok ? 'success' : 'error');
+              toast(ok ? 'File content copied.' : 'Failed to copy the file.', ok ? 'success' : 'error');
               return false;
             }
           },
-          { label: "Close", variant: 'primary', autofocus: true }
-        ]
-      });
+          downloadAction,
+          { label: 'Close', variant: 'primary', autofocus: true }
+        ]);
+        return;
+      }
+      const shown = content.length > 250000 ? `${content.slice(0, 250000)}\n\n… [preview truncated]` : content;
+      open([
+        el('div', { class: 'note-box' }, iconEl('info'), el('span', { text: 'Preview is read-only. To modify the file, open the folder in your editor.' })),
+        el('pre', { class: 'file-preview-pre', text: shown || '[empty file]' })
+      ], [
+        {
+          label: 'Copy', variant: 'quiet', icon: 'copy',
+          onClick: async () => {
+            const ok = await copyText(content);
+            toast(ok ? 'File content copied.' : 'Failed to copy the file.', ok ? 'success' : 'error');
+            return false;
+          }
+        },
+        downloadAction,
+        { label: 'Close', variant: 'primary', autofocus: true }
+      ]);
     } catch (error) {
-      toast(errorMessage(error), 'error', "File is not open");
+      if (kind === 'text' || kind === 'pdf') {
+        open([el('div', { class: 'note-box' }, iconEl('info'),
+          el('span', { text: 'This file cannot be previewed in the app. Download it to open with another program.' }))]);
+        return;
+      }
+      toast(errorMessage(error), 'error', 'File is not open');
     }
   }
 

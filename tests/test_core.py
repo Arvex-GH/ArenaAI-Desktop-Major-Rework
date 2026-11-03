@@ -3243,6 +3243,22 @@ def test_components_cloudflared_install_verifies_hash(tmp_path, monkeypatch):
     assert components.install_status()["jobs"]["cloudflared"]["state"] == "error"
 
 
+def test_workspace_preview_serves_inline_with_sandbox(web):
+    appmod, c, _cfg, _use, _sent = web
+    root = appmod._workspace_panel_path(".")[1]
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "page.html").write_text("<h1>hi</h1>", encoding="utf-8")
+    (root / "pic.png").write_bytes(b"\x89PNG\r\n")
+    resp = c.get("/api/workspace/preview/page.html")
+    assert resp.status_code == 200 and b"<h1>hi</h1>" in resp.data
+    assert "sandbox" in resp.headers.get("Content-Security-Policy", "")
+    assert "text/html" in resp.headers.get("Content-Type", "")
+    img = c.get("/api/workspace/preview/pic.png")
+    assert img.status_code == 200 and img.headers.get("Content-Type", "").startswith("image/")
+    assert c.get("/api/workspace/preview/../outside.html").status_code in (403, 404)
+    assert c.get("/api/workspace/preview/missing.html").status_code == 404
+
+
 def test_workspace_download_serves_bytes_inside_root_only(web):
     appmod, c, _cfg, _use, _sent = web
     root = appmod._workspace_panel_path(".")[1]

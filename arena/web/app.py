@@ -264,7 +264,7 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "5.5.0"
+APP_VERSION = "5.5.1"
 
 
 @app.after_request
@@ -6181,6 +6181,28 @@ def api_workspace_download():
     if target.stat().st_size > 30 * 1024 * 1024:
         return jsonify({"error": "File is too large to attach (30 MB limit)"}), 400
     return send_file(target, as_attachment=True, download_name=target.name)
+
+
+@app.route("/api/workspace/preview/<path:subpath>")
+def api_workspace_preview(subpath):
+    # Inline serving for the workspace preview: relative assets of an HTML
+    # page resolve inside the workspace like a tiny static server. Path
+    # containment via _workspace_panel_path; the document itself is
+    # sandboxed by CSP (opaque origin, scripts cannot reach the app API).
+    try:
+        target, _root = _workspace_panel_path(subpath)
+    except PermissionError as e:
+        return jsonify({"error": str(e)}), 403
+    if not target.is_file():
+        return jsonify({"error": "File not found"}), 404
+    if target.stat().st_size > 30 * 1024 * 1024:
+        return jsonify({"error": "File is too large to preview (30 MB limit)"}), 400
+    import mimetypes
+    mime, _enc = mimetypes.guess_type(target.name)
+    resp = send_file(target, mimetype=mime or "application/octet-stream", conditional=True)
+    resp.headers["Content-Security-Policy"] = "sandbox allow-scripts allow-modals allow-popups"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
 
 
 @app.route("/api/workspace/set", methods=["POST"])

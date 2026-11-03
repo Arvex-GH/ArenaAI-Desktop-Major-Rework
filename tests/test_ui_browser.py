@@ -255,7 +255,7 @@ def test_v4_workspace_connectors_cloud_chats_and_agent_reasoning(site):
         assert page.locator('#workspacePanel').is_visible()
         page.locator('#workspaceTree').get_by_text('README.md').wait_for()
         page.locator('#workspaceTree').get_by_text('README.md').click()
-        page.locator('.file-preview-pre').get_by_text('The real local folder was not read').wait_for()
+        page.locator('.file-preview-markdown').get_by_text('The real local folder was not read').wait_for()
         page.get_by_role('button', name='Close', exact=True).click()
         page.locator('#connectorList').get_by_text('filesystem').first.wait_for()
 
@@ -1134,6 +1134,35 @@ def test_v55_gateway_and_components_panels(site):
             "() => document.querySelector('.settings-panels').innerText.includes('demo-gateway.trycloudflare.com')",
             timeout=10000)
         assert 'Stop & revoke' in panel.inner_text()
+        page.keyboard.press('Escape')
+        assert not errors
+        browser.close()
+
+
+def test_v551_workspace_rich_previews(site):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
+        page = browser.new_page(viewport={'width': 1500, 'height': 950})
+        errors = []
+        page.on('pageerror', lambda err: errors.append(str(err)))
+        page.goto(site + '/?demo=1', wait_until='networkidle')
+
+        tree = page.locator('#workspaceTree')
+        tree.get_by_text('README.md').wait_for(timeout=10000)
+        # Markdown renders as a document, not raw text.
+        tree.get_by_text('README.md').click()
+        page.locator('.file-preview-markdown h1', has_text='Photo Studio').wait_for(timeout=8000)
+        page.get_by_role('button', name='Close', exact=True).click()
+        # HTML renders in a sandboxed frame.
+        tree.get_by_text('page.html').click()
+        iframe = page.locator('iframe.file-preview-frame')
+        iframe.wait_for(timeout=8000)
+        assert iframe.get_attribute('sandbox') is not None
+        page.keyboard.press('Escape')
+        # Plain text keeps the classic <pre> preview.
+        tree.get_by_text('notes.txt').click()
+        page.locator('.file-preview-pre').get_by_text('Demo notes').wait_for(timeout=8000)
         page.keyboard.press('Escape')
         assert not errors
         browser.close()
