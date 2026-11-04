@@ -20,6 +20,7 @@ MODES: Dict[str, str] = {
     "acceptEdits": "Accept edits",
     "auto": "Auto",
     "plan": "Plan mode",
+    "bypassPermissions": "Bypass permissions",
 }
 
 KIND = {"read_file": "read", "ls": "read", "search": "read",
@@ -49,6 +50,8 @@ def decide(mode: str, tool: str, inside: bool = True, command: str = "") -> str:
     if kind == "shell" and CATASTROPHIC.search(command or ""):
         return "deny"
     if kind == "read":
+        return "allow" if inside else "ask"
+    if mode == "bypassPermissions":
         return "allow" if inside else "ask"
     if mode == "plan":
         return "deny"

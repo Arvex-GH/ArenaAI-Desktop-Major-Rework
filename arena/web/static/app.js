@@ -80,7 +80,8 @@
     type: '<path d="M5 5h14M12 5v14M9.5 19h5"/>',
     play: '<circle cx="12" cy="12" r="8.7"/><path d="m10 8.5 5 3.5-5 3.5v-7Z"/>',
     'arrow-down': '<path d="M12 5v14M6.5 13.5 12 19l5.5-5.5"/>',
-    compress: '<path d="M9.5 3.5 4 9M4 4.8V9h4.2M14.5 3.5 20 9M20 4.8V9h-4.2M9.5 20.5 4 15M4 19.2V15h4.2M14.5 20.5 20 15M20 19.2V15h-4.2"/>'
+    compress: '<path d="M9.5 3.5 4 9M4 4.8V9h4.2M14.5 3.5 20 9M20 4.8V9h-4.2M9.5 20.5 4 15M4 19.2V15h4.2M14.5 20.5 20 15M20 19.2V15h-4.2"/>',
+    'file-code': '<path d="M7 3.5h7l4 4V20H7z"/><path d="M14 3.5V8h4"/><path d="m10 12.5-2 1.5 2 1.5M14 12.5l2 1.5-2 1.5"/>'
   };
 
   function icon(name, className = '') {
@@ -103,6 +104,60 @@
       node.dataset.iconReady = '1';
       node.setAttribute('aria-hidden', 'true');
     });
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Typewriter loading phrases                                            */
+  /* ---------------------------------------------------------------------- */
+  const _loadingPhrases = [
+    "asking Terry", "argmaxxing...", "thinking deeply", "sampling candidates",
+    "routing tokens", "consulting the oracle", "parsing intent",
+    "reasoning through it", "exploring solutions", "warming up neurons",
+    "cross-referencing", "beam searching", "calibrating confidence",
+    "attention is all you need", "gradient descending", "softmax engaged",
+    "embedding your query", "considering alternatives", "drafting a response",
+    "deliberating", "asking the council", "crunching logits",
+    "traversing the latent space", "pondering deeply", "assembling thoughts",
+    "running inference", "token by token", "weighing probabilities",
+    "searching the manifold", "spinning up context"
+  ];
+
+  function createThinkingTypewriter() {
+    const wrap = el('span', { class: 'loading-block thinking-typewriter' });
+    const dot = el('span', { class: 'status-dot is-online' });
+    const text = el('span', { class: 'typewriter-text' });
+    const cursor = el('span', { class: 'typewriter-cursor' });
+    wrap.append(dot, text, cursor);
+
+    let alive = true;
+    let used = new Set();
+    const pick = () => {
+      if (used.size >= _loadingPhrases.length) used.clear();
+      let phrase;
+      do { phrase = _loadingPhrases[Math.floor(Math.random() * _loadingPhrases.length)]; } while (used.has(phrase));
+      used.add(phrase);
+      return phrase;
+    };
+
+    const run = async () => {
+      while (alive && wrap.isConnected) {
+        const phrase = pick();
+        for (let i = 0; i <= phrase.length && alive; i++) {
+          text.textContent = phrase.slice(0, i);
+          await new Promise(r => setTimeout(r, 30 + Math.random() * 25));
+        }
+        await new Promise(r => setTimeout(r, 1200 + Math.random() * 800));
+        for (let i = phrase.length; i >= 0 && alive; i--) {
+          text.textContent = phrase.slice(0, i);
+          await new Promise(r => setTimeout(r, 15));
+        }
+        await new Promise(r => setTimeout(r, 200));
+      }
+    };
+
+    run();
+    wrap._destroy = () => { alive = false; };
+    return wrap;
   }
 
   /* ---------------------------------------------------------------------- */
@@ -508,6 +563,7 @@
     exportSettings() { return this.request('/api/settings/export'); },
     importSettings(bundle) { return this.request('/api/settings/import', { method: 'POST', body: bundle }); },
     diagnostics() { return this.request('/api/diagnostics'); },
+    diagnosticsRun() { return this.request('/api/diagnostics/run'); },
     getUsage() { return this.request('/api/usage'); },
     getGateway() { return this.request('/api/gateway'); },
     startGateway() { return this.request('/api/gateway/start', { method: 'POST', body: {} }); },
@@ -558,6 +614,13 @@
     saveWorkspace(chatId, lane) { return this.request('/api/workspace/save', { method: 'POST', body: { chat_id: chatId, lane } }); },
     openWorkspace(path) { return this.request('/api/workspace/open', { method: 'POST', body: { path } }); },
     getWorkspaceTree(path = '.') { return this.request(`/api/workspace/tree?path=${encodeURIComponent(path)}`); },
+    async uploadToWorkspace(files) {
+      const fd = new FormData();
+      for (const f of files) fd.append('files', f, f.webkitRelativePath || f.name);
+      const resp = await fetch('/api/workspace/upload', { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'X-Arena-Token': _apiToken } });
+      if (!resp.ok) throw new ApiError('Upload failed', resp.status);
+      return resp.json();
+    },
     getWorkspaceFile(path) { return this.request(`/api/workspace/file?path=${encodeURIComponent(path)}`); },
     async downloadWorkspaceFile(path) {
       let response;
@@ -3623,9 +3686,113 @@ You can start with a more structured option: one script, short captions, and a c
     return { label: status || "In progress", cls: '' };
   }
 
+  function renderDiffCard(activity) {
+    const raw = activity.raw || {};
+    const fileName = (raw.path || activity.path || '').split('/').pop() || 'file';
+    const adds = raw.add || 0;
+    const dels = raw.del || 0;
+    const verb = raw.verb || 'Edited';
+    const diffText = raw.diff || '';
+    const hasError = !!raw.error;
+    const head = el('div', { class: 'diff-card-head' },
+      el('span', { class: 'diff-card-icon' }, iconEl('file-code')),
+      el('span', { class: 'diff-card-verb', text: verb }),
+      el('span', { class: 'diff-card-file', text: fileName }),
+      el('span', { class: 'diff-card-stats' },
+        adds ? el('span', { class: 'diff-stat-add', text: `+${adds}` }) : null,
+        dels ? el('span', { class: 'diff-stat-del', text: `-${dels}` }) : null
+      )
+    );
+    if (hasError) {
+      head.appendChild(el('span', { class: 'diff-card-error', text: raw.error }));
+    }
+    const card = el('div', { class: `diff-card${hasError ? ' diff-card-err' : ''}` });
+    if (diffText) {
+      const details = el('details', { class: 'diff-card-body' });
+      const summary = el('summary');
+      summary.appendChild(head);
+      details.appendChild(summary);
+      const pre = el('pre', { class: 'diff-block' });
+      diffText.split('\n').forEach((line) => {
+        const span = document.createElement('span');
+        span.textContent = line;
+        if (line.startsWith('+') && !line.startsWith('+++')) span.className = 'diff-add';
+        else if (line.startsWith('-') && !line.startsWith('---')) span.className = 'diff-del';
+        else if (line.startsWith('@@')) span.className = 'diff-hunk';
+        pre.appendChild(span);
+        pre.appendChild(document.createTextNode('\n'));
+      });
+      details.appendChild(el('div', { class: 'diff-card-content' }, pre));
+      card.appendChild(details);
+    } else {
+      card.appendChild(head);
+    }
+    return card;
+  }
+
+  const _livePreviewFrames = new Map();
+
+  function renderFilePreview(filePath) {
+    const fileName = filePath.split('/').pop() || filePath;
+    const ext = fileName.split('.').pop().toLowerCase();
+    const isHtml = ['html', 'htm'].includes(ext);
+    if (!isHtml) return null;
+    const previewUrl = `/api/workspace/preview/${encodeURIComponent(filePath).replace(/%2F/g, '/')}`;
+    const card = el('div', { class: 'file-preview-card' });
+    const head = el('div', { class: 'file-preview-head' },
+      iconEl('layout'),
+      el('span', { class: 'file-preview-name', text: fileName }),
+      el('span', { class: 'file-preview-badge', text: 'Live Preview' })
+    );
+    card.appendChild(head);
+    const iframe = document.createElement('iframe');
+    iframe.className = 'file-preview-frame';
+    iframe.sandbox = 'allow-scripts allow-modals allow-popups';
+    iframe.loading = 'lazy';
+    iframe.src = previewUrl + '?t=' + Date.now();
+    iframe.title = `Preview of ${fileName}`;
+    card.appendChild(iframe);
+    _livePreviewFrames.set(filePath, iframe);
+    const actions = el('div', { class: 'file-preview-actions' });
+    const refreshBtn = el('button', { type: 'button' }, iconEl('refresh'), el('span', { text: 'Refresh' }));
+    refreshBtn.addEventListener('click', () => { refreshFilePreview(filePath); });
+    actions.appendChild(refreshBtn);
+    const openBtn = el('a', { href: previewUrl, target: '_blank', rel: 'noopener noreferrer' },
+      iconEl('external'), el('span', { text: 'Open in new tab' }));
+    actions.appendChild(openBtn);
+    card.appendChild(actions);
+    return card;
+  }
+
+  function refreshFilePreview(filePath) {
+    const iframe = _livePreviewFrames.get(filePath);
+    if (!iframe) return;
+    const previewUrl = `/api/workspace/preview/${encodeURIComponent(filePath).replace(/%2F/g, '/')}`;
+    iframe.src = previewUrl + '?t=' + Date.now();
+  }
+
+  function refreshAllHtmlPreviews() {
+    for (const [path] of _livePreviewFrames) refreshFilePreview(path);
+  }
+
   function renderActivities(lane) {
     if (!Array.isArray(lane.activities) || !lane.activities.length) return null;
     const cards = lane.activities.map((activity) => {
+      const raw = activity.raw || {};
+      if (activity.kind === 'sandbox' && (raw.verb === 'Edited' || raw.verb === 'Created' || raw.verb === 'Deleted') && raw.path) {
+        const diffCard = renderDiffCard(activity);
+        const ext = (raw.path || '').split('.').pop().toLowerCase();
+        if ((raw.verb === 'Created' || raw.verb === 'Edited') && ['html', 'htm'].includes(ext) && !raw.error) {
+          const preview = renderFilePreview(raw.path);
+          if (preview) {
+            const wrapper = el('div', { class: 'sandbox-file-group' });
+            wrapper.appendChild(diffCard);
+            wrapper.appendChild(preview);
+            return wrapper;
+          }
+        }
+        return diffCard;
+      }
       const status = activityStatus(activity.status);
       const detail = activity.command || activity.path || activity.detail;
       const childId = activity.raw?.child_id;
@@ -3844,7 +4011,7 @@ You can start with a more structured option: one script, short captions, and a c
     const visibleText = visibleLaneText(lane);
     if (visibleText) markdown.appendChild(renderMarkdown(visibleText));
     if (lane.streaming && !visibleText) {
-      markdown.appendChild(el('span', { class: 'loading-block' }, el('span', { class: 'loading-spinner' }), el('span', { text: "Waiting for response text…" })));
+      markdown.appendChild(createThinkingTypewriter());
     }
     if (lane.streaming && visibleText) markdown.appendChild(el('span', { class: 'stream-cursor', 'aria-hidden': 'true' }));
     card.appendChild(markdown);
@@ -3949,10 +4116,42 @@ You can start with a more structured option: one script, short captions, and a c
     }
   }
 
+  function promptSummary(text) {
+    if (!text || text.length < 80) return null;
+    const lower = text.toLowerCase().trim();
+    const verbs = ['fix', 'add', 'create', 'build', 'write', 'implement', 'make', 'update', 'change', 'remove', 'delete', 'refactor', 'test', 'debug', 'explain', 'help', 'show', 'find', 'search', 'check', 'review', 'set up', 'configure', 'deploy', 'design', 'analyze', 'compare', 'convert', 'generate', 'optimize', 'install', 'run', 'edit', 'modify', 'improve'];
+    let summary = '';
+    const first = text.split(/[.!?\n]/)[0].trim();
+    if (first.length <= 80 && first.length >= 10) {
+      summary = first;
+    } else {
+      for (const verb of verbs) {
+        const idx = lower.indexOf(verb);
+        if (idx !== -1 && idx < 100) {
+          const chunk = text.slice(idx, idx + 70).split(/[.!?\n]/)[0].trim();
+          if (chunk.length >= 8) { summary = chunk; break; }
+        }
+      }
+    }
+    if (!summary) summary = text.slice(0, 65).trim();
+    if (summary.length > 65) summary = summary.slice(0, 62) + '...';
+    return summary.charAt(0).toUpperCase() + summary.slice(1);
+  }
+
   function renderTurn(turn, pairIndex = -1) {
     const wrapper = el('section', { class: 'message-turn', 'aria-label': "Dialogue turn" });
     if (turn.msgEnd != null) wrapper.setAttribute('data-msg-end', String(turn.msgEnd));
     if (turn.user) wrapper.appendChild(userMessageNode(turn.user));
+    const userText = turn.user?.content || turn.user?.text || '';
+    const summary = promptSummary(userText);
+    if (summary) {
+      const modLabel = turn.modality === 'webdev' ? 'Code' : turn.modality === 'search' ? 'Search' : turn.mode === 'agent' ? 'Agent' : 'Chat';
+      wrapper.appendChild(el('div', { class: 'task-summary' },
+        el('span', { class: 'task-summary-icon' }, iconEl('spark')),
+        el('span', { class: 'task-summary-mode', text: modLabel }),
+        el('span', { class: 'task-summary-text', text: summary })
+      ));
+    }
     const lanes = turn.lanes || {};
     const order = Object.keys(lanes).filter((key) => lanes[key]);
     if (order.length) {
@@ -4377,11 +4576,35 @@ You can start with a more structured option: one script, short captions, and a c
       onClick: () => { closePopover(); els.fileInput?.click(); }
     }));
     list.appendChild(popoverOption({
+      title: 'Upload folder to workspace', desc: 'Copy a folder and its contents into the workspace', icon: 'folder',
+      onClick: () => { closePopover(); void uploadFolderToWorkspace(); }
+    }));
+    list.appendChild(popoverOption({
       title: 'Attach workspace files as text', desc: 'Insert file contents into the prompt (works in every mode)', icon: 'file',
       onClick: () => { closePopover(); void openSnapshotPicker(); }
     }));
     content.appendChild(list);
     openPopover(els.attachButton, { title: 'Attach', content });
+  }
+
+  async function uploadFolderToWorkspace() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.webkitdirectory = true;
+    input.multiple = true;
+    input.addEventListener('change', async () => {
+      const files = Array.from(input.files || []);
+      if (!files.length) return;
+      toast(`Uploading ${files.length} files to workspace...`, 'info', 'Upload');
+      try {
+        const result = await API.uploadToWorkspace(files);
+        toast(`Uploaded ${result.count || 0} files to workspace`, 'success', 'Upload');
+        void refreshWorkspacePanel({ force: true });
+      } catch (e) {
+        toast(`Upload failed: ${e.message}`, 'error', 'Upload');
+      }
+    });
+    input.click();
   }
 
   async function collectWorkspaceFiles() {
@@ -4767,6 +4990,8 @@ You can start with a more structured option: one script, short captions, and a c
     return total;
   }
 
+  const CONTEXT_MAX_CHARS = 800000;
+
   function syncCompactChip() {
     const button = els.compactButton;
     if (!button) return;
@@ -4776,8 +5001,6 @@ You can start with a more structured option: one script, short captions, and a c
     button.hidden = !show;
     if (!show) return;
     const warn = (state.historyChars || 0) >= CONTEXT_WARN_CHARS;
-    // Context meter: the chip doubles as a live size estimate (the server
-    // value after load, refined by what is actually on screen since).
     const chars = Math.max(state.historyChars || 0, estimateHistoryChars());
     const sizeLabel = button.querySelector('.chip-label');
     if (sizeLabel) sizeLabel.textContent = chars >= 1000 ? `Compact · ~${Math.round(chars / 1000)}k` : 'Compact';
@@ -4787,6 +5010,37 @@ You can start with a more structured option: one script, short captions, and a c
     button.title = warn
       ? `This conversation is ~${Math.round((state.historyChars || 0) / 1000)}k characters and likely close to Arena's context limit. Compact continues it in a fresh session with a summary, so replies keep working.`
       : "Compact: continue this chat in a fresh Arena session with a summary of everything so far. Use it when a long conversation starts returning empty replies.";
+    syncContextMeter(chars);
+  }
+
+  function syncContextMeter(chars) {
+    let meter = document.getElementById('contextMeter');
+    if (!meter) {
+      meter = el('div', { class: 'context-meter', id: 'contextMeter' });
+      const barWrap = el('div', { class: 'context-bar-wrap' });
+      const barFill = el('div', { class: 'context-bar-fill', id: 'contextBarFill' });
+      barWrap.appendChild(barFill);
+      const label = el('span', { class: 'context-bar-label', id: 'contextBarLabel' });
+      meter.appendChild(barWrap);
+      meter.appendChild(label);
+      const toolbar = document.querySelector('.composer-toolbar');
+      const spacer = toolbar?.querySelector('.toolbar-spacer');
+      if (spacer) spacer.before(meter);
+      else if (toolbar) toolbar.appendChild(meter);
+    }
+    const pct = Math.min(100, Math.round((chars / CONTEXT_MAX_CHARS) * 100));
+    const tokens = Math.round(chars / 4);
+    const fill = document.getElementById('contextBarFill');
+    const label = document.getElementById('contextBarLabel');
+    if (fill) {
+      fill.style.width = `${Math.max(1, pct)}%`;
+      fill.className = 'context-bar-fill' + (pct >= 80 ? ' is-danger' : pct >= 50 ? ' is-warn' : '');
+    }
+    if (label) {
+      label.textContent = tokens >= 1000 ? `~${Math.round(tokens / 1000)}k tokens` : `~${tokens} tokens`;
+      label.title = `Context: ~${pct}% used (${Math.round(chars / 1000)}k chars, ~${Math.round(tokens / 1000)}k tokens of ~200k)`;
+    }
+    meter.hidden = chars < 500;
   }
 
   function confirmCompact() {
@@ -5293,8 +5547,17 @@ You can start with a more structured option: one script, short captions, and a c
         continue;
       }
       if (role === 'user' || role === 'human') {
+        const userText = textValue(item.content ?? item.text ?? item.message);
+        const isSystemInjection = userText.startsWith('[Arena Desktop]') || userText.startsWith('[Arena Desktop memory');
+        const isToolResult = /^Tool results:\n?\[?\d/m.test(userText);
+        const isToolContinue = userText.startsWith('Continue the task.');
+        if (isSystemInjection || isToolResult || isToolContinue) {
+          if (!current) newTurn();
+          current.notices.push(isSystemInjection ? '(system context)' : '(tool exchange)');
+          continue;
+        }
         newTurn({
-          content: textValue(item.content ?? item.text ?? item.message),
+          content: userText,
           created_at: item.created_at ?? item.createdAt ?? item.timestamp,
           attachments: normalizeUserAttachments(item.attachments || item.experimental_attachments)
         });
@@ -6148,6 +6411,23 @@ You can start with a more structured option: one script, short captions, and a c
       state.settingsRerender?.();
       return;
     }
+    if (type === 'file_preview') {
+      if (event.html && event.path) {
+        const artifact = normalizeArtifact({
+          path: event.path,
+          name: event.path.split('/').pop(),
+          title: event.path.split('/').pop(),
+          url: `/api/workspace/preview/${encodeURIComponent(event.path).replace(/%2F/g, '/')}`,
+          note: 'Live HTML preview'
+        }, 'preview');
+        if (artifact) {
+          lane.artifacts.push(artifact);
+          addArtifactRecord(artifact, key);
+        }
+      }
+      scheduleChatRender();
+      return;
+    }
     if (type === 'sandbox' || type === 'sandbox_done') {
       addActivity(turn, lane, {
         ...event,
@@ -6155,6 +6435,12 @@ You can start with a more structured option: one script, short captions, and a c
         status: type === 'sandbox_done' ? (event.ok === false ? 'error' : 'done') : (event.status || 'running'),
         detail: event.note ?? event.message ?? event.detail ?? ''
       }, 'sandbox');
+      if (type === 'sandbox' && event.path && (event.verb === 'Edited' || event.verb === 'Created')) {
+        const ext = (event.path || '').split('.').pop().toLowerCase();
+        if (['html', 'htm', 'css', 'js'].includes(ext)) {
+          setTimeout(refreshAllHtmlPreviews, 300);
+        }
+      }
       scheduleChatRender();
       return;
     }
@@ -8775,7 +9061,20 @@ You can start with a more structured option: one script, short captions, and a c
     };
     wrap.innerHTML = `
       <h3 class="modal-section-title">Usage &amp; Arena limits</h3>
-      <p class="modal-note">Arena now meters every account with a daily balance that resets every 24 hours; heavier models and longer contexts spend more of it, and each agent round re-sends the whole conversation. The numbers below are this app\u2019s own send log \u2014 Arena\u2019s official counter may differ (it also counts arena.ai web use).</p>
+      <p class="modal-note">Arena meters every account with a daily balance that resets every 24 hours. Heavier models and longer contexts cost more; each agent round re-sends the whole conversation.</p>
+      <details class="limits-details" open>
+        <summary class="limits-summary">Known Arena rate limits</summary>
+        <ul class="limits-list compact">
+          <li><strong>Daily balance</strong> \u2014 resets every 24 hours. Heavier models (o1, Opus, Gemini Pro) drain it faster than lighter ones (Flash, Haiku, Mini).</li>
+          <li><strong>Agent mode</strong> \u2014 each round re-sends the full conversation. Long agent sessions consume balance quickly; 10\u201320 rounds can exhaust a daily limit.</li>
+          <li><strong>Battle mode</strong> \u2014 counts as 2 sends (one per model). Votes do not cost extra.</li>
+          <li><strong>Video / image generation</strong> \u2014 heavily rate-limited. You may hit 429 after just a few generations per day.</li>
+          <li><strong>Burst limit</strong> \u2014 rapid back-to-back sends (under ~3s apart) may trigger temporary 429s even with balance remaining.</li>
+          <li><strong>429 response</strong> \u2014 Arena returns a wait time in seconds. This app auto-queues a retry when pacing is on.</li>
+          <li><strong>Shared IP</strong> \u2014 accounts on the same IP may share one rate-limit bucket.</li>
+          <li><strong>No response / timeout</strong> \u2014 if agent mode does not respond, it usually means the balance is spent or a burst limit was hit. Check the rate limit log below.</li>
+        </ul>
+      </details>
       <div class="modal-field-row"><span class="modal-field-label">Send log</span>
         <button class="btn ghost small" id="usageRefresh" type="button">Refresh</button></div>
       <div id="usageBody"><p class="modal-note">Loading usage\u2026</p></div>`;
@@ -8786,7 +9085,9 @@ You can start with a more structured option: one script, short captions, and a c
 
   function renderAboutPanel() {
       const wrap = el('div');
-      wrap.appendChild(el('div', { class: 'about-mark' }, iconEl('spark')));
+      const logoMark = el('div', { class: 'about-mark' });
+      logoMark.innerHTML = '<svg viewBox="0 0 512 512" width="56" height="56" style="border-radius:12px"><rect width="512" height="512" rx="96" fill="#1a1f1e"/><g transform="translate(256,256)"><ellipse cx="0" cy="20" rx="130" ry="55" fill="none" stroke="#3a4541" stroke-width="10"/><ellipse cx="0" cy="20" rx="130" ry="55" fill="none" stroke="#8bb09c" stroke-width="4" stroke-dasharray="16 8" opacity=".5"/><path d="M-100,-40 C-100,-100 -60,-130 0,-130 C60,-130 100,-100 100,-40" fill="none" stroke="#F4F0EB" stroke-width="14" stroke-linecap="round"/><path d="M-80,-30 C-80,-80 -48,-105 0,-105 C48,-105 80,-80 80,-30" fill="none" stroke="#9db6a0" stroke-width="8" stroke-linecap="round"/><path d="M-55,-20 C-55,-55 -32,-72 0,-72 C32,-72 55,-55 55,-20" fill="none" stroke="#34d399" stroke-width="5" stroke-linecap="round"/><circle cx="0" cy="-10" r="12" fill="#34d399"/><circle cx="0" cy="-10" r="5" fill="#1a1f1e"/></g></svg>';
+      wrap.appendChild(logoMark);
       wrap.appendChild(el('h3', { class: 'about-title', text: 'Arena Desktop' }));
       wrap.appendChild(el('p', { class: 'about-sub', text: state.appVersion ? `Version ${state.appVersion}` : 'Desktop client' }));
       wrap.appendChild(el('p', { class: 'modal-copy', text: 'An unofficial desktop client for arena.ai — not affiliated with Arena. Everything runs through your own Arena account.' }));
@@ -8913,6 +9214,36 @@ You can start with a more structured option: one script, short captions, and a c
       wrap.appendChild(el('label', { class: 'setting-toggle-row' },
         el('span', { text: 'Keep in system tray when closed' }),
         el('span', { class: 'switch' }, trayToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
+
+      wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Quick diagnostics' }));
+      const diagList = el('div', { class: 'diag-list' });
+      const testNames = ['Arena.ai connection', 'Account health', 'Encryption (DPAPI)', 'Workspace access', 'Update server (GitHub)'];
+      testNames.forEach(name => {
+        diagList.appendChild(el('div', { class: 'diag-row diag-pending' },
+          el('span', { class: 'diag-dot' }),
+          el('span', { class: 'diag-name', text: name }),
+          el('span', { class: 'diag-ms' })
+        ));
+      });
+      const runBtn = settingsActionButton('Run all tests', 'play', async () => {
+        runBtn.disabled = true;
+        diagList.querySelectorAll('.diag-row').forEach(r => { r.className = 'diag-row diag-running'; r.querySelector('.diag-ms').textContent = ''; });
+        try {
+          const data = await API.diagnosticsRun();
+          const rows = diagList.querySelectorAll('.diag-row');
+          (data?.results || []).forEach((r, i) => {
+            if (!rows[i]) return;
+            rows[i].className = 'diag-row ' + (r.ok === true ? 'diag-pass' : r.ok === false ? 'diag-fail' : 'diag-skip');
+            rows[i].querySelector('.diag-ms').textContent = r.ok === null ? (r.detail || '—') : r.ms + 'ms';
+            if (r.detail && r.ok === false) rows[i].title = r.detail;
+          });
+        } catch { diagList.querySelectorAll('.diag-row').forEach(r => { r.className = 'diag-row diag-fail'; }); }
+        runBtn.disabled = false;
+      });
+      const diagActions = el('div', { class: 'setting-actions' });
+      diagActions.appendChild(runBtn);
+      wrap.appendChild(diagActions);
+      wrap.appendChild(diagList);
 
       wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Settings backup' }));
       const ioActions = el('div', { class: 'setting-actions' });

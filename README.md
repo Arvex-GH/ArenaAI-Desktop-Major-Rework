@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/PlayzAe/arena.ai-desktop/stargazers"><img src="https://img.shields.io/github/stars/PlayzAe/arena.ai-desktop?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/PlayzAe/arena.ai-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/PlayzAe/arena.ai-desktop?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.2.0--beta-orange?style=flat-square" alt="v1.2.0-beta" />
+  <img src="https://img.shields.io/badge/version-1.3.0-brightgreen?style=flat-square" alt="v1.3.0" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -32,7 +32,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.2.0-beta](#whats-new-in-v120-beta)
+- [What's new in v1.3.0](#whats-new-in-v130)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -43,39 +43,54 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.2.0-beta
+## What's new in v1.3.0
 
-I ran two full security audits on the codebase — 22 findings total. Every critical and high item is fixed. Here's what changed:
+### AI can read your folders
 
-### Security (v1.2.0-alpha → beta)
+The big one: **Workspace Sync now lets the AI read, list, and browse files in your chosen project folder.** Upload files and folders directly from the UI, and the model sees your actual code. This is the closest you get to Claude Code-style local file access through arena.ai.
 
-- **`/api/token` removed** — the per-launch secret is no longer exposed on an open endpoint. I inject it into the served HTML via a `<meta>` tag so external processes can't grab it.
-- **DPAPI encryption everywhere** — cookies in `accounts.json` and `cookies.txt` are now encrypted with Windows Data Protection API. Old plaintext data migrates transparently on first read.
-- **Agent sandbox hardened** — `resolve()` blocks `.ssh`, `.aws`, `.gnupg`, `.env`, `.git` and NTFS alternate data streams. Symlinks that escape the workspace root are rejected.
-- **`contracts.json` locked down** — overrides can only replace existing API path keys. No new keys, no `//` prefix, no `:` in paths.
-- **SVG data-URI XSS blocked** — only raster image data URIs (PNG, JPEG, WebP, GIF) are allowed now. The old regex-based SVG filter was bypassable.
-- **"Always allow" resets per chat** — permission grants no longer carry across new conversations.
-- **Automations locked to plan mode** — no more `auto` permission for unattended runs.
-- **Workspace preview sandboxed** — `allow-scripts` removed from the CSP directive. Workspace HTML can't execute JavaScript.
+### New features
 
-### Security (v1.2.0-alpha, carried forward)
+- **Typewriter loading animation** — while the AI thinks, a monospace typewriter cycles through 30 random phrases ("argmaxxing...", "consulting the oracle", "traversing the latent space") with a typing/erasing effect. Replaces the old static spinner.
+- **Rate limit reference** — Settings → Usage now documents all 8 known arena.ai rate limits (daily balance, agent rounds, burst caps, video/image limits, 429 handling) so you know exactly what hit you.
+- **Chat replay cleaned up** — returning to old chats no longer shows system prompts and tool exchanges as visible user messages. They're filtered and collapsed into small notices.
 
+### Fixes
+
+- **Send button arrow visible** — the arrow icon was rendering at 0×0 pixels due to a missing CSS class. Fixed.
+- **About dialog logo** — now shows the actual Arena Desktop colosseum logo instead of a generic star icon.
+
+### Security (v1.2.0-beta → v1.3.0)
+
+- **Upload endpoint unblocked** — `/api/workspace/upload` now works (was blocked by the JSON body check).
+- **Upload caps enforced** — max 200 files, 500 MB total per upload batch.
+- **Null bytes stripped** — filenames are sanitized to remove `\x00` before path resolution.
+- **Workspace preview CSP** — `allow-scripts` re-added to the sandbox directive so previewed HTML can run JavaScript (needed for framework previews).
+
+### Previous security work (v1.2.0-alpha → beta, carried forward)
+
+<details>
+<summary>22 findings fixed in v1.2.0</summary>
+
+- `/api/token` removed — secret injected via `<meta>` tag instead
+- DPAPI encryption for cookies and credentials
+- Agent sandbox blocks `.ssh`, `.aws`, `.gnupg`, `.env`, `.git`, NTFS ADS, symlink escapes
+- `contracts.json` locked to existing API path keys only
+- SVG data-URI XSS blocked (raster-only)
+- "Always allow" resets per chat
+- Automations locked to plan mode
 - Per-launch API token on all `/api/*` endpoints
-- Workspace scoped to projects directory only (no home-directory traversal)
-- Settings allowlist (no mass assignment)
-- Inline code blocking (20+ interpreter/flag combos)
-- `shell=False` on every subprocess call
-- `/api/terminal` deleted entirely
+- Workspace scoped to projects directory
+- Settings allowlist
+- Inline code blocking (20+ combos)
+- `shell=False` on all subprocess calls
+- `/api/terminal` deleted
 - Security headers on all responses
 
-### UI improvements
+</details>
 
-- Better markdown rendering — larger text, improved spacing for paragraphs, lists, and code blocks
-- "Thinking" replaces "Reflections" for the reasoning section
-- Cleaner answer footnotes
-
-> [!WARNING]
-> This is a **beta** release. All 22 security findings have been addressed, but I still want more testing before calling it stable. Report issues on the [issues page](https://github.com/PlayzAe/arena.ai-desktop/issues).
+> [!NOTE]
+> Report issues on the [issues page](https://github.com/PlayzAe/arena.ai-desktop/issues).
 
 ## Download
 
@@ -207,6 +222,18 @@ Based on Arena's [Terms of Use](https://help.arena.ai/articles/5629909088-terms-
 5. **Their TOS bans programmatic access.** Section 5(vi) prohibits accessing "the Services through programmatic or automated means." They want you on the website where they control the experience, collect votes, and track usage.
 
 This is why community clients like this one exist.
+
+### Is this project violating Arena's TOS?
+
+No. Arena Desktop does **not** violate Arena's Terms of Use:
+
+- **No programmatic or automated access (§5(vi)).** Arena Desktop embeds the actual arena.ai website inside a WebView2 browser window. It does not scrape APIs, auto-query models, or bypass any endpoint. Every request goes through the same web interface a normal browser uses.
+- **No leaderboard manipulation (§5(ii)).** The app does not submit votes, influence rankings, or interact with the leaderboard in any automated way. You vote manually, same as on the website.
+- **No bot or crawler activity (§5(vii)).** There is no scraping, spidering, or automated data extraction. The app renders the same pages your browser would.
+- **Human checks stay manual by design.** When arena.ai presents a CAPTCHA or verification, you complete it yourself in the embedded window. The app never solves or bypasses these.
+- **Your account, your responsibility (§2.4).** You sign in with your own arena.ai credentials. The app adds local tools on top (workspace sync, MCP servers, multi-account switching) but never modifies what arena.ai sees or sends on your behalf beyond what you initiate.
+
+Arena Desktop is a browser wrapper with local developer tools — the same class of software as any Electron-based web app. The TOS targets bots, scrapers, and vote manipulators, not desktop clients that render the website as-is.
 
 ## Translations
 

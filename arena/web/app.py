@@ -266,7 +266,7 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "1.2.0-beta"
+APP_VERSION = "1.3.0"
 
 _API_TOKEN = secrets.token_urlsafe(32)
 _secrets = hmac
@@ -1709,6 +1709,64 @@ def api_diagnostics():
     return jsonify({"text": "\n".join(lines)})
 
 
+@app.route("/api/diagnostics/run")
+def api_diagnostics_run():
+    """Run quick health checks and return structured pass/fail results."""
+    import time as _t
+    results = []
+
+    t0 = _t.monotonic()
+    try:
+        import urllib.request
+        req = urllib.request.Request("https://arena.ai/", method="HEAD")
+        req.add_header("User-Agent", f"ArenaDesktop/{APP_VERSION}")
+        urllib.request.urlopen(req, timeout=8)
+        results.append({"name": "Arena.ai connection", "ok": True, "ms": int((_t.monotonic() - t0) * 1000)})
+    except Exception as e:
+        results.append({"name": "Arena.ai connection", "ok": False, "ms": int((_t.monotonic() - t0) * 1000), "detail": str(e)[:120]})
+
+    t0 = _t.monotonic()
+    try:
+        ok = COOKIE_FILE.exists() and COOKIE_FILE.stat().st_size > 0
+        results.append({"name": "Account health", "ok": ok, "ms": int((_t.monotonic() - t0) * 1000),
+                        "detail": None if ok else "No session cookies found"})
+    except Exception as e:
+        results.append({"name": "Account health", "ok": False, "ms": int((_t.monotonic() - t0) * 1000), "detail": str(e)[:120]})
+
+    t0 = _t.monotonic()
+    try:
+        from arena.crypto import dpapi_protect, dpapi_unprotect
+        test = b"arena-diag-check"
+        ok = dpapi_unprotect(dpapi_protect(test)) == test
+        results.append({"name": "Encryption (DPAPI)", "ok": ok, "ms": int((_t.monotonic() - t0) * 1000)})
+    except Exception as e:
+        results.append({"name": "Encryption (DPAPI)", "ok": False, "ms": int((_t.monotonic() - t0) * 1000), "detail": str(e)[:120]})
+
+    t0 = _t.monotonic()
+    ws = _chosen_ws()
+    if ws is None:
+        results.append({"name": "Workspace access", "ok": None, "ms": 0, "detail": "No folder selected"})
+    else:
+        try:
+            ok = os.path.isdir(ws) and os.access(ws, os.R_OK | os.W_OK)
+            results.append({"name": "Workspace access", "ok": ok, "ms": int((_t.monotonic() - t0) * 1000),
+                            "detail": None if ok else "Folder not accessible"})
+        except Exception as e:
+            results.append({"name": "Workspace access", "ok": False, "ms": int((_t.monotonic() - t0) * 1000), "detail": str(e)[:120]})
+
+    t0 = _t.monotonic()
+    try:
+        import urllib.request
+        req = urllib.request.Request("https://api.github.com/repos/PlayzAe/arena.ai-desktop/releases/latest")
+        req.add_header("User-Agent", f"ArenaDesktop/{APP_VERSION}")
+        urllib.request.urlopen(req, timeout=8)
+        results.append({"name": "Update server (GitHub)", "ok": True, "ms": int((_t.monotonic() - t0) * 1000)})
+    except Exception as e:
+        results.append({"name": "Update server (GitHub)", "ok": False, "ms": int((_t.monotonic() - t0) * 1000), "detail": str(e)[:120]})
+
+    return jsonify({"results": results})
+
+
 _QUESTIONS: dict = {}
 _questions_lock = threading.Lock()
 _MEDIA_CHOICES: dict = {}
@@ -2994,8 +3052,44 @@ def _webdev_event(lane: str, item: dict, conv: dict):
         yield from _save_webdev(lane, files, conv)
     url = contracts.find_preview_url(item)
     if event == "preview-ready" or url:
+        if url:
+            conv["_preview_sent"] = True
         yield _sse({"type": "preview", "model": lane, "url": url, "status": item.get("status"),
                     "message": item.get("message") or item.get("reason")})
+
+
+def _poll_webdev_preview(client, conv: dict):
+    """After a webdev stream ends with no preview URL, poll the evaluation endpoint."""
+    ids = conv.get("last_arena_ids") or {}
+    msg_id = ids.get("a") or ids.get("b")
+    if not msg_id:
+        return
+    path = contracts.PATHS["webdev"].replace("{message_id}", msg_id)
+    delays = [2, 3, 5, 8, 12]
+    for wait in delays:
+        if _stopped():
+            return
+        yield _sse({"type": "ping"})
+        time.sleep(wait)
+        try:
+            if _engine_on():
+                r = ENGINE.request(path, timeout=10)
+                if r.status_code != 200:
+                    continue
+                body = r.json() if hasattr(r, "json") else {}
+            else:
+                resp = client.session.get(contracts.ORIGIN + path, timeout=10)
+                if resp.status_code != 200:
+                    continue
+                body = resp.json()
+        except Exception:
+            continue
+        url = contracts.find_preview_url(body)
+        if url:
+            conv["_preview_sent"] = True
+            yield _sse({"type": "preview", "model": "a", "url": url,
+                        "status": "ready", "message": "Preview ready"})
+            return
 
 
 # ARENA_STREAM_DUMP=1 writes every raw stream line to ~/.arena-cli/streams/<chat>.txt, to study arena's stream parts.
@@ -3078,6 +3172,16 @@ def _line_delta(old: str, new: str):
     return add, rem
 
 
+def _compact_diff(old: str, new: str, max_lines: int = 40) -> str:
+    """Unified diff truncated to max_lines for the frontend."""
+    old_lines = old.splitlines(keepends=True)
+    new_lines = new.splitlines(keepends=True)
+    diff = list(difflib.unified_diff(old_lines, new_lines, lineterm=""))
+    if len(diff) > max_lines + 2:
+        diff = diff[:max_lines + 2] + [f"... ({len(diff) - max_lines - 2} more lines)"]
+    return "\n".join(line.rstrip("\n\r") for line in diff)
+
+
 _SB_VERB = {"read": "Read", "run": "Ran", "touch": "Changed"}
 
 
@@ -3135,6 +3239,7 @@ def _sandbox_call(lane: str, call: dict, conv: dict):
                     else:
                         new = op["content"]
                     row["add"], row["del"] = _line_delta(old or "", new)
+                    row["diff"] = _compact_diff(old or "", new)
                     row["verb"] = "Created" if old is None else "Edited"
                     data = new.encode("utf-8")
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -3149,6 +3254,13 @@ def _sandbox_call(lane: str, call: dict, conv: dict):
         rows[:] = [r for r in rows if not (r.get("id") == row["id"] and r.get("model") == lane)]
     rows.append(dict(row, model=lane))
     yield _sse(dict(row, type="sandbox", model=lane))
+    # present_file or newly written HTML: emit a local preview event
+    fpath = op.get("path") or ""
+    is_present = "present" in str(op["tool"]).lower()
+    is_html_write = row.get("verb") in ("Created", "Edited") and fpath.lower().rsplit(".", 1)[-1] in ("html", "htm")
+    if (is_present or is_html_write) and fpath and not row.get("error"):
+        yield _sse({"type": "file_preview", "model": lane, "path": fpath,
+                     "html": fpath.lower().rsplit(".", 1)[-1] in ("html", "htm")})
 
 
 def _sandbox_result(lane: str, res: dict, conv: dict):
@@ -3239,6 +3351,7 @@ def _line_events(r, conv: dict):
                     yield from _save_media(m, lane, conv)
                 url = contracts.find_preview_url(value)
                 if url:
+                    conv["_preview_sent"] = True
                     yield _sse({"type": "preview", "model": lane, "url": url})
 
     def _chunks():
@@ -6621,6 +6734,8 @@ def _api_chat_impl():
         else:
             out = yield from _turn_auto(client, send, conv)
         out = out or {"a": "", "b": ""}
+        if modality == "webdev" and not conv.get("_preview_sent") and not dual:
+            yield from _poll_webdev_preview(client, conv)
         # conv carries this chat's own Arena session id; the shared client
         # Field is not used, so parallel chats cannot cross their sessions.
         clean = agent.strip_tool_calls if (tools_on or fanout_models) else str
@@ -6881,7 +6996,7 @@ def _local_same_origin_only():
     if origin and origin != request.host_url.rstrip("/"):
         return jsonify({"error": "Cross-origin request blocked"}), 403
     if (request.path.startswith("/api/") and request.get_data() and not request.is_json
-            and request.path != "/api/uploads"):
+            and request.path not in ("/api/uploads", "/api/workspace/upload")):
         return jsonify({"error": "JSON body required"}), 415
     return None
 
@@ -7136,9 +7251,51 @@ def api_workspace_preview(subpath):
     import mimetypes
     mime, _enc = mimetypes.guess_type(target.name)
     resp = send_file(target, mimetype=mime or "application/octet-stream", conditional=True)
-    resp.headers["Content-Security-Policy"] = "sandbox allow-modals allow-popups"
+    resp.headers["Content-Security-Policy"] = "sandbox allow-scripts allow-modals allow-popups"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
+
+
+@app.route("/api/workspace/upload", methods=["POST"])
+def api_workspace_upload():
+    """Upload files to the workspace. Supports multipart file uploads with optional relative paths."""
+    root = _workspace_dir()
+    if not root or not root.is_dir():
+        return jsonify({"error": "No workspace folder selected"}), 400
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"error": "No files provided"}), 400
+    MAX_FILES = 200
+    MAX_TOTAL_BYTES = 500 * 1024 * 1024
+    if len(files) > MAX_FILES:
+        return jsonify({"error": f"Too many files ({len(files)}). Max {MAX_FILES}."}), 400
+    results = []
+    total_bytes = 0
+    for f in files:
+        rel = f.filename or "untitled"
+        rel = rel.replace("\x00", "").replace("\\", "/").lstrip("/")
+        if ".." in rel.split("/"):
+            results.append({"path": rel, "error": "Invalid path"})
+            continue
+        target = root / rel
+        try:
+            workspace._inside(root, rel)
+        except Exception:
+            results.append({"path": rel, "error": "Path outside workspace"})
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            f.save(str(target))
+            fsize = target.stat().st_size
+            total_bytes += fsize
+            if total_bytes > MAX_TOTAL_BYTES:
+                target.unlink(missing_ok=True)
+                results.append({"path": rel, "error": "Total upload size exceeded 500 MB"})
+                break
+            results.append({"path": rel, "ok": True, "size": fsize})
+        except OSError as e:
+            results.append({"path": rel, "error": str(e)[:120]})
+    return jsonify({"ok": True, "files": results, "count": sum(1 for r in results if r.get("ok"))})
 
 
 @app.route("/api/workspace/set", methods=["POST"])
