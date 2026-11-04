@@ -65,20 +65,30 @@ def save_config(cfg: Dict[str, Any]) -> None:
 
 
 def get_cookie() -> Optional[str]:
-    """Retrieve the stored cookie string."""
+    """Retrieve the stored cookie string (DPAPI-decrypted on Windows)."""
     try:
         if COOKIE_FILE.exists():
-            val = COOKIE_FILE.read_text(encoding="utf-8").strip()
-            return val if val else None
+            raw = COOKIE_FILE.read_bytes().strip()
+            if not raw:
+                return None
+            try:
+                from arena.crypto import decrypt
+                return decrypt(raw).decode("utf-8")
+            except Exception:
+                return raw.decode("utf-8", errors="replace")
     except Exception:
         pass
     return None
 
 
 def save_cookie(val: str) -> None:
-    """Save cookie string to disk."""
+    """Save cookie string to disk (DPAPI-encrypted on Windows)."""
     ensure_config_dir()
-    COOKIE_FILE.write_text(val.strip(), encoding="utf-8")
+    try:
+        from arena.crypto import encrypt
+        COOKIE_FILE.write_bytes(encrypt(val.strip().encode("utf-8")))
+    except Exception:
+        COOKIE_FILE.write_text(val.strip(), encoding="utf-8")
 
 
 def clear_cookie() -> None:

@@ -116,7 +116,7 @@ The app orchestrates chats, tools, files and permissions around it.
   tray with a global Ctrl+Alt+A show/hide hotkey, settings export/import (never account cookies),
   a copyable diagnostics report, portable mode (`portable.txt` beside the EXE keeps data in `./data`),
   and launch flags (`--profile <id|email>`, `--background`, `--mode <id>`).
-- Permission modes modelled on Claude Code (Plan / Ask / Accept edits / Bypass) gate every local action;
+- Permission modes modelled on Claude Code (Plan / Ask / Accept edits / Auto) gate every local action;
   requests are tied to the chat that asked, so a waiting permission never blocks your other chats.
 - Code (webdev) answers have their created/edited files mirrored into your folder
   (Battle writes lanes into `option-a` / `option-b`).
@@ -305,9 +305,16 @@ Arena-Desktop/
 ## Credits & license
 
 Arena Desktop grew out of the open-source arena.ai desktop/CLI work by
-[PlayzAe](https://github.com/PlayzAe) and contributors, and has since been heavily reworked
-(full in-app Arena Agent Mode, Workspace Sync tool loop, MCP support, multi-account auth,
-parallel chats, and a redesigned interface). Thanks to everyone whose code and research it builds on.
+[PlayzAe](https://github.com/PlayzAe) and contributors. Thanks to everyone whose code,
+testing and ideas keep this project alive:
+
+- **[Maxusimlive](https://github.com/Maxusimlive)** — major contributions to the desktop UI,
+  chat system, workspace features and the native Arena Agent integration. A huge thank you
+  for the sustained work that shaped this app into what it is today.
+- Everyone who has filed issues, tested builds, suggested features and spread the word.
+
+This project exists because people care enough to build and maintain it. If you use Arena Desktop,
+thank the contributors who made it happen.
 
 Released under the [MIT License](LICENSE). Not affiliated with Arena AI Inc.; “Arena” is used
 descriptively to name the service this client connects to.
@@ -316,6 +323,6 @@ descriptively to name the service this client connects to.
 
 Questions, ideas or feedback? Reach the maintainer on Discord:
 
-[![Discord](https://img.shields.io/static/v1?label=Discord&message=%40.max_power._&color=5865F2&style=flat-square&logo=discord&logoColor=white)](https://discord.com/users/877543689428287489)
+[![Discord](https://img.shields.io/static/v1?label=Discord&message=%40playzae&color=5865F2&style=flat-square&logo=discord&logoColor=white)](https://discord.com)
 
-DMs are open — `@.max_power._`. For bugs and feature requests, [GitHub Issues](../../issues) still work best.
+DMs are open — `@playzae`. For bugs and feature requests, [GitHub Issues](../../issues) still work best.

@@ -461,13 +461,21 @@
     try { return JSON.parse(text); } catch { return text; }
   }
 
+  let _apiToken = '';
+
   const liveApi = {
     async request(path, { method = 'GET', body, signal } = {}) {
+      if (!_apiToken && path !== '/api/token') {
+        try {
+          const r = await fetch('/api/token', { credentials: 'same-origin', cache: 'no-store' });
+          if (r.ok) { const d = await r.json(); _apiToken = d.token || ''; }
+        } catch {}
+      }
       const options = {
         method,
         credentials: 'same-origin',
         cache: 'no-store',
-        headers: { Accept: 'application/json' },
+        headers: { Accept: 'application/json', 'X-Arena-Token': _apiToken },
         signal
       };
       if (body !== undefined) {
@@ -551,7 +559,7 @@
       try {
         response = await fetch('/api/uploads', {
           method: 'POST', credentials: 'same-origin', cache: 'no-store',
-          headers: { Accept: 'application/json' }, body: form
+          headers: { Accept: 'application/json', 'X-Arena-Token': _apiToken }, body: form
         });
       } catch (error) {
         throw new ApiError("The local application server is unavailable. The file was not uploaded.", 0, error);
@@ -567,7 +575,7 @@
     async downloadWorkspaceFile(path) {
       let response;
       try {
-        response = await fetch(`/api/workspace/download?path=${encodeURIComponent(path)}`, { credentials: 'same-origin', cache: 'no-store' });
+        response = await fetch(`/api/workspace/download?path=${encodeURIComponent(path)}`, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Arena-Token': _apiToken } });
       } catch (error) {
         throw new ApiError('The local application server is unavailable.', 0, error);
       }
@@ -596,7 +604,7 @@
     async workspaceZip(path) {
       let response;
       try {
-        response = await fetch(`/api/workspace/zip?path=${encodeURIComponent(path)}`, { credentials: 'same-origin', cache: 'no-store' });
+        response = await fetch(`/api/workspace/zip?path=${encodeURIComponent(path)}`, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Arena-Token': _apiToken } });
       } catch (error) {
         throw new ApiError("The local application server is unavailable.", 0, error);
       }
@@ -623,7 +631,7 @@
           method: 'POST',
           credentials: 'same-origin',
           cache: 'no-store',
-          headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json' },
+          headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json', 'X-Arena-Token': _apiToken },
           body: JSON.stringify(body),
           signal
         });

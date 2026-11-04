@@ -84,7 +84,6 @@ MODE_NOTES = {
     "default": "The user approves each change and command.",
     "acceptEdits": "File edits run without asking; deletes and commands need approval.",
     "auto": "Work inside the project folder runs without asking; risky commands need approval.",
-    "bypassPermissions": "All tools run without asking.",
 }
 
 
@@ -345,7 +344,12 @@ def run_shell_command(cmd: str, cwd) -> str:
     refusal = _interactive_refusal(cmd)
     if refusal:
         return refusal
-    proc = subprocess.Popen(cmd, shell=True, cwd=str(cwd), stdin=subprocess.DEVNULL,
+    import shlex
+    _DANGEROUS_FLAGS = re.compile(r"^-[ce]$|^--eval$|^-enc$|^-encodedcommand$", re.I)
+    argv = shlex.split(cmd)
+    if any(_DANGEROUS_FLAGS.match(a) for a in argv[1:]):
+        return "Error: inline code execution flags (-c, -e, --eval, -enc) are blocked for safety."
+    proc = subprocess.Popen(argv, shell=False, cwd=str(cwd), stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace")
     out_chunks: List[str] = []

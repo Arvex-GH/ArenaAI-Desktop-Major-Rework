@@ -13,6 +13,38 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from arena import agent, contracts, permissions, workspace  # noqa: E402
+
+
+class _TokenClient:
+    """Wraps Flask test_client to auto-inject X-Arena-Token on every request."""
+
+    def __init__(self, client, token):
+        self._client = client
+        self._token = token
+
+    def _inject(self, kwargs):
+        hdrs = dict(kwargs.pop("headers", None) or {})
+        hdrs.setdefault("X-Arena-Token", self._token)
+        kwargs["headers"] = hdrs
+        return kwargs
+
+    def get(self, *a, **kw):
+        return self._client.get(*a, **self._inject(kw))
+
+    def post(self, *a, **kw):
+        return self._client.post(*a, **self._inject(kw))
+
+    def put(self, *a, **kw):
+        return self._client.put(*a, **self._inject(kw))
+
+    def delete(self, *a, **kw):
+        return self._client.delete(*a, **self._inject(kw))
+
+    def patch(self, *a, **kw):
+        return self._client.patch(*a, **self._inject(kw))
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
 from arena.api import generate_uuidv7  # noqa: E402
 from arena.engine import BrowserEngine, EngineResponse  # noqa: E402
 
@@ -247,7 +279,6 @@ def test_media_and_preview_discovery():
 @pytest.mark.parametrize("mode,tool,inside,cmd,want", [
     ("default", "read_file", True, "", "allow"),
     ("default", "read_file", False, "", "ask"),
-    ("bypassPermissions", "read_file", False, "", "allow"),
     ("plan", "read_file", True, "", "allow"),
     ("plan", "write_file", True, "", "deny"),
     ("plan", "run_cmd", True, "dir", "deny"),
@@ -263,10 +294,6 @@ def test_media_and_preview_discovery():
     ("auto", "run_cmd", True, "python -m pytest -q", "allow"),
     ("auto", "run_cmd", True, "git status && del x", "ask"),
     ("auto", "run_cmd", True, "pip install evil", "ask"),
-    ("bypassPermissions", "delete", False, "", "allow"),
-    ("bypassPermissions", "run_cmd", True, "rm -rf /", "deny"),
-    ("bypassPermissions", "run_cmd", True, "format C:", "deny"),
-    ("bypassPermissions", "run_cmd", True, "npm run build", "allow"),
     ("weird", "write_file", True, "", "ask"),
     ("auto", "made_up_tool", True, "", "ask"),
 ])
@@ -549,7 +576,7 @@ def web(tmp_path, monkeypatch):
             return next(it)
         monkeypatch.setattr(appmod, "_send", fake_send)
     appmod.app.config["TESTING"] = True
-    return appmod, appmod.app.test_client(), cfg, use, sent
+    return appmod, _TokenClient(appmod.app.test_client(), appmod._API_TOKEN), cfg, use, sent
 
 
 def events(resp):
@@ -792,11 +819,11 @@ def test_media_save_rules(web):
     assert r["ok"] and Path(r["path"]).read_bytes().startswith(b"\x89PNG")
 
 
-def test_safe_resolve_blocks_outside_home(web):
+def test_safe_resolve_blocks_outside_projects(web):
     appmod, *_ = web
-    assert appmod._safe_resolve(".") == Path.home().resolve()
+    assert appmod._safe_resolve(".") == workspace.PROJECTS_DIR.resolve()
     with pytest.raises(PermissionError):
-        appmod._safe_resolve(str(Path.home().parent))
+        appmod._safe_resolve(str(workspace.PROJECTS_DIR.parent))
     with pytest.raises(PermissionError):
         appmod._safe_resolve("../")
 
@@ -1148,7 +1175,7 @@ def test_workspace_panel_tree_and_file_are_scoped_to_panel_root(web):
     assert child["entries"][0]["path"] == "src/app.py"
     assert c.get("/api/workspace/tree?path=..%2F").status_code == 403
     assert c.get("/api/workspace/file?path=%2Fetc%2Fpasswd").status_code == 403
-    assert c.get("/api/workspace/file?path=src%2Fapp.py").get_json()["content"] == "print('ok')\n"
+    assert c.get("/api/workspace/file?path=src%2Fapp.py").get_json()["content"].replace("\r\n", "\n") == "print('ok')\n"
     assert c.get("/api/workspace/file?path=blob.bin").status_code == 415
     assert appmod._panel_workspace_root() == root.resolve()
 
@@ -1213,7 +1240,7 @@ class _FakeConnectorManager:
 
 def test_agent_calls_mcp_tool_with_schema_coerced_json(web, monkeypatch):
     appmod, c, cfg, use, sent = web
-    cfg["permission_mode"] = "bypassPermissions"
+    cfg["permission_mode"] = "auto"
     fake = _FakeConnectorManager(appmod, {"readOnlyHint": True})
     monkeypatch.setattr(appmod, "CONNECTORS", fake)
     appmod._ui_mode, appmod._ui_modality = "agent", "text"
@@ -2082,7 +2109,8 @@ def test_stream_ends_on_finish_record_without_waiting_for_close(web):
         with appmod.app.test_client() as client:
             result["ev"] = events(client.post(
                 "/api/chat", json={"message": "hi", "mode": "direct", "modality": "text",
-                                   "model_id": "m1", "tools": False}))
+                                   "model_id": "m1", "tools": False},
+                headers={"X-Arena-Token": appmod._API_TOKEN}))
 
     thread = _threading.Thread(target=run, daemon=True)
     thread.start()
@@ -2098,7 +2126,7 @@ def test_stream_ends_on_finish_record_without_waiting_for_close(web):
 
 def test_agent_empty_final_round_leaves_explaining_text(web, monkeypatch):
     appmod, c, cfg, use, _sent = web
-    cfg["permission_mode"] = "bypassPermissions"
+    cfg["permission_mode"] = "auto"
     appmod._ui_mode = "agent"
     monkeypatch.setattr(appmod, "_wait_for", lambda check, seconds: ())
     # The empty round is auto-retried twice, then the explaining text remains.
@@ -2146,7 +2174,7 @@ def _bridge_events(gen):
 
 def test_native_file_bridge_downloads_and_dedupes(web, monkeypatch, tmp_path):
     appmod, _c, cfg, _use, _sent = web
-    cfg["permission_mode"] = "bypassPermissions"
+    cfg["permission_mode"] = "auto"
     cfg["workspace_dir"] = str(tmp_path / "picked")
     monkeypatch.setattr(appmod.requests, "get", lambda url, timeout=None: _FakeDownload(b"print('hi')\n"))
     state = {}
@@ -2170,7 +2198,7 @@ def test_native_file_bridge_respects_plan_and_sanitizes_names(web, monkeypatch, 
     plan_state = {}
     _ev, written = _bridge_events(appmod._native_file_bridge(files, plan_state))
     assert written == [] and not (tmp_path / "picked").exists()
-    cfg["permission_mode"] = "bypassPermissions"
+    cfg["permission_mode"] = "auto"
     ok_state = {}
     _ev2, written2 = _bridge_events(appmod._native_file_bridge(files, ok_state))
     assert written2 == ["evil.txt"]
@@ -2191,7 +2219,7 @@ def test_native_file_bridge_without_folder_only_notifies(web, monkeypatch):
 
 def test_tool_loop_warns_instead_of_stopping_on_repeats(web):
     appmod, c, cfg, use, sent = web
-    cfg["permission_mode"] = "bypassPermissions"
+    cfg["permission_mode"] = "auto"
     appmod._ui_mode = "agent"
     ls = _tool_line('<tool name="ls"><path>.</path></tool>')
     # 4 identical calls (the 4th is blocked, not run), then the model wraps up:
@@ -2272,7 +2300,7 @@ class _StubConnectors:
 def test_mcp_guide_not_resent_when_unchanged(web, monkeypatch):
     import hashlib as _hashlib
     appmod, c, cfg, use, sent = web
-    cfg["permission_mode"] = "bypassPermissions"
+    cfg["permission_mode"] = "auto"
     monkeypatch.setattr(appmod, "CONNECTORS", _StubConnectors())
     appmod._ui_mode = "agent"
     cid = "33333333-3333-7333-8333-333333333333"
@@ -2417,7 +2445,7 @@ def _delegate_parent(web, tmp_path, monkeypatch):
     appmod, c, cfg, use, sent = web
     ws = tmp_path / "ws"; ws.mkdir(exist_ok=True)
     cfg["workspace_dir"] = str(ws)
-    cfg["permission_mode"] = "bypassPermissions"
+    cfg["permission_mode"] = "auto"
     monkeypatch.setattr(appmod, "GLOBAL_MEMORY_FILE", tmp_path / "none.md")
     appmod._ui_mode, appmod._ui_modality = "agent", "text"
     cid = "aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa"
@@ -2538,7 +2566,8 @@ def test_ask_user_pauses_and_returns_answer(web, monkeypatch, tmp_path):
     def run():
         client2 = appmod.app.test_client()
         result["events"] = events(client2.post("/api/chat", json={
-            "message": "ask me", "chat_id": cid}))
+            "message": "ask me", "chat_id": cid},
+            headers={"X-Arena-Token": appmod._API_TOKEN}))
 
     thread = _threading.Thread(target=run, daemon=True)
     thread.start()
@@ -2604,7 +2633,8 @@ def test_propose_plan_revise_then_approve(web, monkeypatch, tmp_path):
     def run():
         client2 = appmod.app.test_client()
         result["events"] = events(client2.post("/api/chat", json={
-            "message": "plan it", "chat_id": cid}))
+            "message": "plan it", "chat_id": cid},
+            headers={"X-Arena-Token": appmod._API_TOKEN}))
 
     thread = _threading.Thread(target=run, daemon=True)
     thread.start()
@@ -2684,7 +2714,7 @@ def test_read_files_batch_and_dedupe(web, monkeypatch, tmp_path):
 
 def test_checkpoint_capture_and_undo(web, monkeypatch, tmp_path):
     appmod, c, cfg, use, sent, cid, ws = _delegate_parent(web, tmp_path, monkeypatch)
-    cfg["permission_mode"] = "bypassPermissions"
+    cfg["permission_mode"] = "auto"
     (ws / "cfg.txt").write_text("original", encoding="utf-8")
     write = ('<tool name="write_file"><path>cfg.txt</path>'
              '<content>changed-by-agent</content></tool>')
@@ -3022,7 +3052,7 @@ def test_usage_telemetry_counts_sends_and_429(web, monkeypatch):
 
 def test_ls_output_cached_within_turn(web):
     appmod, c, cfg, use, _sent = web
-    cfg["permission_mode"] = "bypassPermissions"
+    cfg["permission_mode"] = "auto"
     appmod._ui_mode = "agent"
     ls = _tool_line('<tool name="ls"><path>.</path></tool>')
     use(FakeResp([ls]), FakeResp([ls]),
@@ -3307,7 +3337,7 @@ def test_engine_present_raises_window_during_challenge():
 
 def test_delete_subagent_only_own_children(web, monkeypatch):
     appmod, c, cfg, use, _sent = web
-    cfg["permission_mode"] = "bypassPermissions"
+    cfg["permission_mode"] = "auto"
     appmod._ui_mode = "agent"
     _no_backoff(appmod, monkeypatch)
     parent_id = generate_uuidv7()

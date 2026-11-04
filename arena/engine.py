@@ -896,6 +896,28 @@ class BrowserEngine:
                 return  # reloads; this handler runs again
         self._imported = True
         self.loaded = True
+        self._patch_popups()
+
+    def _patch_popups(self):
+        """Redirect window.open() calls to the current window so OAuth works in WebView2."""
+        if not self.window:
+            return
+        try:
+            self.window.evaluate_js(
+                "(function(){"
+                "if(window.__arenaPopupPatched)return;"
+                "window.__arenaPopupPatched=true;"
+                "var _open=window.open;"
+                "window.open=function(url){"
+                "if(url&&(url.indexOf('accounts.google.com')!==-1"
+                "||url.indexOf('supabase')!==-1"
+                "||url.indexOf('auth')!==-1)){"
+                "location.href=url;return null;}"
+                "return _open.apply(window,arguments);};"
+                "})();1"
+            )
+        except Exception:
+            pass
 
     def _present(self):
         """Show the arena.ai page: as a pane inside the app window when docking works, else over it."""

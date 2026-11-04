@@ -13,6 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from arena.console import con
+from arena import permissions
 from arena.config import (
     get_cookie, save_cookie, load_config, save_config,
     write_pid, cleanup_pid, UserAbort
@@ -791,7 +792,17 @@ def cmd_chat(initial_msg: Optional[str] = None) -> None:
                 tool_results = []
                 for tc in tcalls:
                     print_tool_call(tc["name"], tc["params"])
-                    res = tools.execute(tc["name"], tc["params"])
+                    verdict = permissions.decide(
+                        load_config().get("permission_mode", "default"),
+                        tc["name"], inside=True,
+                        command=tc["params"].get("cmd", ""))
+                    if verdict == "deny":
+                        res = "Error: command denied by permission policy."
+                    elif verdict == "ask":
+                        confirm = input(f"  Allow {tc['name']}? [y/N] ").strip().lower()
+                        res = tools.execute(tc["name"], tc["params"]) if confirm == "y" else "Error: user denied."
+                    else:
+                        res = tools.execute(tc["name"], tc["params"])
                     print_tool_result(tc["name"], res)
                     tool_results.append(f'<tool_result name="{tc["name"]}">\n{res[:4000]}\n</tool_result>')
 

@@ -6,11 +6,13 @@ Serves the web UI and proxies chat requests to arena.ai.
 import copy
 import difflib
 import hashlib
+import hmac
 import json
 import logging
 import mimetypes
 import os
 import queue
+import secrets
 import sys
 import threading
 import time
@@ -265,6 +267,9 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
 APP_VERSION = "5.6.1"
+
+_API_TOKEN = secrets.token_urlsafe(32)
+_secrets = hmac
 
 
 @app.after_request
@@ -1165,13 +1170,21 @@ def api_account_remove():
     return jsonify({"ok": True, "accounts": _accounts_public()})
 
 
+_SETTINGS_ALLOWLIST = frozenset({
+    "theme", "font_size", "show_welcome", "auto_scroll", "send_on_enter",
+    "workspace_dir", "default_mode", "default_modality", "model_a", "model_b",
+    "sidebar_collapsed", "sound", "notifications", "check_updates",
+})
+
 @app.route("/api/settings", methods=["GET", "POST"])
 def api_settings():
     if request.method == "GET":
         return jsonify(load_config())
     data = request.get_json(silent=True) or {}
     cfg = load_config()
-    cfg.update(data)
+    for key, val in data.items():
+        if key in _SETTINGS_ALLOWLIST:
+            cfg[key] = val
     save_config(cfg)
     return jsonify({"ok": True})
 
@@ -2266,7 +2279,7 @@ def api_automations_save():
     if not _SCHEDULE_RE.match(schedule):
         return jsonify({"error": "Schedule must be 'daily HH:MM', 'hourly' or 'every Nm'.",
                         "code": "bad_request"}), 400
-    permission = body.get("permission") if body.get("permission") in ("plan", "bypassPermissions") else "plan"
+    permission = body.get("permission") if body.get("permission") in ("plan", "auto") else "plan"
     cfg = load_config()
     items = list(cfg.get("automations") or [])
     aid = str(body.get("id") or "") or generate_uuidv7()
@@ -6652,15 +6665,29 @@ def _api_chat_impl():
 
 # ---------- File CRUD (IDE) ----------
 
+_SENSITIVE_DIRS = frozenset({".ssh", ".aws", ".gnupg", ".gnupg2", ".config",
+    "AppData", ".azure", ".kube", ".docker", ".npmrc"})
+
 def _safe_resolve(rel_path: str) -> Path:
-    """Resolve a user-supplied path, blocking traversal outside home."""
-    home = Path.home().resolve()
+    """Resolve a user-supplied path, blocking traversal outside workspace/projects."""
+    root = workspace.PROJECTS_DIR.resolve()
+    root.mkdir(parents=True, exist_ok=True)
     if rel_path in ("", "."):
-        return home
-    p = Path(rel_path).expanduser()
-    p = (p if p.is_absolute() else home / p).resolve()
-    if p != home and home not in p.parents:
-        raise PermissionError("Access denied: outside home directory")
+        return root
+    if ".." in rel_path.replace("\\", "/").split("/"):
+        raise PermissionError("Access denied: path traversal blocked")
+    p = Path(rel_path)
+    if p.is_absolute():
+        p = p.resolve()
+        if p != root and root not in p.parents:
+            raise PermissionError("Access denied: outside workspace")
+    else:
+        p = (root / p).resolve()
+        if p != root and root not in p.parents:
+            raise PermissionError("Access denied: outside workspace")
+    parts_lower = {part.lower() for part in p.relative_to(root).parts} if p != root else set()
+    if parts_lower & {s.lower() for s in _SENSITIVE_DIRS}:
+        raise PermissionError("Access denied: sensitive directory")
     return p
 
 
@@ -6764,19 +6791,30 @@ def api_files_mkdir():
 
 @app.route("/api/terminal", methods=["POST"])
 def api_terminal():
+    import shlex
     import subprocess
     data = request.get_json(silent=True) or {}
     cmd = data.get("command", "").strip()
     if not cmd:
         return jsonify({"error": "No command"}), 400
-    blocked = ["format", "del /s", "rd /s", "rmdir /s", "rm -rf /"]
-    for b in blocked:
-        if b in cmd.lower():
-            return jsonify({"error": f"Blocked: {b}"}), 403
+    _BLOCKED_RE = re.compile(
+        r"(\brm\s+-[a-z]*r|\bformat\s+[a-z]:|\b(rd|rmdir)\s+/s|\bdel\s+/[a-z]|\bmkfs\b|"
+        r"\bshutdown\b|:\(\)\s*\{|\bdiskpart\b|\bbcdedit\b|\bvssadmin\s+delete\b|\bcipher\s+/w|"
+        r"\bpython\s+-c\b|\bpython3\s+-c\b|\bpy\s+-c\b|\bpowershell\s+-enc|\bpwsh\s+-enc|"
+        r"\bcertutil\b|\bcurl\b.*-o|\bwget\b|\biwr\b|\binvoke-webrequest\b)", re.I)
+    if _BLOCKED_RE.search(cmd):
+        return jsonify({"error": "Blocked command pattern"}), 403
+    if any(c in cmd for c in ('|', '&', ';', '`', '$(')):
+        return jsonify({"error": "Shell metacharacters not allowed"}), 403
+    try:
+        argv = shlex.split(cmd)
+    except ValueError as e:
+        return jsonify({"error": f"Invalid command: {e}"}), 400
+    cwd = str(workspace.PROJECTS_DIR)
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
-            timeout=30, cwd=str(Path.home()),
+            argv, shell=False, capture_output=True, text=True,
+            timeout=30, cwd=cwd,
         )
         return jsonify({
             "output": result.stdout[-4000:] if result.stdout else "",
@@ -6793,9 +6831,16 @@ def api_terminal():
 
 @app.before_request
 def _local_same_origin_only():
-    """Only this app's own page may drive the API: blocks other sites, DNS rebinding and generated previews."""
+    """Only this app's own page may drive the API: blocks other sites, DNS rebinding, and local attackers."""
     if request.host.rsplit(":", 1)[0] not in ("127.0.0.1", "localhost"):
         return jsonify({"error": "Unknown host"}), 403
+    if request.path.startswith("/api/"):
+        token = request.headers.get("X-Arena-Token")
+        if not _secrets.compare_digest(token or "", _API_TOKEN):
+            if request.path == "/api/token" and request.method == "GET":
+                pass
+            else:
+                return jsonify({"error": "Missing or invalid API token"}), 403
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return None
     origin = request.headers.get("Origin")
@@ -6805,6 +6850,11 @@ def _local_same_origin_only():
             and request.path != "/api/uploads"):
         return jsonify({"error": "JSON body required"}), 415
     return None
+
+
+@app.route("/api/token")
+def api_token():
+    return jsonify({"token": _API_TOKEN})
 
 
 @app.route("/api/permission-mode", methods=["GET", "POST"])

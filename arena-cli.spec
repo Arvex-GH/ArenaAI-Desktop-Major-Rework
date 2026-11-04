@@ -31,6 +31,7 @@ a = Analysis(
         'arena.connectors',
         'arena.history_sync',
         'arena.permissions',
+        'arena.crypto',
         'arena.agent',
         'arena.workspace',
         'arena.engine',
