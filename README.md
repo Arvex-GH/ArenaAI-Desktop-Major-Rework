@@ -73,7 +73,7 @@ The big one: **Workspace Sync now lets the AI read, list, and browse files in yo
 <summary>22 findings fixed in v1.2.0</summary>
 
 - `/api/token` removed — secret injected via `<meta>` tag instead
-- DPAPI encryption for cookies and credentials
+- DPAPI encryption for cookies and credentials (Windows; other platforms planned)
 - Agent sandbox blocks `.ssh`, `.aws`, `.gnupg`, `.env`, `.git`, NTFS ADS, symlink escapes
 - `contracts.json` locked to existing API path keys only
 - SVG data-URI XSS blocked (raster-only)
@@ -82,10 +82,10 @@ The big one: **Workspace Sync now lets the AI read, list, and browse files in yo
 - Per-launch API token on all `/api/*` endpoints
 - Workspace scoped to projects directory
 - Settings allowlist
-- Inline code blocking (20+ combos)
+- Inline code blocking on agent commands
 - `shell=False` on all subprocess calls
-- `/api/terminal` deleted
-- Security headers on all responses
+- `/api/terminal` hardened — `shell=False`, `shlex.split`, 30s timeout, workspace-scoped, token-gated
+- Security headers on index and static routes
 
 </details>
 
