@@ -206,6 +206,98 @@ Version claims, test counts, and feature descriptions need alignment.
 
 ---
 
+## Second-pass findings (v1.2.0-beta)
+
+A second automated scan on 2026-11-04 identified 10 additional findings. All fixed in the same release.
+
+### CRITICAL
+
+#### 13. `/api/token` Leaks API Secret — No Auth
+
+**Location:** `arena/web/app.py` (was line 6855)
+
+**Problem:** `GET /api/token` returned the per-launch secret with no authentication. Any localhost process could retrieve it and impersonate the frontend.
+
+**Fix:** ✅ Endpoint removed. Token injected into the served HTML via `<meta>` tag. Frontend reads it from `document.querySelector('meta[name="api-token"]')`. External processes cannot access it.
+
+#### 14. `accounts.json` Stores Raw Cookies, Bypassing DPAPI
+
+**Location:** `arena/web/app.py` — `_register_account`, `_sync_current_account_cookie`, `_activate_cookie`
+
+**Problem:** Account cookies were stored as plaintext strings in `accounts.json` and `cookies.txt`, bypassing the DPAPI encryption that `arena/crypto.py` provides.
+
+**Fix:** ✅ All cookie storage now uses `crypto.encrypt()`. All cookie reads use `crypto.decrypt()` with transparent fallback for pre-existing plaintext data.
+
+### HIGH
+
+#### 15. Agent `resolve()` Allows Sensitive Directory Access
+
+**Location:** `arena/agent.py:465`
+
+**Problem:** The agent's `resolve()` function did not check for sensitive directories (`.ssh`, `.aws`, `.gnupg`, `.env`, `.git`). Combined with "always allow" permission grants, the model could read sensitive files inside the workspace.
+
+**Fix:** ✅ `resolve()` now checks a `_SENSITIVE` frozenset matching `_SENSITIVE_DIRS` from the web layer. Also rejects NTFS alternate data streams.
+
+#### 16. `contracts.json` Can Redirect All API Traffic
+
+**Location:** `arena/contracts.py:194-215`
+
+**Problem:** `~/.arena-cli/contracts.json` could override any API path, including introducing new ones, potentially redirecting traffic to a malicious endpoint.
+
+**Fix:** ✅ Overrides now only accept paths that don't start with `//`, don't contain `:`, and must match an existing key in `PATHS`. New keys cannot be injected.
+
+#### 17. `_safe_resolve` Ignores Symlinks and NTFS Alternate Data Streams
+
+**Location:** `arena/web/app.py` — `_safe_resolve`
+
+**Problem:** Symlinks inside the workspace could point outside it, bypassing containment. NTFS ADS paths (`file.txt:Zone.Identifier`) could bypass sensitive-directory checks.
+
+**Fix:** ✅ Symlink targets are now verified to stay inside the workspace root. Path segments containing `:` (NTFS ADS) are rejected.
+
+#### 18. SVG Data-URI XSS Bypass in `safeUrl()`
+
+**Location:** `arena/web/static/app.js:167`
+
+**Problem:** `safeUrl()` allowed SVG data URIs if a regex didn't detect `<script>`, `on*=` handlers, or `javascript:`. This regex could be bypassed via HTML entities, CDATA, `xlink:href`, and other vectors.
+
+**Fix:** ✅ SVG data URIs are now blocked entirely. Only raster image data URIs (PNG, JPEG, WebP, GIF) are allowed.
+
+### MEDIUM
+
+#### 19. "Always Allow" Permission Grants Persist Across Chats
+
+**Location:** `arena/permissions.py:72`, `arena/web/app.py` — `api_new_chat`
+
+**Problem:** When a user clicked "Always allow" for a tool kind, the grant persisted across new chats, silently auto-approving actions in unrelated conversations.
+
+**Fix:** ✅ `BROKER.reset_always()` is now called when starting a new chat.
+
+#### 20. Automations Accept `permission: "auto"` for Unattended Runs
+
+**Location:** `arena/web/app.py` — automation creation endpoint
+
+**Problem:** Automations could be created with `permission: "auto"`, allowing the model to execute tools (including shell commands) without any user confirmation.
+
+**Fix:** ✅ Automations are now locked to `"plan"` permission mode only.
+
+#### 21. `_activate_cookie` Writes Plaintext Cookie File
+
+**Location:** `arena/web/app.py` — `_activate_cookie` (was line 960)
+
+**Problem:** `COOKIE_FILE.write_text(candidate.cookie_str)` wrote the raw session cookie to disk, bypassing DPAPI encryption.
+
+**Fix:** ✅ Cookie file is now written via `crypto.encrypt()`. Reads use `crypto.decrypt()` with plaintext fallback.
+
+#### 22. Workspace Preview Serves HTML with `allow-scripts`
+
+**Location:** `arena/web/app.py` — `/api/workspace/preview/<path>`
+
+**Problem:** The CSP sandbox directive included `allow-scripts`, letting workspace HTML files execute JavaScript. A malicious HTML file in the workspace could steal the API token or make authenticated requests.
+
+**Fix:** ✅ `allow-scripts` removed from the sandbox directive. Workspace HTML previews can no longer execute scripts.
+
+---
+
 ## Priority Fix Order
 
 If fixing only three things:
@@ -216,5 +308,5 @@ If fixing only three things:
 
 ---
 
-*Report generated 2026-11-03. Updated 2026-11-04 with fix statuses.*
-*Fixes applied at commit on `main` branch.*
+*Report generated 2026-11-03. Updated 2026-11-04 with second-pass findings and fix statuses.*
+*Fixes applied at commits on `main` branch.*

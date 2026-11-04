@@ -462,11 +462,21 @@ class LocalTools:
         self.root = Path(root).expanduser().resolve()
         self.out = Path(out).expanduser().resolve() if out else None
 
+    _SENSITIVE = frozenset({".ssh", ".aws", ".gnupg", ".gnupg2", ".config",
+                            "appdata", ".azure", ".kube", ".docker", ".npmrc",
+                            ".env", ".git"})
+
     def resolve(self, rel: str, write: bool = False) -> Tuple[Path, bool]:
         rel = (rel or ".").strip().strip("\"'") or "."
+        if ":" in rel.split("/")[-1].split("\\")[-1] and not (len(rel) >= 2 and rel[1] == ":"):
+            raise PermissionError("NTFS alternate data streams not allowed")
         p = Path(rel).expanduser()
         target = (p if p.is_absolute() else self.root / p).resolve()
         inside = target == self.root or self.root in target.parents
+        if inside and target != self.root:
+            parts_lower = {part.lower() for part in target.relative_to(self.root).parts}
+            if parts_lower & self._SENSITIVE:
+                raise PermissionError(f"Access denied: sensitive directory")
         own = self._own(target) if inside else None
         if own is not None and (write or own.is_file()):
             return own, True

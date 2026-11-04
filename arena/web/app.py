@@ -167,7 +167,7 @@ def _find_preview_url(val):
     return None
 
 
-from arena import agent, components, connectors, contracts, history_sync, native_agent, permissions, workspace
+from arena import agent, components, connectors, contracts, crypto, history_sync, native_agent, permissions, workspace
 from arena.gateway import GatewayManager
 from arena.api import generate_uuidv7
 from arena.auth import get_clipboard_text
@@ -466,7 +466,10 @@ def get_client() -> ArenaClient:
     if _client is None:
         cookie_str = None
         if COOKIE_FILE.exists():
-            cookie_str = COOKIE_FILE.read_text(encoding="utf-8").strip()
+            try:
+                cookie_str = crypto.decrypt(COOKIE_FILE.read_bytes()).decode("utf-8").strip()
+            except Exception:
+                cookie_str = COOKIE_FILE.read_text(encoding="utf-8").strip()
         _client = ArenaClient(cookie_str=cookie_str)
     return _client
 
@@ -523,7 +526,9 @@ def _auto_agent_model(preferred_id: str = None) -> Optional[dict]:
 
 @app.route("/")
 def index():
-    return send_from_directory(str(STATIC_DIR), "index.html")
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    html = html.replace("</head>", f'  <meta name="api-token" content="{_API_TOKEN}">\n</head>', 1)
+    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
 
 
 # ---------- API routes ----------
@@ -778,9 +783,13 @@ def _register_account(user: dict, cookie: str) -> Optional[str]:
             name = record["name"]
         if not avatar:
             avatar = record.get("avatar_url")
+        try:
+            enc_cookie = crypto.encrypt(cookie.encode("utf-8")).decode("ascii")
+        except Exception:
+            enc_cookie = cookie
         record.update({
             "email": email, "name": str(name), "avatar_url": avatar,
-            "cookie": cookie, "updated_at": now, "expired": False,
+            "cookie": enc_cookie, "updated_at": now, "expired": False,
         })
         store["current"] = account_id
         _accounts_save(store)
@@ -797,8 +806,13 @@ def _sync_current_account_cookie(cookie: str):
         if not current:
             return
         for record in store["accounts"]:
-            if record.get("id") == current and record.get("cookie") != cookie:
-                record["cookie"] = cookie
+            if record.get("id") == current:
+                try:
+                    enc_cookie = crypto.encrypt(cookie.encode("utf-8")).decode("ascii")
+                except Exception:
+                    enc_cookie = cookie
+                if record.get("cookie") != enc_cookie:
+                    record["cookie"] = enc_cookie
                 record["updated_at"] = datetime.now(timezone.utc).isoformat()
                 record["expired"] = False
                 _accounts_save(store)
@@ -957,7 +971,10 @@ def _activate_cookie(cookie_str: str, method: str):
     if not user:
         return jsonify({"ok": False, "error": f"arena.ai rejected this session ({err}). Sign in on arena.ai again, then copy fresh cookies."}), False
     ensure_config_dir()
-    COOKIE_FILE.write_text(candidate.cookie_str, encoding="utf-8")
+    try:
+        COOKIE_FILE.write_bytes(crypto.encrypt(candidate.cookie_str.encode("utf-8")))
+    except Exception:
+        COOKIE_FILE.write_text(candidate.cookie_str, encoding="utf-8")
     _client = candidate
     _me_cache.update(t=time.time(), user=user, err=None)
     _register_account(user, candidate.cookie_str)
@@ -1119,7 +1136,11 @@ def api_account_switch():
         return jsonify({"ok": False, "error": "That account is not saved in this app."}), 404
     if _generation_active():
         return jsonify({"ok": False, "error": "Finish or stop the running generations before switching accounts."}), 409
-    cookie = record.get("cookie") or ""
+    raw_cookie = record.get("cookie") or ""
+    try:
+        cookie = crypto.decrypt(raw_cookie.encode("ascii")).decode("utf-8") if raw_cookie else ""
+    except Exception:
+        cookie = raw_cookie
     if not cookie:
         _mark_account_expired(account_id)
         return jsonify({"ok": False, "expired": True, "accounts": _accounts_public(),
@@ -1315,6 +1336,7 @@ def api_new_chat():
     client.sources.clear()
     _conversation_history = []
     _current_chat_id = str(uuid.uuid4())
+    BROKER.reset_always()
     return jsonify({"ok": True, "chat_id": _current_chat_id})
 
 
@@ -2279,7 +2301,7 @@ def api_automations_save():
     if not _SCHEDULE_RE.match(schedule):
         return jsonify({"error": "Schedule must be 'daily HH:MM', 'hourly' or 'every Nm'.",
                         "code": "bad_request"}), 400
-    permission = body.get("permission") if body.get("permission") in ("plan", "auto") else "plan"
+    permission = "plan"
     cfg = load_config()
     items = list(cfg.get("automations") or [])
     aid = str(body.get("id") or "") or generate_uuidv7()
@@ -3625,7 +3647,12 @@ def _activate_failover(target) -> bool:
             _sync_current_account_cookie(get_client().cookie_str)
         except Exception:
             pass
-        _resp, ok = _activate_cookie(target.get("cookie") or "", "account-failover")
+        _raw = target.get("cookie") or ""
+        try:
+            _dec = crypto.decrypt(_raw.encode("ascii")).decode("utf-8") if _raw else ""
+        except Exception:
+            _dec = _raw
+        _resp, ok = _activate_cookie(_dec, "account-failover")
         if not ok:
             _mark_account_expired(target.get("id"))
             return False
@@ -6676,6 +6703,12 @@ def _safe_resolve(rel_path: str) -> Path:
         return root
     if ".." in rel_path.replace("\\", "/").split("/"):
         raise PermissionError("Access denied: path traversal blocked")
+    if ":" in rel_path.replace("\\", "/").split("/")[-1].split(".", 1)[-1]:
+        raise PermissionError("Access denied: NTFS alternate data streams not allowed")
+    raw = rel_path.replace("\\", "/")
+    for segment in raw.split("/"):
+        if ":" in segment and segment != raw.split("/")[0]:
+            raise PermissionError("Access denied: NTFS alternate data streams not allowed")
     p = Path(rel_path)
     if p.is_absolute():
         p = p.resolve()
@@ -6685,6 +6718,10 @@ def _safe_resolve(rel_path: str) -> Path:
         p = (root / p).resolve()
         if p != root and root not in p.parents:
             raise PermissionError("Access denied: outside workspace")
+    if p.is_symlink():
+        real = p.resolve()
+        if real != root and root not in real.parents:
+            raise PermissionError("Access denied: symlink target outside workspace")
     parts_lower = {part.lower() for part in p.relative_to(root).parts} if p != root else set()
     if parts_lower & {s.lower() for s in _SENSITIVE_DIRS}:
         raise PermissionError("Access denied: sensitive directory")
@@ -6837,10 +6874,7 @@ def _local_same_origin_only():
     if request.path.startswith("/api/"):
         token = request.headers.get("X-Arena-Token")
         if not _secrets.compare_digest(token or "", _API_TOKEN):
-            if request.path == "/api/token" and request.method == "GET":
-                pass
-            else:
-                return jsonify({"error": "Missing or invalid API token"}), 403
+            return jsonify({"error": "Missing or invalid API token"}), 403
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return None
     origin = request.headers.get("Origin")
@@ -6850,11 +6884,6 @@ def _local_same_origin_only():
             and request.path != "/api/uploads"):
         return jsonify({"error": "JSON body required"}), 415
     return None
-
-
-@app.route("/api/token")
-def api_token():
-    return jsonify({"token": _API_TOKEN})
 
 
 @app.route("/api/permission-mode", methods=["GET", "POST"])
@@ -7107,7 +7136,7 @@ def api_workspace_preview(subpath):
     import mimetypes
     mime, _enc = mimetypes.guess_type(target.name)
     resp = send_file(target, mimetype=mime or "application/octet-stream", conditional=True)
-    resp.headers["Content-Security-Policy"] = "sandbox allow-scripts allow-modals allow-popups"
+    resp.headers["Content-Security-Policy"] = "sandbox allow-modals allow-popups"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
 

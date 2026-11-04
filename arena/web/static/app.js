@@ -164,13 +164,6 @@
     if (!value) return null;
     if (image && value.startsWith('data:image/')) {
       if (/^data:image\/(png|jpe?g|webp|gif);/i.test(value)) return value;
-      if (/^data:image\/svg\+xml[,;]/i.test(value)) {
-        try {
-          const decoded = decodeURIComponent(value.split(',').slice(1).join(','));
-          if (/<script|on[a-z]+\s*=|javascript:/i.test(decoded)) return null;
-        } catch { return null; }
-        return value;
-      }
       return null;
     }
     if (image && /^blob:/i.test(value)) return value;
@@ -461,16 +454,10 @@
     try { return JSON.parse(text); } catch { return text; }
   }
 
-  let _apiToken = '';
+  let _apiToken = document.querySelector('meta[name="api-token"]')?.content || '';
 
   const liveApi = {
     async request(path, { method = 'GET', body, signal } = {}) {
-      if (!_apiToken && path !== '/api/token') {
-        try {
-          const r = await fetch('/api/token', { credentials: 'same-origin', cache: 'no-store' });
-          if (r.ok) { const d = await r.json(); _apiToken = d.token || ''; }
-        } catch {}
-      }
       const options = {
         method,
         credentials: 'same-origin',
@@ -3784,7 +3771,7 @@ You can start with a more structured option: one script, short captions, and a c
     else if (lane.error) bits.push("Completed with errors");
     else bits.push(lane.demo ? "Demo response" : "Response received");
     const visibleLength = visibleLaneText(lane).trim().length;
-    if (visibleLength) bits.push(`${visibleLength.toLocaleString('en-US')} symb.`);
+    if (visibleLength) bits.push(`${visibleLength.toLocaleString('en-US')} chars`);
     return el('div', { class: 'answer-footnote' }, el('span', { class: 'status-dot is-online' }), el('span', { text: bits.join(' · ') }));
   }
 
@@ -3819,7 +3806,7 @@ You can start with a more structured option: one script, short captions, and a c
       ),
       lane.streaming ? el('span', { class: 'generating-label', role: 'status' },
         el('span', { class: 'generating-dots' }, el('i'), el('i'), el('i')),
-        el('span', { text: "Generates…" })
+        el('span', { text: "Generating…" })
       ) : el('span', { class: 'assistant-spacer' }),
       visibleLaneText(lane) ? el('button', {
         class: 'icon-button answer-copy-button', type: 'button', 'data-copy-answer': key,
@@ -3830,7 +3817,7 @@ You can start with a more structured option: one script, short captions, and a c
 
     if (lane.reasoning) {
       const details = el('details', { class: 'reasoning' },
-        el('summary', { text: lane.demo ? "Reflections · demo" : "Reflections" }),
+        el('summary', { text: lane.demo ? "Thinking · demo" : "Thinking" }),
         el('div', { class: 'reasoning-content', text: lane.reasoning })
       );
       card.appendChild(details);

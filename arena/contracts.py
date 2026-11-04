@@ -204,9 +204,10 @@ def load_overrides(path: Optional[Path] = None) -> List[str]:
         return []
     changed = []
     for name, value in (data.get("paths") or {}).items():
-        if isinstance(value, str) and value.startswith("/"):
-            PATHS[name] = value
-            changed.append(f"paths.{name}")
+        if isinstance(value, str) and value.startswith("/") and not value.startswith("//") and ":" not in value:
+            if name in PATHS:
+                PATHS[name] = value
+                changed.append(f"paths.{name}")
     for name in ("v2", "v3"):
         value = data.get(f"{name}_key")
         if isinstance(value, str) and SITE_KEY_RE.fullmatch(value):

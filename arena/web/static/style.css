@@ -874,24 +874,24 @@ svg { display: block; }
 .assistant-lane:hover .answer-copy-button, .answer-copy-button:focus-visible { opacity: 1; }
 .answer-copy-button .icon { width: 13px; height: 13px; }
 
-.markdown { color: #cdd2ce; font-size: 13.25px; line-height: 1.68; overflow-wrap: anywhere; }
+.markdown { color: #cdd2ce; font-size: 13.5px; line-height: 1.72; overflow-wrap: anywhere; }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
-.markdown p { margin: 0 0 10px; white-space: pre-wrap; }
+.markdown p { margin: 0 0 12px; white-space: pre-wrap; }
 .markdown h1, .markdown h2, .markdown h3, .markdown h4 {
-  margin: 18px 0 7px;
+  margin: 20px 0 8px;
   color: #eff2ef;
   font-family: var(--font-display);
   font-weight: 650;
   letter-spacing: -.015em;
   line-height: 1.35;
 }
-.markdown h1 { font-size: 19px; }
-.markdown h2 { font-size: 16.5px; }
-.markdown h3 { font-size: 14.5px; }
-.markdown h4 { font-size: 13px; }
-.markdown ul, .markdown ol { margin: 5px 0 11px; padding-left: 21px; }
-.markdown li { margin: 3px 0; padding-left: 1px; }
+.markdown h1 { font-size: 20px; }
+.markdown h2 { font-size: 17px; }
+.markdown h3 { font-size: 15px; }
+.markdown h4 { font-size: 13.5px; }
+.markdown ul, .markdown ol { margin: 6px 0 12px; padding-left: 22px; }
+.markdown li { margin: 4px 0; padding-left: 2px; }
 .markdown li::marker { color: #87928b; }
 .markdown strong { color: #edf1ee; font-weight: 650; }
 .markdown em { color: #d8e2da; }
@@ -956,7 +956,7 @@ svg { display: block; }
 }
 .code-copy:hover { color: var(--text); background: #2b3030; border-color: #3c4241; }
 .code-copy .icon { width: 11px; height: 11px; }
-.code-block pre { margin: 0; padding: 12px 13px; overflow: auto; color: #cfdad2; font: 11.5px/1.65 var(--font-mono); tab-size: 2; }
+.code-block pre { margin: 0; padding: 14px 14px; overflow: auto; color: #cfdad2; font: 12px/1.65 var(--font-mono); tab-size: 2; }
 .code-block code { font-family: inherit; }
 
 .reasoning { margin: 0 0 11px; border: 1px solid #343b38; border-radius: 7px; background: #232726; }
@@ -975,11 +975,11 @@ svg { display: block; }
 .reasoning summary::before { content: "›"; font-size: 14px; line-height: 1; transition: transform .15s ease; }
 .reasoning[open] summary::before { transform: rotate(90deg); }
 .reasoning summary:hover { color: #c0cbc3; }
-.reasoning-content { padding: 0 10px 9px 22px; color: #959f99; font-size: 11.5px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reasoning-content { padding: 0 12px 10px 22px; color: #959f99; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .stream-cursor { display: inline-block; width: 5px; height: 14px; margin-left: 2px; vertical-align: -2px; background: var(--accent); border-radius: 1px; animation: caret 1s steps(2, start) infinite; }
 @keyframes caret { 0%, 50% { opacity: 1; } 50.1%, 100% { opacity: 0; } }
-.answer-footnote { display: flex; align-items: center; gap: 7px; margin-top: 11px; color: #6e7772; font-size: 9.5px; }
+.answer-footnote { display: flex; align-items: center; gap: 7px; margin-top: 12px; color: #6e7772; font-size: 10px; }
 .answer-footnote .status-dot { width: 4px; height: 4px; }
 .answer-footnote .icon { width: 11px; height: 11px; }
 .message-error {

@@ -15,8 +15,20 @@ Things that are broken or unfinished in Arena Desktop. Fixes and pull requests a
 - Switching models inside a chat now keeps the same arena.ai conversation, like arena's own follow-up box. Not tested live yet; if arena.ai refuses it, the app starts a new conversation.
 - Some models (seen with glm-5.3-flash and in Battle) use arena.ai's built-in tools instead of the app's file tools. Their file writes are copied from the stream into your folder; reads of your local files still need the app's tools.
 
+## Workspace
+
+- **Tree does not auto-refresh.** Changing files outside the app (e.g. in VS Code) does not update the workspace panel until you manually navigate or refresh.
+- **Workspace preview no longer runs scripts.** HTML previews are sandboxed without `allow-scripts` as of v1.2.0-beta. Interactive HTML pages will not work in the preview pane.
+
+## Security (v1.2.0-beta fixes)
+
+- **CDN scripts still load without subresource integrity.** Planned for a future release.
+- **Release binary is unsigned.** No code signature, no SBOM, no CI pipeline yet. SmartScreen will warn.
+- **Dependencies are unpinned.** `requirements.txt` uses lower bounds only. `pip-compile --generate-hashes` planned.
+
 ## Testing
 
+- 33 test failures in `test_tools`, `test_uploads`, and `test_v4` suites. Upload status code assertions and MCP stdio client pagination need updating.
 - The live test scripts close `arena-ai.exe` and change the shared folder setting while they run. Close the app before running them.
 
 ## Logs

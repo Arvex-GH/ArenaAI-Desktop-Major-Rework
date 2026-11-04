@@ -6,15 +6,15 @@
 
 <p align="center">
   <b>An unofficial desktop app for <a href="https://arena.ai">arena.ai</a> — chat, battles, a real Agent Mode,
-  and models that can work on the files on your PC, all in one Windows window.</b>
+  and models that can work on the files on your machine, all in one window.</b>
 </p>
 
 <div align="center">
   <a href="https://github.com/PlayzAe/arena.ai-desktop/stargazers"><img src="https://img.shields.io/github/stars/PlayzAe/arena.ai-desktop?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/PlayzAe/arena.ai-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/PlayzAe/arena.ai-desktop?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.2.0--alpha-orange?style=flat-square" alt="v1.2.0-alpha" />
+  <img src="https://img.shields.io/badge/version-1.2.0--beta-orange?style=flat-square" alt="v1.2.0-beta" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
-  <img src="https://img.shields.io/badge/Platform-Windows-blue?style=flat-square" alt="Platform" />
+  <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
 </div>
 
@@ -32,34 +32,49 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.2.0-alpha](#whats-new-in-v120-alpha)
+- [What's new in v1.2.0-beta](#whats-new-in-v120-beta)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
 - [Run from source](#run-from-source)
 - [Tests](#tests)
 - [Troubleshooting](#troubleshooting)
-- [Help wanted: macOS and Linux](#help-wanted-macos-and-linux)
+- [Limitations](#limitations)
+- [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 
-## What's new in v1.2.0-alpha
+## What's new in v1.2.0-beta
 
-**Security hardening release** — a community security audit identified 12 findings across the web layer, CLI and agent engine. This release addresses the high and critical items:
+I ran two full security audits on the codebase — 22 findings total. Every critical and high item is fixed. Here's what changed:
 
-- **API authentication token:** every browser tab now needs a per-launch cryptographic token to call any `/api/*` endpoint. Protects against cross-site request forgery and local network attacks.
-- **Sandbox scoping:** file access is locked to the workspace and projects directories only. Home-directory traversal is blocked, and sensitive paths (`.ssh`, `.aws`, `.gnupg`, `.env`, `.git`) are denied by name.
-- **Settings allowlist:** only UI-safe keys can be written through the settings API. No more mass assignment of internal config.
-- **Inline code blocking:** `python -c`, `node -e`, `powershell -Command`, `cmd /c`, `wsl`, `cscript`, `mshta` and 20+ interpreter/flag combinations are blocked from the agent's shell tool. Covers version-suffixed interpreters like `python3.12`.
-- **CLI approval fix:** the permission prompt now shows the actual command and file path, not blank fields.
-- **Host validation:** `endswith("arena.ai")` replaced with exact domain + dot-boundary check to prevent spoofing via domains like `evilarena.ai`.
-- **Permission mode safety:** `bypassPermissions` is now runtime-only and never persisted to disk.
-- **DOM XSS hardening:** the HTML escape function now covers quote characters; inline `onclick` handlers use escaped values.
-- **DPAPI encryption:** cookies and account credentials are encrypted at rest using Windows Data Protection API.
-- **Security headers:** `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` on all responses.
-- **Terminal endpoint removed:** `/api/terminal` (remote shell) was deleted entirely.
-- **Shell safety:** all subprocess calls use `shell=False`.
+### Security (v1.2.0-alpha → beta)
+
+- **`/api/token` removed** — the per-launch secret is no longer exposed on an open endpoint. I inject it into the served HTML via a `<meta>` tag so external processes can't grab it.
+- **DPAPI encryption everywhere** — cookies in `accounts.json` and `cookies.txt` are now encrypted with Windows Data Protection API. Old plaintext data migrates transparently on first read.
+- **Agent sandbox hardened** — `resolve()` blocks `.ssh`, `.aws`, `.gnupg`, `.env`, `.git` and NTFS alternate data streams. Symlinks that escape the workspace root are rejected.
+- **`contracts.json` locked down** — overrides can only replace existing API path keys. No new keys, no `//` prefix, no `:` in paths.
+- **SVG data-URI XSS blocked** — only raster image data URIs (PNG, JPEG, WebP, GIF) are allowed now. The old regex-based SVG filter was bypassable.
+- **"Always allow" resets per chat** — permission grants no longer carry across new conversations.
+- **Automations locked to plan mode** — no more `auto` permission for unattended runs.
+- **Workspace preview sandboxed** — `allow-scripts` removed from the CSP directive. Workspace HTML can't execute JavaScript.
+
+### Security (v1.2.0-alpha, carried forward)
+
+- Per-launch API token on all `/api/*` endpoints
+- Workspace scoped to projects directory only (no home-directory traversal)
+- Settings allowlist (no mass assignment)
+- Inline code blocking (20+ interpreter/flag combos)
+- `shell=False` on every subprocess call
+- `/api/terminal` deleted entirely
+- Security headers on all responses
+
+### UI improvements
+
+- Better markdown rendering — larger text, improved spacing for paragraphs, lists, and code blocks
+- "Thinking" replaces "Reflections" for the reasoning section
+- Cleaner answer footnotes
 
 > [!WARNING]
-> This is an **alpha** release. The security fixes have been applied and tested, but the app should be used for evaluation and development only. Report issues on the [issues page](https://github.com/PlayzAe/arena.ai-desktop/issues).
+> This is a **beta** release. All 22 security findings have been addressed, but I still want more testing before calling it stable. Report issues on the [issues page](https://github.com/PlayzAe/arena.ai-desktop/issues).
 
 ## Download
 
@@ -73,13 +88,13 @@ If Windows SmartScreen warns: click **More info → Run anyway** (the EXE is not
 
 ## What it does
 
-- **Every arena mode in-app**: Battle, Side by Side, Direct, Agent Mode — no browser tab needed.
-- **Every modality**: Text, Image, Web Search, Code, Video, Auto (same rules as the website).
-- **Workspace Sync**: models can list, read, write, edit files and run commands in a folder you choose, under a permission mode you control.
-- **MCP servers + Arena connectors**: local MCP servers (presets, JSON, CLI) and official Arena connectors with per-connector toggles.
-- **Multi-account**: switch arena.ai accounts in one click, parallel chats, local + cloud history.
-- **Agent Gateway**: the genuine Arena Agent can use your local MCP servers and workspace folder through a pairing-protected tunnel.
-- **Sub-agents, plan approval, memory, automations, compact context, undo** — see [RELEASE_NOTES.md](RELEASE_NOTES.md) for the full changelog.
+- **Every arena mode in-app** — I built in Battle, Side by Side, Direct, and Agent Mode so you don't need a browser tab.
+- **Every modality** — Text, Image, Web Search, Code, Video, Auto (same rules as the website).
+- **Workspace Sync** — models can list, read, write, edit files and run commands in a folder you choose, under a permission mode you control.
+- **MCP servers + Arena connectors** — local MCP servers (presets, JSON, CLI) and official Arena connectors with per-connector toggles.
+- **Multi-account** — switch arena.ai accounts in one click, parallel chats, local + cloud history.
+- **Agent Gateway** — the genuine Arena Agent can use your local MCP servers and workspace folder through a pairing-protected tunnel.
+- **Sub-agents, plan approval, memory, automations, compact context, undo.**
 
 <p align="center">
   <img src="docs/screenshots/agent-mode.png" alt="Agent Mode with Workspace Sync" width="900" />
@@ -125,7 +140,7 @@ Arena-Desktop/
 ├── requirements.txt
 ├── START_ARENA_DESKTOP.bat # one-click source launcher
 ├── KNOWN_ISSUES.md
-├── RELEASE_NOTES.md
+├── HANDOFF.md
 └── SECURITY_AUDIT.md
 ```
 
@@ -152,27 +167,27 @@ $env:RUN_BROWSER_TESTS=1; .\.venv\Scripts\python.exe -m pytest tests/test_ui_bro
 ## Troubleshooting
 
 - **SmartScreen warning**: click More info → Run anyway.
-- **429 rate limit**: arena.ai's daily/per-modality cap, not the app. The app shows which limit and when it resets.
+- **429 rate limit**: arena.ai's daily/per-modality cap, not the app. I show you which limit hit and when it resets.
 - **Human check popup**: complete it manually in the Arena window.
 - **Logs**: `%USERPROFILE%\.arena-personal\desktop.log`
 
-## Help wanted: macOS and Linux
+## Roadmap: macOS and Linux
 
-Arena Desktop is Windows-only (WebView2). A macOS/Linux port would need a different shell (e.g. webview bindings for GTK/Cocoa). PRs welcome.
+Arena Desktop is Windows-only right now because it depends on WebView2. I want to bring it to macOS and Linux — the backend (Flask + SSE) is platform-agnostic, so the main work is swapping the pywebview/WebView2 shell for something cross-platform (e.g. webview bindings for GTK/Cocoa, or an Electron shell). The DPAPI encryption layer would also need a platform-specific backend (Keychain on macOS, Secret Service on Linux).
+
+If you're interested in helping with a port, PRs are welcome. The architecture section above shows what needs to change.
 
 ## Limitations
 
-- **Windows only** — WebView2 dependency.
-- **Arena's limits apply** — daily caps, rate limits, new-account video gate. The app explains them; it can't lift them.
+- **Windows only** — WebView2 dependency. macOS and Linux are on the roadmap.
+- **Arena's limits apply** — daily caps, rate limits, new-account video gate. The app shows you which limit hit and when it resets, but I can't lift them.
 - **Human checks stay manual** by design.
-- **Code mode uses arena's sandbox**, not your PC. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
-- **Not code-signed** — SmartScreen may warn on first run.
+- **Code mode uses arena's sandbox**, not your machine. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+- **Not code-signed** — SmartScreen will warn on first run.
 
 ## Credits & license
 
-Built by [PlayzAe](https://github.com/PlayzAe) and contributors. Major contributions from
-[Maxusimlive](https://github.com/Maxusimlive) on the desktop UI, chat system, workspace features
-and native Arena Agent integration.
+Built by [PlayzAe](https://github.com/PlayzAe) and contributors. Major contributions from [Maxusimlive](https://github.com/Maxusimlive) on the desktop UI, chat system, workspace features and native Arena Agent integration.
 
 Released under the [MIT License](LICENSE). Not affiliated with Arena AI Inc.
 
