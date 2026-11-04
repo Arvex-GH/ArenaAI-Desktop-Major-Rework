@@ -9,16 +9,17 @@
   and models that can work on the files on your PC, all in one Windows window.</b>
 </p>
 
-<p align="center">
-  <img src="https://img.shields.io/badge/version-5.6.1-8b5cf6?style=flat-square" alt="Version 5.6.1" />
-  <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue?style=flat-square" alt="Windows 10/11" />
-  <img src="https://img.shields.io/badge/python-3.11%2B-3776ab?style=flat-square" alt="Python 3.11+" />
-  <img src="https://img.shields.io/badge/models-400%2B%20via%20arena.ai-10b981?style=flat-square" alt="400+ models via arena.ai" />
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT license" /></a>
-</p>
+<div align="center">
+  <a href="https://github.com/PlayzAe/arena.ai-desktop/stargazers"><img src="https://img.shields.io/github/stars/PlayzAe/arena.ai-desktop?style=flat-square&color=crimson" alt="GitHub stars" /></a>
+  <a href="https://github.com/PlayzAe/arena.ai-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/PlayzAe/arena.ai-desktop?style=flat-square" alt="Latest release" /></a>
+  <img src="https://img.shields.io/badge/version-1.2.0--alpha-orange?style=flat-square" alt="v1.2.0-alpha" />
+  <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
+  <img src="https://img.shields.io/badge/Platform-Windows-blue?style=flat-square" alt="Platform" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
+</div>
 
 <p align="center">
-  <img src="docs/screenshots/home.png" alt="Arena Desktop home screen (demo data)" width="900" />
+  <img src="docs/screenshots/home.png" alt="Arena Desktop home screen" width="900" />
 </p>
 
 > [!IMPORTANT]
@@ -28,174 +29,112 @@
 
 ---
 
-## What is it?
+## Contents
 
-Arena Desktop brings the full arena.ai experience into a native Windows app and adds a local workspace on top:
+- [Download](#download)
+- [What's new in v1.2.0-alpha](#whats-new-in-v120-alpha)
+- [What it does](#what-it-does)
+- [How it works](#how-it-works)
+- [Repository layout](#repository-layout)
+- [Run from source](#run-from-source)
+- [Tests](#tests)
+- [Troubleshooting](#troubleshooting)
+- [Help wanted: macOS and Linux](#help-wanted-macos-and-linux)
 
-- **Every arena mode, in-app**: Battle, Side by Side, Direct and a genuine **Agent Mode** that runs
-  through arena.ai's own agentic API inside the app — no browser tab, no typing into the website.
-- **Every modality**: Text, Image, Web Search, Code, Video and Auto, with the same rules as the website
-  (Video and Auto are Battle-only; manual model picking appears only where arena.ai allows it).
-- **Models that can touch your files**: with **Workspace Sync** on, models in Direct / Side by Side /
-  Battle — and the built-in Local Agent — can list, read, write and edit files and run commands in a
-  folder you choose, under a permission mode you control. Results loop back to the model automatically.
-- **MCP servers and official Arena connectors**: connect local MCP servers (presets, JSON or CLI command)
-  for the local tool loop, and manage your account's Arena connectors (GitHub, Drive, Notion, …) with
-  per-connector on/off switches for Arena Agent.
-- **A proper desktop workflow**: multiple arena.ai accounts with one-click switching, several chats
-  generating in parallel with live status marks, local + cloud history, attachments, resizable panels.
+## What's new in v1.2.0-alpha
 
-Arena Desktop is a **harness, not a model**: all generation happens on arena.ai with your account.
-The app orchestrates chats, tools, files and permissions around it.
+**Security hardening release** — a community security audit identified 12 findings across the web layer, CLI and agent engine. This release addresses the high and critical items:
 
-## Features
+- **API authentication token:** every browser tab now needs a per-launch cryptographic token to call any `/api/*` endpoint. Protects against cross-site request forgery and local network attacks.
+- **Sandbox scoping:** file access is locked to the workspace and projects directories only. Home-directory traversal is blocked, and sensitive paths (`.ssh`, `.aws`, `.gnupg`, `.env`, `.git`) are denied by name.
+- **Settings allowlist:** only UI-safe keys can be written through the settings API. No more mass assignment of internal config.
+- **Inline code blocking:** `python -c`, `node -e`, `powershell -Command`, `cmd /c`, `wsl`, `cscript`, `mshta` and 20+ interpreter/flag combinations are blocked from the agent's shell tool. Covers version-suffixed interpreters like `python3.12`.
+- **CLI approval fix:** the permission prompt now shows the actual command and file path, not blank fields.
+- **Host validation:** `endswith("arena.ai")` replaced with exact domain + dot-boundary check to prevent spoofing via domains like `evilarena.ai`.
+- **Permission mode safety:** `bypassPermissions` is now runtime-only and never persisted to disk.
+- **DOM XSS hardening:** the HTML escape function now covers quote characters; inline `onclick` handlers use escaped values.
+- **DPAPI encryption:** cookies and account credentials are encrypted at rest using Windows Data Protection API.
+- **Security headers:** `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` on all responses.
+- **Terminal endpoint removed:** `/api/terminal` (remote shell) was deleted entirely.
+- **Shell safety:** all subprocess calls use `shell=False`.
 
-### Chat & modes
-- Battle Mode with anonymous A/B answers and voting (**A is better / B is better / Tie / Both are bad**);
-  models are revealed after your vote, and the vote is sent to arena.ai for real.
-- Side by Side and Direct with arena.ai's live model catalog (400+ models, no hardcoded lists).
-- Agent Mode with two backends (pick the default in **Settings → Permissions**):
-  **Arena Agent** — arena.ai's own agentic mode, streamed natively in-app (research, code, web search,
-  files, clarifying questions); **Local Agent** — an arena model driving tools on your computer.
-- A chat's mode, modality and model lock after the first message, exactly like on the website.
-- Answers stream token by token, end the moment the model finishes, and tool calls render as clean
-  activity cards — never as raw markup in the text.
+> [!WARNING]
+> This is an **alpha** release. The security fixes have been applied and tested, but the app should be used for evaluation and development only. Report issues on the [issues page](https://github.com/PlayzAe/arena.ai-desktop/issues).
 
-### Workspace Sync & permissions
-- The **Workspace Sync** switch sits next to the permission selector in every mode.
-  On: models get the automatic folder-tools loop (`ls`, `read_file`, `search`, `write_file`,
-  `edit_file`, `mkdir`, `delete`, `run_cmd`) in the folder you selected, and files the native
-  Arena Agent creates in its cloud workspace are downloaded into that folder automatically
-  (hash-deduped across turns, one permission decision per chat).
-  Off: models only chat, Code-mode files are not mirrored, and Arena Agent files stay in Arena's workspace.
-- The loop keeps the model's context lean: long tool outputs are saved to `.arena-artifacts/` in the
-  folder and only a preview travels back (the model reads the full file only if it needs to),
-  repeated output lines collapse, `read_file` reads line ranges, and a model that keeps repeating
-  the same tool call is stopped automatically.
-- **Ask several models at once**: in Direct, fan one prompt out to 2–4 models you pick; every
-  answer lands in its own sub-chat and the main chat gets all answers plus a short comparison.
-- **Undo agent changes**: before the agent overwrites or deletes a file, a checkpoint snapshot is
-  taken — every turn that changed files gets a one-click Undo that restores the originals.
-- **Full-text chat search, Markdown export, fork-from-any-message**, and attaching whole
-  workspace files/folders as prompt text for modes without tools.
-- **Automations**: scheduled Local Agent runs (daily / hourly / every N minutes) with a
-  per-automation permission mode; each run becomes its own chat.
-- **Faster, harder to hang**: parallel read-only sub-agents, batched file reads with
-  unchanged-file deduplication, a 90-second stream watchdog, an idle-timeout on shell
-  commands (interactive programs are refused up front), and loop detection with a
-  wrap-up warning before the round limit.
-- **Model picker upgrades**: pin favorites, hide the rest, Vision/Docs capability badges and
-  optional leaderboard Elo next to each model — sourced from daily public snapshots.
-- **Plan approval & live checklist**: before substantial changes the agent can present its plan
-  as a card — **Approve**, **Cancel**, or send revisions in your own words — then keep a visible
-  `set_todos` checklist updated as it works, so you always see what's done and what's next.
-  Project instructions from **AGENTS.md** in the workspace root are picked up automatically
-  alongside MEMORY.md.
-- **The model can ask you**: with the `ask_user` tool the Local Agent (and its sub-agents) can pause
-  mid-task and ask a clarifying question with 2–4 answer options plus a free-text field — your
-  answer returns to the model and the work continues, instead of it guessing on a fork that
-  matters. The native Arena Agent's own structured questions work the same way: options and a
-  free-text answer appear in the app, the answer returns to the same Arena session, and the
-  question and answer stay in the transcript.
-- **Arena Agent image choices** (v5.6): when Arena generates two image options, both open
-  full-size in the app; picking one continues the same session. Both images—and, after the
-  choice, both model names—stay visible in the saved chat.
-- **Sub-agents**: the Local Agent (and Direct with Workspace Sync) can delegate a self-contained
-  sub-task to a child chat with its own Arena session and tool loop — research (read-only) or work —
-  and pick the sub-agent's model. Only the child's summary returns to the parent, so long projects
-  stop drowning in exploration noise. Child chats nest under their parent and open like any chat.
-- **Compact button** next to Workspace Sync: when a conversation nears Arena's context limit
-  (~80k characters — the button lights up), one click continues the same chat in a fresh Arena
-  session seeded with a summary, instead of the chat dying with empty replies. The full
-  transcript stays in the app; only the server-side context restarts.
-- **Memory across chats**, in the style of Claude Code: a general memory plus a per-project
-  `MEMORY.md` in the selected folder travel with the first message of each new conversation.
-  Models can update `MEMORY.md` while they work ("remember this"), Compact appends its session
-  summary there, and both files are editable in Settings → Memory.
-- Desktop comforts: update checks against GitHub Releases (Settings → About), an optional system
-  tray with a global Ctrl+Alt+A show/hide hotkey, settings export/import (never account cookies),
-  a copyable diagnostics report, portable mode (`portable.txt` beside the EXE keeps data in `./data`),
-  and launch flags (`--profile <id|email>`, `--background`, `--mode <id>`).
-- Permission modes modelled on Claude Code (Plan / Ask / Accept edits / Auto) gate every local action;
-  requests are tied to the chat that asked, so a waiting permission never blocks your other chats.
-- Code (webdev) answers have their created/edited files mirrored into your folder
-  (Battle writes lanes into `option-a` / `option-b`).
+## Download
 
-### Connectors & MCP
-- **Official Arena connectors** from your account load automatically; authorize new ones from the app
-  and toggle each on/off (an off connector is really excluded from new Arena Agent sessions).
-- **Local MCP servers**: add via ready-made presets, a JSON config, or a CLI command (`Add` button in
-  the right panel). Their tools join the same loop and permission system as the built-in file tools.
+Every build is on the [releases page](https://github.com/PlayzAe/arena.ai-desktop/releases/latest).
 
-### Accounts & history
-- Sign in in a separate arena.ai window (it closes itself once verified) or by pasting cookies.
-- **Multiple accounts**: add accounts, see which is current, switch in one click; sessions are kept
-  per account and chat lists are separated. Switching is blocked while a chat is generating.
-- Chats appear in the sidebar **the moment you send**, can be reopened while still generating, and
-  continue in the same arena.ai session. Cloud-only chats from arena.ai show under “Only on arena.ai”
-  and can be opened and continued. Linked chats also check arena.ai when opened, and
-  **Refresh from Arena** in the chat header pulls in turns added in a browser without duplicates.
-- The sidebar marks running chats with a spinner and finished-but-unread chats with a green check.
-- Deleting a chat in the app also archives it on arena.ai.
-- Several chats can generate **in parallel**, each with its own Stop button.
+| Platform | Download | Notes |
+| --- | --- | --- |
+| Windows 10 / 11 | `Arena-Desktop.exe` | Standalone, no installer. Requires Edge WebView2 (built into Windows 11). |
 
-### Attachments & polish
-- `+` button, drag-and-drop and paste-from-clipboard uploads with arena.ai's real per-mode limits
-  (files upload to Arena storage first; oversize/wrong-type files are rejected with a clear reason).
-- Arena-matching interface: dark theme, unified composer chips, centered home composer,
-  resizable sidebar/workspace panels (sizes are remembered), English-only UI.
-- Friendly errors: rate limits explain which limit hit and when it resets (daily spend, per-modality,
-  per-model, new-account video gate) instead of a bare “429”. Built-in request pacing spaces out
-  bursts and queues a resend until Arena's reset, so short throttles stop killing tasks (it does
-  not raise Arena's daily usage limit; strength is adjustable in Settings).
-- **Rich workspace previews** (v5.5.1): clicking a file renders HTML/SVG in a sandboxed frame
-  (relative CSS/images from the same folder load too), Markdown as a document, images,
-  audio, video and PDF inline; text/code keeps the classic read-only view with Copy and
-  Download; anything else offers Download. Agent-produced audio plays in chat as well.
-- **Agent Gateway** (v5.5, off by default): the genuine Arena Agent can use selected local MCP
-  servers on your PC (Blender, Roblox Studio, files…) — and, since v5.6.1, your picked
-  Workspace folder itself as a built-in `workspace` server (list/read/search/write/edit files
-  and shell commands, confined to that folder; its own toggle in Settings → Gateway). With
-  both opt-ins on, a temporary pairing-protected Cloudflare tunnel session starts automatically
-  with Workspace Sync; Agent chats receive the address invisibly, and a continued chat is
-  re-handed a fresh address whenever its tunnel was stopped or expired. Every call follows
-  your permission mode, sessions expire and are revocable with one click. Settings →
-  Components installs the one external helper (cloudflared, official build, checksum-verified)
-  only when you ask.
-- Everyday polish (v5.1.6): human-check windows come to the front instead of hiding behind the
-  app; messages can be queued while a chat is generating; composer drafts are kept per chat;
-  the Compact chip doubles as a live context-size meter; the model picker shows Recent models;
-  Ctrl+F searches inside the open chat; workspace files drag straight into the composer; and a
-  soft sound plays when a chat finishes while the window is in the background.
-- Daily-limit survival (v5.1.5): Settings → Usage logs the app's own sends per account/day with a
-  rate-limit history; agent turns go on a context diet (repeated listings/searches answered from
-  cache until files change, Compact offered earlier); research subagents default to light
-  (Mini/Flash/Lite-class) models and light models are badged in the picker. An explicitly opt-in
-  account failover can continue a task on another saved account when the daily cap hits — off by
-  default, because rotating accounts around Arena's daily limit is a fair-use grey zone.
+If Windows SmartScreen warns: click **More info → Run anyway** (the EXE is not code-signed).
+
+## What it does
+
+- **Every arena mode in-app**: Battle, Side by Side, Direct, Agent Mode — no browser tab needed.
+- **Every modality**: Text, Image, Web Search, Code, Video, Auto (same rules as the website).
+- **Workspace Sync**: models can list, read, write, edit files and run commands in a folder you choose, under a permission mode you control.
+- **MCP servers + Arena connectors**: local MCP servers (presets, JSON, CLI) and official Arena connectors with per-connector toggles.
+- **Multi-account**: switch arena.ai accounts in one click, parallel chats, local + cloud history.
+- **Agent Gateway**: the genuine Arena Agent can use your local MCP servers and workspace folder through a pairing-protected tunnel.
+- **Sub-agents, plan approval, memory, automations, compact context, undo** — see [RELEASE_NOTES.md](RELEASE_NOTES.md) for the full changelog.
 
 <p align="center">
-  <img src="docs/screenshots/agent-mode.png" alt="Agent Mode with Workspace Sync (demo data)" width="900" />
+  <img src="docs/screenshots/agent-mode.png" alt="Agent Mode with Workspace Sync" width="900" />
 </p>
 
-## Quick start
+## How it works
 
-### Run the EXE (easiest)
+```
+┌──────────────── Arena Desktop (pywebview / WebView2) ────────────────┐
+│  Single-page UI  ──►  local Flask API + SSE streaming  (arena/web/)  │
+│                              │                                       │
+│        ┌─────────────────────┼──────────────────────┐                │
+│        ▼                     ▼                      ▼                │
+│  arena.ai engine      native Arena Agent     local tool loop         │
+│  (hidden window,      (agentic API,          (arena/agent.py +       │
+│   real account)        resumable)             MCP connectors)        │
+└──────────────────────────────────────────────────────────────────────┘
+```
 
-1. Download `Arena-Desktop.exe`, save it in a normal folder and double-click. No Python needed.
-2. Requires 64-bit Windows 10/11 with the Microsoft Edge **WebView2 Runtime** and .NET Framework 4.8
-   (Windows 11 includes both). The one-file EXE starts slowly the first time while it unpacks, and —
-   being unsigned — may trigger a SmartScreen warning.
-3. Click the profile area → **Sign in**, finish sign-in in the Arena window, and you're ready.
+| Module | Role |
+| --- | --- |
+| `arena/desktop.py` | Native window shell (pywebview + WebView2) |
+| `arena/web/app.py` | Flask API, SSE streaming, chat orchestration, accounts |
+| `arena/web/static/` | The whole UI (HTML/CSS/JS, no build step) |
+| `arena/engine.py` | Hidden arena.ai window for signed-in requests |
+| `arena/native_agent.py` | Native Arena Agent protocol |
+| `arena/agent.py` | Local tool loop: parsing, execution, permissions |
+| `arena/connectors.py` | Local MCP server manager |
+| `arena/permissions.py` | Permission modes and per-chat approval broker |
 
-### Run from source
+## Repository layout
 
-1. Extract the source tree to a normal folder (don't run it inside a ZIP).
-2. Install **Python 3.11+** and the Edge WebView2 Runtime.
-3. Double-click **`START_ARENA_DESKTOP.bat`** — first launch creates `.venv` and installs
-   `requirements.txt` (internet required), then opens the app.
+```
+Arena-Desktop/
+├── arena/                  # application package
+│   ├── web/                # Flask backend + static UI
+│   └── tools/  ui/         # CLI-era tools and terminal UI
+├── assets/                 # icon and logos
+├── docs/                   # screenshots
+├── scripts/                # build verification
+├── tests/                  # pytest suites (unit/API + browser UI)
+├── arena-cli.spec          # PyInstaller spec → Arena-Desktop.exe
+├── requirements.txt
+├── START_ARENA_DESKTOP.bat # one-click source launcher
+├── KNOWN_ISSUES.md
+├── RELEASE_NOTES.md
+└── SECURITY_AUDIT.md
+```
 
-Manual launch:
+## Run from source
+
+1. Install **Python 3.11+** and the Edge WebView2 Runtime.
+2. Double-click **`START_ARENA_DESKTOP.bat`** — creates `.venv`, installs deps, opens the app.
+
+Or manually:
 
 ```powershell
 py -3 -m venv .venv
@@ -203,126 +142,42 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m arena.desktop
 ```
 
-There is also a terminal CLI (`python arena-cli.py`, or `start.bat`) kept from the project's origins.
-
-App data (config, chats, accounts, logs) lives in `%USERPROFILE%\.arena-personal\`.
-
-## Using the app
-
-- **Pick a folder** with the workspace chip on the left of the composer, choose a permission mode,
-  and turn **Workspace Sync** on if models may work in that folder.
-- **Mode menu**: Battle Mode / Agent Mode / Side by Side / Direct. **Work type** menu:
-  Video / Image / Web Search / Code / Text / Auto (hidden in Agent Mode).
-- **Agent Mode** never asks you to pick a model — Arena routes automatically, like on the website.
-- **Accounts menu** (profile, bottom-left): switch accounts, **+ Add account**, Settings, Sign out.
-- **Right panel**: workspace file tree on top, **Connectors** below (official Arena connectors plus
-  your local MCP servers).
-- **Settings**: account/session, permissions (incl. the default Agent backend for new chats),
-  workspace folder, and About.
-
-## Build the EXE yourself
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install pyinstaller
-.\.venv\Scripts\python.exe -m PyInstaller arena-cli.spec --noconfirm
-# → dist\Arena-Desktop.exe  (single file, windowed)
-```
-
-`scripts/check_exe.py <path-to-exe>` sanity-checks a built binary (bundled modules, assets, version).
-
 ## Tests
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install pytest playwright
-.\.venv\Scripts\python.exe -m pytest tests --ignore=tests/test_ui_browser.py   # unit/API suite
-$env:RUN_BROWSER_TESTS=1; .\.venv\Scripts\python.exe -m pytest tests/test_ui_browser.py  # UI suite (demo mode)
+.\.venv\Scripts\python.exe -m pytest tests --ignore=tests/test_ui_browser.py   # unit/API
+$env:RUN_BROWSER_TESTS=1; .\.venv\Scripts\python.exe -m pytest tests/test_ui_browser.py  # UI (demo mode)
 ```
 
-The UI has a built-in demo mode (`?demo=1`) with simulated data — handy for development without an account.
+## Troubleshooting
 
-## How it works
+- **SmartScreen warning**: click More info → Run anyway.
+- **429 rate limit**: arena.ai's daily/per-modality cap, not the app. The app shows which limit and when it resets.
+- **Human check popup**: complete it manually in the Arena window.
+- **Logs**: `%USERPROFILE%\.arena-personal\desktop.log`
 
-```
-┌──────────────────────────── Arena Desktop (pywebview / WebView2) ───────────────────────────┐
-│  Single-page UI  ──►  local Flask API + SSE streaming  (arena/web/)                          │
-│                              │                                                               │
-│        ┌─────────────────────┼──────────────────────────┐                                    │
-│        ▼                     ▼                          ▼                                    │
-│  arena.ai engine      native Arena Agent         local tool loop                             │
-│  (hidden window,      (agentic API, direct        (arena/agent.py + MCP via                  │
-│   real account)        calls, resumable)           arena/connectors.py)                      │
-└──────────────────────────────────────────────────────────────────────────────────────────────┘
-```
+## Help wanted: macOS and Linux
 
-| Module | Role |
-| --- | --- |
-| `arena/desktop.py` | Native window shell (pywebview + Edge WebView2) |
-| `arena/web/app.py` | Flask API, SSE streaming, chat orchestration, accounts |
-| `arena/web/static/` | The whole UI (HTML/CSS/JS, no build step) |
-| `arena/engine.py` | Hidden arena.ai window that performs signed-in requests |
-| `arena/contracts.py` | arena.ai wire formats: chat bodies, stream parsing, uploads |
-| `arena/native_agent.py` | Native Arena Agent Mode protocol (create/resume/complete) |
-| `arena/agent.py` | Local folder-tools loop: tool guide, parsing, execution |
-| `arena/connectors.py` | Local MCP server manager (config, runtime, tool calls) |
-| `arena/permissions.py` | Permission modes and per-chat approval broker |
-| `arena/models.py` | Dynamic model catalog from arena.ai |
-| `arena/history_sync.py` | Converts arena.ai cloud history to local chats |
-| `arena/cli.py`, `arena/ui/`, `arena/tools/` | Terminal CLI from the project's origins |
+Arena Desktop is Windows-only (WebView2). A macOS/Linux port would need a different shell (e.g. webview bindings for GTK/Cocoa). PRs welcome.
 
-## Honest limitations
+## Limitations
 
-- **Windows only** (WebView2). macOS/Linux would need a different shell.
-- **Arena's own limits apply** and cannot be bypassed from any client: daily spend caps, per-modality
-  and per-model rate limits, and the new-account gate for Video. The app explains them; it can't lift them.
-- **Human checks stay manual** by design: the app opens the check, you tick it.
-- **Code mode is arena's sandbox**, not your PC: the app mirrors files the model created/edited, but
-  the sandbox can't see arbitrary local files, and its `bash`/media steps stay in the sandbox.
-  See [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) for the current list.
-- The EXE is **not code-signed**, so SmartScreen may warn on first run.
-- arena.ai changes its frontend regularly; server-action IDs (voting, archiving) are rediscovered by
-  name at runtime, but a bigger arena.ai overhaul could still require an app update.
-
-## Project layout
-
-```
-Arena-Desktop/
-├── arena/                  # application package (see module table above)
-│   ├── web/                # Flask backend + static UI
-│   ├── tools/  ui/         # CLI-era tools and terminal UI
-│   └── …
-├── assets/                 # icon and logos
-├── docs/                   # research notes and screenshots
-├── scripts/check_exe.py    # built-EXE verification
-├── tests/                  # pytest suites (unit/API + browser UI)
-├── arena-cli.py            # CLI entry point (also the PyInstaller entry)
-├── arena-cli.spec          # PyInstaller spec → single-file Arena-Desktop.exe
-├── requirements.txt
-├── START_ARENA_DESKTOP.bat # one-double-click source launcher
-├── START_HERE.md           # short user guide
-└── KNOWN_ISSUES.md
-```
+- **Windows only** — WebView2 dependency.
+- **Arena's limits apply** — daily caps, rate limits, new-account video gate. The app explains them; it can't lift them.
+- **Human checks stay manual** by design.
+- **Code mode uses arena's sandbox**, not your PC. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+- **Not code-signed** — SmartScreen may warn on first run.
 
 ## Credits & license
 
-Arena Desktop grew out of the open-source arena.ai desktop/CLI work by
-[PlayzAe](https://github.com/PlayzAe) and contributors. Thanks to everyone whose code,
-testing and ideas keep this project alive:
+Built by [PlayzAe](https://github.com/PlayzAe) and contributors. Major contributions from
+[Maxusimlive](https://github.com/Maxusimlive) on the desktop UI, chat system, workspace features
+and native Arena Agent integration.
 
-- **[Maxusimlive](https://github.com/Maxusimlive)** — major contributions to the desktop UI,
-  chat system, workspace features and the native Arena Agent integration. A huge thank you
-  for the sustained work that shaped this app into what it is today.
-- Everyone who has filed issues, tested builds, suggested features and spread the word.
-
-This project exists because people care enough to build and maintain it. If you use Arena Desktop,
-thank the contributors who made it happen.
-
-Released under the [MIT License](LICENSE). Not affiliated with Arena AI Inc.; “Arena” is used
-descriptively to name the service this client connects to.
+Released under the [MIT License](LICENSE). Not affiliated with Arena AI Inc.
 
 ## Contact
 
-Questions, ideas or feedback? Reach the maintainer on Discord:
-
 [![Discord](https://img.shields.io/static/v1?label=Discord&message=%40playzae&color=5865F2&style=flat-square&logo=discord&logoColor=white)](https://discord.com)
 
-DMs are open — `@playzae`. For bugs and feature requests, [GitHub Issues](../../issues) still work best.
+DMs open — `@playzae`. For bugs and features: [GitHub Issues](../../issues).
