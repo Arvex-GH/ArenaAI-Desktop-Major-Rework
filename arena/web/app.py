@@ -266,7 +266,7 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "5.6.1"
+APP_VERSION = "1.2.0-beta"
 
 _API_TOKEN = secrets.token_urlsafe(32)
 _secrets = hmac
@@ -1592,7 +1592,7 @@ def api_update_check():
         return jsonify(dict(slot["data"], enabled=enabled, cached=True))
     data = {"current": APP_VERSION, "latest": None, "update": False, "url": None,
             "error": None, "channel": channel, "prerelease": False}
-    repo = "https://api.github.com/repos/Maxusimlive/Arena-Desktop"
+    repo = "https://api.github.com/repos/PlayzAe/arena.ai-desktop"
     url = f"{repo}/releases?per_page=10" if beta else f"{repo}/releases/latest"
     try:
         r = requests.get(url,

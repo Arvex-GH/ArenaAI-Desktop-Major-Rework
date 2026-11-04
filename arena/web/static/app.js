@@ -2590,9 +2590,26 @@ You can start with a more structured option: one script, short captions, and a c
     API.updateCheck().then((info) => {
       state.updateInfo = info;
       if (info?.enabled !== false && info?.update && info?.latest) {
-        toast(`Arena Desktop ${info.latest} is available. Open Settings \u2192 About to get it.`, 'info', 'Update available');
+        showUpdateIsland(info.latest, info.url);
       }
     }).catch(() => {});
+  }
+
+  function showUpdateIsland(version, url) {
+    const existing = document.querySelector('.update-island');
+    if (existing) existing.remove();
+    const island = el('div', { class: 'update-island', title: 'Click to download the update' });
+    island.appendChild(el('span', { class: 'island-dot' }));
+    island.appendChild(el('span', { text: 'Update available \u2014 ' }));
+    island.appendChild(el('span', { class: 'island-ver', text: `v${version}` }));
+    const close = el('span', { class: 'island-close', text: '\u00d7' });
+    close.addEventListener('click', (e) => { e.stopPropagation(); island.remove(); });
+    island.appendChild(close);
+    island.addEventListener('click', () => {
+      if (url) window.open(url, '_blank', 'noopener');
+      else openSettings('about');
+    });
+    document.body.appendChild(island);
   }
 
   async function exportSettingsFile() {
@@ -7874,6 +7891,10 @@ You can start with a more structured option: one script, short captions, and a c
         class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-settings',
         onclick: () => { closePopover(false); openSettings('connection'); }
       }, iconEl('settings'), el('span', { text: 'Settings' })));
+      content.appendChild(el('button', {
+        class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-help',
+        onclick: () => { closePopover(false); document.querySelector('[data-action="help"]')?.click(); }
+      }, iconEl('help'), el('span', { text: 'Help & shortcuts (F1)' })));
       if (state.authenticated || accounts.some((a) => a.current)) {
         content.appendChild(el('div', { class: 'account-menu-divider', role: 'separator' }));
         content.appendChild(el('button', {
@@ -8776,6 +8797,7 @@ You can start with a more structured option: one script, short captions, and a c
       ];
       wrap.appendChild(el('ul', { class: 'limits-list' }, bullets.map((text) => el('li', { text }))));
       wrap.appendChild(el('div', { class: 'setting-actions' },
+        settingsActionButton('GitHub', 'external', async () => { window.open('https://github.com/PlayzAe/arena.ai-desktop', '_blank', 'noopener'); }),
         settingsActionButton('Terms of Use', 'external', async () => { window.open('https://help.arena.ai/articles/5629909088-terms-of-use', '_blank', 'noopener'); }),
         settingsActionButton('Privacy Policy', 'external', async () => { window.open('https://help.arena.ai/articles/3765052346-privacy-policy', '_blank', 'noopener'); })
       ));

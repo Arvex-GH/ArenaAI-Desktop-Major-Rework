@@ -41,6 +41,7 @@
 - [Troubleshooting](#troubleshooting)
 - [Limitations](#limitations)
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
+- [Translations](#translations)
 
 ## What's new in v1.2.0-beta
 
@@ -175,6 +176,8 @@ $env:RUN_BROWSER_TESTS=1; .\.venv\Scripts\python.exe -m pytest tests/test_ui_bro
 
 Arena Desktop is Windows-only right now because it depends on WebView2. I want to bring it to macOS and Linux — the backend (Flask + SSE) is platform-agnostic, so the main work is swapping the pywebview/WebView2 shell for something cross-platform (e.g. webview bindings for GTK/Cocoa, or an Electron shell). The DPAPI encryption layer would also need a platform-specific backend (Keychain on macOS, Secret Service on Linux).
 
+An independent researcher already did a thorough code review and started building a separate Linux client (Wayland/KDE, Native Messaging + browser extension). Their security audit helped shape several of the v1.2.0-beta fixes. I don't have their contact info but want to publicly thank them for the work — if you're reading this, reach out so I can credit you properly.
+
 If you're interested in helping with a port, PRs are welcome. The architecture section above shows what needs to change.
 
 ## Limitations
@@ -185,9 +188,13 @@ If you're interested in helping with a port, PRs are welcome. The architecture s
 - **Code mode uses arena's sandbox**, not your machine. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 - **Not code-signed** — SmartScreen will warn on first run.
 
+## Translations
+
+The UI is English-only right now. I'd love help translating it to other languages — if you're interested, open a PR or reach out on Discord. Priority languages: Spanish, Portuguese, Chinese, Japanese, Korean, French, German, Russian, Arabic and Hindi, but any language is welcome.
+
 ## Credits & license
 
-Built by [PlayzAe](https://github.com/PlayzAe) and contributors. Major contributions from [Maxusimlive](https://github.com/Maxusimlive) on the desktop UI, chat system, workspace features and native Arena Agent integration.
+Built by [PlayzAe](https://github.com/PlayzAe) and contributors. Major contributions from [Maxusimlive](https://github.com/Maxusimlive) on the desktop UI, chat system, workspace features and native Arena Agent integration. Thanks to the anonymous Linux researcher whose independent security audit shaped several of the v1.2.0-beta security fixes.
 
 Released under the [MIT License](LICENSE). Not affiliated with Arena AI Inc.
 

@@ -856,8 +856,19 @@ class BrowserEngine:
 
     # -- window lifecycle -------------------------------------------------
     def _on_closing(self, *a):
-        # Closing the window only hides it; the engine keeps running.
-        self.close_pane()
+        self.visible = False
+        if self.challenge == "recaptcha":
+            self.challenge = None
+        self.login_open = False
+        def _deferred_hide():
+            import time
+            time.sleep(0.15)
+            try:
+                if self.window:
+                    self.window.hide()
+            except Exception:
+                pass
+        threading.Thread(target=_deferred_hide, daemon=True).start()
         return False
 
     def close_pane(self):
