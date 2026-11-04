@@ -438,6 +438,15 @@ class GatewayManager:
         counts = ", ".join(
             f"{name} ({len(data.get('tools') or {})} tools)"
             for name, data in sorted(self._index.items())) or "none"
+        workspace_line = ""
+        if "workspace" in self._index:
+            workspace_line = (
+                "The 'workspace' server is the user's project folder on their own "
+                "computer: all paths are relative to that folder and cannot escape "
+                "it. ls/read_file/search inspect it; write_file/edit_file/mkdir/delete "
+                "change it; run_cmd runs a shell command inside it. Prefer it over "
+                "your own cloud workspace whenever the user talks about their files "
+                "or project.\n")
         return (
             "[Arena Desktop local tools gateway]\n"
             "For this session you can run tools on the user's own computer through a "
@@ -454,6 +463,7 @@ class GatewayManager:
             "4. GET {url}/v1/jobs/<job_id> until status is \"done\" or \"error\"; "
             "use results[].output.\n"
             f"Servers available right now: {counts}.\n"
+            + workspace_line +
             "Rules: use these tools only when the task needs something on the user's "
             "computer. The user may be asked to approve individual calls in the app; "
             "if a call is denied, respect that and adjust your plan. Keep tool calls "

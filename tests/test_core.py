@@ -3649,3 +3649,240 @@ def test_native_generate_image_choice_reveals_both_models(web, monkeypatch):
         "Org A", "Org B"]
     assert any(e["type"] == "media_choice_done" for e in collected)
     assert any(e["type"] == "media_reveal" for e in collected)
+
+
+# ----------------------------------------------------------------------
+# v5.6.1: continued native chats finishing instantly empty (stale tail),
+# gateway re-injection on continuation, workspace folder via gateway.
+
+def test_native_cursor_max_never_rewinds(web):
+    appmod, *_ = web
+    f = appmod._native_cursor_max
+    assert f(None, "50") == "50"
+    assert f("50", None) == "50"
+    assert f("50", "50") == "50"
+    assert f("42", "41") == "42"          # numeric: local ahead wins
+    assert f("41", "42") == "42"          # numeric: snapshot ahead wins
+    assert f("42", "100") == "100"        # numeric compare, not lexicographic
+    assert f("01KAAAA", "01KAAAB") == "01KAAAB"  # same-shape tokens
+    assert f("01KAAAB", "01KAAAA") == "01KAAAB"
+    assert f("localid", "other-shape") == "localid"  # incomparable: local truth
+
+
+def _native_existing_session():
+    return {"native": {"backend": "arena", "session_id": _NATIVE_SESSION_ID,
+                       "trigger_address": _NATIVE_TRIGGER,
+                       "last_event_id": "40", "needs_drain": False}}
+
+
+def _native_continue_setup(web, monkeypatch, streams):
+    appmod, c, *_ = web
+    monkeypatch.setattr(appmod, "ENGINE", _FakeNativeChatEngine())
+    responses = list(streams)
+    monkeypatch.setattr(
+        appmod.requests, "get",
+        lambda url, headers=None, stream=False, timeout=None: responses.pop(0))
+    appends = []
+
+    class _AppendResp:
+        status_code = 200
+
+        def json(self):
+            return {"seq": len(appends)}
+
+    monkeypatch.setattr(
+        appmod.requests, "post",
+        lambda url, headers=None, json=None, timeout=None:
+        (appends.append((url, json)), _AppendResp())[1])
+    result = {"text": "", "reasoning": "", "tools": [], "files": [],
+              "native": None, "error": None}
+    gen = appmod._native_agent_run(
+        appmod.get_client(), "Continue please", _native_existing_session(),
+        "Europe/Moscow", result=result)
+    return appmod, gen, result, appends
+
+
+def test_native_continuation_ignores_stale_turn_complete(web, monkeypatch):
+    """A rewound cursor replays the previous turn's finish + turn-complete
+    before the new reply. That stale completion must not end the new turn
+    empty (the v5.6.0 'site generates, app shows nothing' bug)."""
+    stream = _FakeStreamResp(_lines(
+        {"type": "finish-step"},
+        {"type": "finish"},
+        {"type": "trigger:turn-complete"},          # stale: previous turn
+        {"type": "start", "messageId": "a2", "messageMetadata": {"nodeId": "n2"}},
+        {"type": "tool-input-available", "toolCallId": "t1",
+         "toolName": "web_search", "input": {"q": "x"}},
+        {"type": "tool-output-available", "toolCallId": "t1", "output": {"hits": 1}},
+        {"type": "text-delta", "delta": "New answer"},
+        {"type": "finish"},
+        {"type": "trigger:turn-complete"},
+        start_id=41,
+    ))
+    appmod, gen, result, appends = _native_continue_setup(web, monkeypatch, [stream])
+    collected = _sse_events_from_raw(list(gen))
+    assert result["text"] == "New answer"
+    assert result["error"] is None
+    assert [t["tool"] for t in result["tools"]] == ["web_search"]
+    assert result["tools"][0]["status"] == "ok"
+    assert any(e["type"] == "tool_call" for e in collected)
+    assert any(e["type"] == "text" and e["text"] == "New answer" for e in collected)
+    assert len(appends) == 1  # the continuation message itself
+
+
+def test_native_continuation_settled_before_content_keeps_waiting(web, monkeypatch):
+    """Settled + silent subscribe cycle BEFORE any new-turn content (run
+    still booting, only stale records seen) must not end the turn."""
+    stale = _FakeStreamResp(_lines({"type": "finish"}, start_id=41))
+    settled_empty = _FakeStreamResp([], headers={"X-Session-Settled": "true"})
+    content = _FakeStreamResp(_lines(
+        {"type": "start", "messageId": "a2"},
+        {"type": "text-delta", "delta": "Late answer"},
+        {"type": "trigger:turn-complete"},
+        start_id=45,
+    ))
+    appmod, gen, result, _ = _native_continue_setup(
+        web, monkeypatch, [stale, settled_empty, content])
+    monkeypatch.setattr(appmod.time, "sleep", lambda *_a, **_k: None)
+    _sse_events_from_raw(list(gen))
+    assert result["text"] == "Late answer"
+    assert result["error"] is None
+
+
+def test_gateway_block_reinjected_when_session_changes(web, monkeypatch):
+    """Continued chats get the gateway block again when the tunnel they
+    know is gone (stopped/expired), and not while it is unchanged."""
+    appmod, c, *_ = web
+    engine = _FakeNativeChatEngine()
+    monkeypatch.setattr(appmod, "ENGINE", engine)
+    block = "[gateway block v1]"
+    key = {"value": "key-1"}
+    monkeypatch.setattr(appmod, "_gateway_injection", lambda data, cfg=None: block)
+    monkeypatch.setattr(appmod, "_gateway_session_key", lambda: key["value"])
+    appends = []
+    monkeypatch.setattr(appmod.requests, "get",
+                        lambda url, headers=None, stream=False, timeout=None:
+                        _FakeStreamResp(_native_lines("OK")))
+
+    class _AppendResp:
+        status_code = 200
+
+        def json(self):
+            return {"seq": 1}
+
+    monkeypatch.setattr(appmod.requests, "post",
+                        lambda url, headers=None, json=None, timeout=None:
+                        (appends.append((url, json)), _AppendResp())[1])
+
+    ev = events(c.post("/api/chat", json={
+        "message": "Start", "mode": "agent", "modality": "text",
+        "agent_backend": "arena", "timezone": "Europe/Moscow"}))
+    chat_id = ev[0]["chat_id"]
+    create = next(call for call in engine.calls if call[0] == "/nextjs-api/stream/create-chat")
+    assert create[1]["message"]["parts"][0]["text"].startswith(block)
+    assert appmod._load_chat(chat_id)["gateway_session"] == "key-1"
+
+    # Same tunnel: no re-injection on the follow-up.
+    ev = events(c.post("/api/chat", json={
+        "message": "Next", "chat_id": chat_id, "mode": "agent", "modality": "text",
+        "agent_backend": "arena", "timezone": "Europe/Moscow"}))
+    assert appends[-1][1]["payload"]["message"]["parts"][0]["text"] == "Next"
+
+    # Gateway was stopped and restarted: the new block is re-handed.
+    key["value"] = "key-2"
+    ev = events(c.post("/api/chat", json={
+        "message": "Again", "chat_id": chat_id, "mode": "agent", "modality": "text",
+        "agent_backend": "arena", "timezone": "Europe/Moscow"}))
+    assert appends[-1][1]["payload"]["message"]["parts"][0]["text"].startswith(block)
+    assert appmod._load_chat(chat_id)["gateway_session"] == "key-2"
+
+
+def test_gateway_workspace_server_index_and_servers(web, monkeypatch, tmp_path):
+    appmod, *_ = web
+    monkeypatch.setattr(appmod, "_chosen_ws", lambda: tmp_path)
+    monkeypatch.setattr(appmod.CONNECTORS, "ensure_started", lambda timeout=10: {})
+    index = appmod._gateway_tool_index()
+    tools = index["workspace"]["tools"]
+    assert set(tools) == {"ls", "read_file", "search", "write_file",
+                          "edit_file", "mkdir", "delete", "run_cmd"}
+    assert tools["read_file"]["read_only"] is True
+    assert tools["write_file"]["read_only"] is False
+    assert tools["ls"]["alias"] == "__workspace__ls"
+    # Explicit MCP picks keep the folder unless its own toggle is off.
+    assert appmod._gateway_servers({"gateway_servers": ["blender"]}) == ["blender", "workspace"]
+    assert appmod._gateway_servers(
+        {"gateway_servers": ["blender"], "gateway_workspace": False}) == ["blender"]
+    monkeypatch.setattr(appmod, "_chosen_ws", lambda: None)
+    assert "workspace" not in appmod._gateway_tool_index()
+    assert appmod._gateway_servers({"gateway_servers": ["blender"]}) == ["blender"]
+
+
+def test_gateway_workspace_call_confined_to_folder(web, monkeypatch, tmp_path):
+    appmod, *_ = web
+    monkeypatch.setattr(appmod, "_chosen_ws", lambda: tmp_path)
+    out = appmod._gateway_call_tool("__workspace__write_file",
+                                    {"path": "a/b.txt", "content": "hello"})
+    assert "Wrote" in out
+    assert appmod._gateway_call_tool("__workspace__read_file", {"path": "a/b.txt"}) == "hello"
+    assert "b.txt" in appmod._gateway_call_tool("__workspace__ls", {"path": "a"})
+    assert "hello" in appmod._gateway_call_tool(
+        "__workspace__search", {"pattern": "hello", "path": "."})
+    appmod._gateway_call_tool("__workspace__edit_file",
+                              {"path": "a/b.txt", "old_text": "hello", "new_text": "bye"})
+    assert (tmp_path / "a/b.txt").read_text(encoding="utf-8") == "bye"
+    import pytest
+    with pytest.raises(PermissionError):
+        appmod._gateway_call_tool("__workspace__read_file", {"path": "../outside.txt"})
+    with pytest.raises(PermissionError):
+        appmod._gateway_call_tool("__workspace__write_file",
+                                  {"path": "../evil.txt", "content": "x"})
+
+
+def test_gateway_workspace_approval_uses_real_tool_names(web, monkeypatch):
+    appmod, *_ = web
+    seen = {}
+
+    class _Broker:
+        def check(self, mode, tool, inside=True, command=""):
+            seen["tool"] = tool
+            seen["command"] = command
+            return "ask"
+
+        def ask(self, info):
+            seen["info"] = info
+            return "p1"
+
+        def wait(self, pid, timeout):
+            return "allow"
+
+    monkeypatch.setattr(appmod, "BROKER", _Broker())
+    monkeypatch.setattr(appmod, "_perm_mode", lambda: "default")
+    assert appmod._gateway_approve("workspace", "delete", False, {"path": "old.txt"}) is True
+    assert seen["tool"] == "delete"
+    assert seen["info"]["summary"].startswith("Agent Gateway workspace: delete")
+    assert appmod._gateway_approve("workspace", "run_cmd", False, {"cmd": "git status"}) is True
+    assert seen["tool"] == "run_cmd" and seen["command"] == "git status"
+    # MCP calls keep the coarse grading.
+    assert appmod._gateway_approve("blender", "render", False, {}) is True
+    assert seen["tool"] == "run_cmd"
+
+
+def test_gateway_session_key_tracks_tunnel(web, monkeypatch):
+    appmod, *_ = web
+
+    class _Mgr:
+        def __init__(self, status):
+            self._status = status
+
+        def status(self, include_pairing=False):
+            return dict(self._status)
+
+    monkeypatch.setattr(appmod, "_gateway", lambda: _Mgr({"state": "off", "url": None}))
+    assert appmod._gateway_session_key() == ""
+    monkeypatch.setattr(appmod, "_gateway", lambda: _Mgr(
+        {"state": "on", "url": "https://a.trycloudflare.com", "pairing": "tok1"}))
+    k1 = appmod._gateway_session_key()
+    assert k1 and appmod._gateway_session_key() == k1
+    monkeypatch.setattr(appmod, "_gateway", lambda: _Mgr(
+        {"state": "on", "url": "https://b.trycloudflare.com", "pairing": "tok2"}))
+    assert appmod._gateway_session_key() != k1

@@ -1026,7 +1026,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '5.6.0',
+        app_version: '5.6.1',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -1243,6 +1243,7 @@
       return { enabled: Boolean(demoStore.settings?.gateway_enabled), auto: Boolean(demoStore.settings?.gateway_auto),
         chosen: null,
         available: [{ name: 'blender', enabled: true, transport: 'stdio' }, { name: 'roblox_studio', enabled: true, transport: 'stdio' }],
+        workspace: { available: true, folder: 'C:\\Users\\Demo\\Project', exposed: demoStore.settings?.gateway_workspace !== false },
         session: s || { state: 'off', url: null, servers: [], calls: [], error: null }, demo: true };
     },
     async startGateway() {
@@ -4727,13 +4728,18 @@ You can start with a more structured option: one script, short captions, and a c
   }
 
   let gatewayWarmAttempted = false;
+  let gatewayWasActive = false;
 
   function maybeWarmGateway() {
     const cfg = state.appSettings || {};
     const wanted = state.mode === 'agent' && state.directTools
       && cfg.gateway_enabled === true && cfg.gateway_auto === true && !state.demo;
     if (!wanted) { gatewayWarmAttempted = false; return; }
-    if (gatewayWarmAttempted || state.gateway?.active) return;
+    if (state.gateway?.active) { gatewayWasActive = true; gatewayWarmAttempted = true; return; }
+    // A session that was live and then stopped (Stop button, idle expiry)
+    // must not strand the latch: the next Agent send warms a fresh tunnel.
+    if (gatewayWasActive) { gatewayWasActive = false; gatewayWarmAttempted = false; }
+    if (gatewayWarmAttempted) return;
     gatewayWarmAttempted = true;
     void API.startGateway().catch(() => undefined); // problems surface via status/JIT
   }
@@ -8555,7 +8561,7 @@ You can start with a more structured option: one script, short captions, and a c
   function renderGatewayPanel() {
     const wrap = el('div', { class: 'memory-panel' });
     wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Agent Gateway' }));
-    wrap.appendChild(el('p', { class: 'modal-note', text: 'Lets the genuine Arena Agent use selected local MCP servers on this computer (Blender, Roblox Studio, files…). For a session, a temporary Cloudflare tunnel exposes a pairing-protected job endpoint; the agent receives the address automatically in new Agent chats. Tool calls follow your Permissions mode — the app asks before anything that can change things, unless you use Bypass. Off by default: a tunnel makes this PC reachable from the internet for anyone holding the pairing code, so keep the code secret and stop the session when done.' }));
+    wrap.appendChild(el('p', { class: 'modal-note', text: 'Lets the genuine Arena Agent use selected local MCP servers (Blender, Roblox Studio…) and your picked Workspace folder on this computer. For a session, a temporary Cloudflare tunnel exposes a pairing-protected job endpoint; the agent receives the address automatically in Agent chats — including a fresh address when a continued chat finds its tunnel gone. Tool calls follow your Permissions mode — the app asks before anything that can change things, unless you use Bypass. Off by default: a tunnel makes this PC reachable from the internet for anyone holding the pairing code, so keep the code secret and stop the session when done.' }));
     const host = el('div', {}, el('p', { class: 'modal-note', text: 'Loading gateway status…' }));
     wrap.appendChild(host);
     let poll = null;
@@ -8597,7 +8603,7 @@ You can start with a more structured option: one script, short captions, and a c
       host.appendChild(toggleRow('Start automatically with Workspace Sync (Agent chats)', data.auto, 'Auto-start gateway', async (input) => {
         await API.saveSettings({ gateway_auto: input.checked });
         state.appSettings = { ...(state.appSettings || {}), gateway_auto: input.checked };
-        if (input.checked) toast('New Agent chats will start the gateway and hand the address to the agent automatically while Workspace Sync is on.', 'info', 'Agent Gateway');
+        if (input.checked) toast('Agent chats will start the gateway when needed and hand the address to the agent automatically while Workspace Sync is on.', 'info', 'Agent Gateway');
         void fill();
       }, !data.enabled));
 
@@ -8625,6 +8631,18 @@ You can start with a more structured option: one script, short captions, and a c
         host.appendChild(list);
       }
 
+      host.appendChild(el('h4', { class: 'modal-mini-title', text: 'Workspace folder' }));
+      const ws = data.workspace || {};
+      host.appendChild(toggleRow('Expose the picked Workspace folder (files + shell inside it)', ws.exposed !== false, 'Expose workspace folder', async (input) => {
+        await API.saveSettings({ gateway_workspace: input.checked });
+        state.appSettings = { ...(state.appSettings || {}), gateway_workspace: input.checked };
+        if (session.state === 'on') toast('Workspace exposure applies to the next gateway session.', 'info', 'Agent Gateway');
+        void fill();
+      }, !data.enabled || !ws.available));
+      host.appendChild(el('p', { class: 'modal-note', text: ws.available
+        ? `Folder: ${ws.folder}. The agent can list, read, search, write and edit files inside it and run shell commands there — paths cannot escape the folder, and changes follow your Permissions mode.`
+        : 'No folder picked yet — choose one in the composer Workspace menu, then it can be exposed here.' }));
+
       host.appendChild(el('h4', { class: 'modal-mini-title', text: 'Session' }));
       if (session.state === 'on') {
         const expires = session.expires_at ? new Date(session.expires_at * 1000).toLocaleTimeString() : '';
@@ -8636,7 +8654,7 @@ You can start with a more structured option: one script, short captions, and a c
             onclick: async () => { await copyText(value || ''); toast(`${label} copied.`, 'success'); }
           }, iconEl('copy'), el('span', { text: 'Copy' })));
         host.append(
-          el('p', { class: 'modal-note', text: `Running${expires ? ` · ends by ${expires}` : ''} · ${(session.servers || []).length} server(s) exposed. New Agent chats receive these automatically${data.auto ? '' : ' when auto-start is on'}; you can also paste them into an arena.ai Agent chat manually.` }),
+          el('p', { class: 'modal-note', text: `Running${expires ? ` · ends by ${expires}` : ''} · ${(session.servers || []).length} server(s) exposed. Agent chats receive these automatically${data.auto ? '' : ' when auto-start is on'}; you can also paste them into an arena.ai Agent chat manually.` }),
           copyRow('Gateway URL', session.url),
           copyRow('Pairing code', session.pairing));
         const recent = (session.calls || []).slice(0, 8);
@@ -8661,7 +8679,7 @@ You can start with a more structured option: one script, short captions, and a c
             startBtn.querySelector('span:last-child').textContent = 'Starting tunnel…';
             try {
               await API.startGateway();
-              toast('Gateway session is live. Open a new Agent chat.', 'success', 'Agent Gateway');
+              toast('Gateway session is live. Open an Agent chat.', 'success', 'Agent Gateway');
             } catch (error) {
               if (error?.details?.code === 'cloudflared_missing') {
                 showCloudflaredInstallModal(() => { void fill(); });

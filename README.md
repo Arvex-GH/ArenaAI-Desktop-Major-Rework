@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.6.0-8b5cf6?style=flat-square" alt="Version 5.6.0" />
+  <img src="https://img.shields.io/badge/version-5.6.1-8b5cf6?style=flat-square" alt="Version 5.6.1" />
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue?style=flat-square" alt="Windows 10/11" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776ab?style=flat-square" alt="Python 3.11+" />
   <img src="https://img.shields.io/badge/models-400%2B%20via%20arena.ai-10b981?style=flat-square" alt="400+ models via arena.ai" />
@@ -153,11 +153,15 @@ The app orchestrates chats, tools, files and permissions around it.
   audio, video and PDF inline; text/code keeps the classic read-only view with Copy and
   Download; anything else offers Download. Agent-produced audio plays in chat as well.
 - **Agent Gateway** (v5.5, off by default): the genuine Arena Agent can use selected local MCP
-  servers on your PC (Blender, Roblox Studio, files…). With both opt-ins on, a temporary
-  pairing-protected Cloudflare tunnel session starts automatically with Workspace Sync and new
-  Agent chats receive the address invisibly; every call follows your permission mode, sessions
-  expire and are revocable with one click. Settings → Components installs the one external
-  helper (cloudflared, official build, checksum-verified) only when you ask.
+  servers on your PC (Blender, Roblox Studio, files…) — and, since v5.6.1, your picked
+  Workspace folder itself as a built-in `workspace` server (list/read/search/write/edit files
+  and shell commands, confined to that folder; its own toggle in Settings → Gateway). With
+  both opt-ins on, a temporary pairing-protected Cloudflare tunnel session starts automatically
+  with Workspace Sync; Agent chats receive the address invisibly, and a continued chat is
+  re-handed a fresh address whenever its tunnel was stopped or expired. Every call follows
+  your permission mode, sessions expire and are revocable with one click. Settings →
+  Components installs the one external helper (cloudflared, official build, checksum-verified)
+  only when you ask.
 - Everyday polish (v5.1.6): human-check windows come to the front instead of hiding behind the
   app; messages can be queued while a chat is generating; composer drafts are kept per chat;
   the Compact chip doubles as a live context-size meter; the model picker shows Recent models;

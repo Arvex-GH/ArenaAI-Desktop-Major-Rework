@@ -264,7 +264,7 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "5.6.0"
+APP_VERSION = "5.6.1"
 
 
 @app.after_request
@@ -296,7 +296,7 @@ def _save_chat(chat_id: str, title: str, messages: list,
                agent_backend: str = None, native: dict = None,
                mcp_guide_hash: str = None, memory_hash: str = None,
                pending_digest: str = None, parent_id: str = None,
-               delegate_guide: bool = None):
+               delegate_guide: bool = None, gateway_session: str = None):
     if not _validate_chat_id(chat_id):
         return
     chat_dir = CHATS_DIR / chat_id
@@ -328,6 +328,7 @@ def _save_chat(chat_id: str, title: str, messages: list,
         "parent_id": (parent_id or None) if parent_id is not None else existing.get("parent_id"),
         "delegate_guide": bool(delegate_guide) if delegate_guide is not None else bool(existing.get("delegate_guide")),
         "agent_backend": agent_backend or existing.get("agent_backend"),
+        "gateway_session": gateway_session if gateway_session is not None else existing.get("gateway_session"),
         "native": native if native is not None else existing.get("native"),
         "messages": messages,
     }
@@ -1195,11 +1196,17 @@ def api_gateway():
                               "transport": srv.get("transport", "stdio")})
     except Exception:
         pass
+    workspace_root = _chosen_ws()
     return jsonify({
         "enabled": _gateway_enabled(cfg),
         "auto": cfg.get("gateway_auto") is True,
         "chosen": cfg.get("gateway_servers") if isinstance(cfg.get("gateway_servers"), list) else None,
         "available": available,
+        "workspace": {
+            "available": workspace_root is not None,
+            "folder": str(workspace_root) if workspace_root is not None else "",
+            "exposed": _gateway_workspace_on(cfg),
+        },
         "session": _gateway().status(include_pairing=True),
     })
 
@@ -1212,7 +1219,7 @@ def api_gateway_start():
                         "code": "gateway_off"}), 403
     servers = _gateway_servers(cfg)
     if not servers:
-        return jsonify({"error": "No enabled local MCP servers to expose. Add one under Connectors (Local MCP) first.",
+        return jsonify({"error": "Nothing to expose: enable a local MCP server under Connectors (Local MCP) or pick a Workspace folder first.",
                         "code": "no_servers"}), 400
     status = _gateway().start(servers, wait_seconds=45)
     if status["state"] == "needs_cloudflared":
@@ -1394,12 +1401,16 @@ def api_chat_refresh(chat_id):
         merged, added = history_sync.merge_messages(local_messages, remote_messages)
         title = history_sync.agentic_title(session) or data.get("title") or "Arena Agent"
         cursor = history_sync.agentic_last_event_id(session)
+        # The snapshot cursor may lag the locally consumed one by a few
+        # control records; rewinding to it replays the previous turn's
+        # turn-complete into the next continuation (instant empty reply).
+        cursor = _native_cursor_max(native.get("last_event_id"), cursor)
         native_out = dict(native)
         native_out.update({
             "backend": "arena",
             "session_id": str(remote_id),
             "trigger_address": native.get("trigger_address") or str(remote_id),
-            "last_event_id": cursor or native.get("last_event_id"),
+            "last_event_id": cursor,
             "needs_drain": False if cursor else bool(native.get("needs_drain")),
         })
         _save_chat(chat_id, title=title, messages=merged, mode="agent", modality="text",
@@ -3632,6 +3643,53 @@ def _failover_seed(conv, content: str) -> str:
 _GATEWAY = None
 
 
+_GATEWAY_WORKSPACE_SERVER = "workspace"
+_GATEWAY_WORKSPACE_ALIAS = "__workspace__"
+_GATEWAY_WORKSPACE_TOOLS = {
+    "ls": (True, "List a folder inside the workspace. Paths are relative to the workspace root.",
+           {"path": "folder path, '.' for the root (optional)"}),
+    "read_file": (True, "Read a text file inside the workspace (max 1 MB).",
+                  {"path": "file path relative to the workspace root",
+                   "start_line": "first line to read (optional)",
+                   "end_line": "last line to read (optional)"}),
+    "search": (True, "Search file contents inside the workspace with a regular expression.",
+               {"pattern": "regular expression to search for",
+                "path": "folder or file to search, '.' for the root (optional)"}),
+    "write_file": (False, "Create or overwrite a text file inside the workspace.",
+                   {"path": "file path relative to the workspace root", "content": "full file content"}),
+    "edit_file": (False, "Replace one exact occurrence of old_text with new_text in a workspace file.",
+                  {"path": "file path relative to the workspace root",
+                   "old_text": "exact text to replace (must occur once)", "new_text": "replacement text"}),
+    "mkdir": (False, "Create a folder inside the workspace.", {"path": "folder path relative to the workspace root"}),
+    "delete": (False, "Delete a file or folder inside the workspace.", {"path": "path relative to the workspace root"}),
+    "run_cmd": (False, "Run a shell command with the workspace folder as the working directory.",
+                {"cmd": "the command line to run"}),
+}
+
+
+def _gateway_workspace_on(cfg=None) -> bool:
+    """Workspace-folder exposure through the gateway (separate opt-out toggle)."""
+    try:
+        return (cfg or load_config()).get("gateway_workspace") is not False
+    except Exception:
+        return False
+
+
+def _gateway_workspace_index() -> dict:
+    tools = {}
+    for name, (read_only, description, props) in _GATEWAY_WORKSPACE_TOOLS.items():
+        tools[name] = {
+            "alias": f"{_GATEWAY_WORKSPACE_ALIAS}{name}",
+            "description": description,
+            "input_schema": {
+                "type": "object",
+                "properties": {key: {"type": "string", "description": text} for key, text in props.items()},
+            },
+            "read_only": read_only,
+        }
+    return {_GATEWAY_WORKSPACE_SERVER: {"tools": tools}}
+
+
 def _gateway_tool_index() -> dict:
     try:
         tool_map = CONNECTORS.ensure_started(timeout=10) or {}
@@ -3650,21 +3708,60 @@ def _gateway_tool_index() -> dict:
             "input_schema": entry.get("input_schema") or {},
             "read_only": annotations.get("readOnlyHint") is True,
         }
+    # The picked workspace folder as a built-in server (v5.6.1): the agent
+    # gets the same file tools the local agent has, confined to that folder.
+    if _chosen_ws() is not None:
+        index.update(_gateway_workspace_index())
     return index
+
+
+def _gateway_workspace_call(tool: str, arguments) -> str:
+    root = _chosen_ws()
+    if root is None:
+        raise ValueError("No workspace folder is picked in Arena Desktop.")
+    args = dict(arguments or {})
+    local = agent.LocalTools(root)
+    if tool != "run_cmd":
+        _, inside = local.resolve(str(args.get("path") or "."),
+                                  write=tool in ("write_file", "edit_file", "mkdir", "delete"))
+        if not inside:
+            raise PermissionError("That path is outside the workspace folder.")
+    ok, output = local.run({"name": tool, "params": args})
+    if not ok:
+        raise ValueError(output)
+    return output
+
+
+def _gateway_call_tool(alias: str, arguments) -> str:
+    if str(alias).startswith(_GATEWAY_WORKSPACE_ALIAS):
+        return _gateway_workspace_call(str(alias)[len(_GATEWAY_WORKSPACE_ALIAS):], arguments)
+    return CONNECTORS.call(alias, arguments)
 
 
 def _gateway_approve(server, tool, read_only, arguments) -> bool:
     # Same verdict machinery as the local tool loop: read-only calls grade
     # as reads, everything else as shell. "ask" waits on the UI prompt.
-    permission_tool = "read_file" if read_only else "run_cmd"
-    verdict = BROKER.check(_perm_mode(), permission_tool, inside=True)
+    # Workspace calls grade under their real local tool names, so e.g.
+    # Accept-edits covers write_file/edit_file but still prompts for delete.
+    arguments = arguments or {}
+    command = ""
+    if server == _GATEWAY_WORKSPACE_SERVER and tool in permissions.KIND:
+        permission_tool = tool
+        if tool == "run_cmd":
+            command = str(arguments.get("cmd") or "")
+        target = command or str(arguments.get("path") or ".")
+        summary = f"Agent Gateway workspace: {tool} {target}".strip()
+    else:
+        permission_tool = "read_file" if read_only else "run_cmd"
+        summary = f"Agent Gateway MCP {server}: {tool}"
+    verdict = BROKER.check(_perm_mode(), permission_tool, inside=True, command=command)
     if verdict == "allow":
         return True
     if verdict == "blocked":
         return False
-    info = {"tool": permission_tool, "summary": f"Agent Gateway MCP {server}: {tool}",
+    info = {"tool": permission_tool, "summary": summary,
             "gateway": True, "server": server, "mcp_tool": tool, "inside": True,
-            "rel": server, "path": json.dumps(arguments or {}, ensure_ascii=False)[:300]}
+            "rel": server, "path": json.dumps(arguments, ensure_ascii=False)[:300]}
     pid = BROKER.ask(info)
     LOG.info("gateway: approval requested for %s:%s", server, tool)
     return BROKER.wait(pid, 180) == "allow"
@@ -3675,7 +3772,7 @@ def _gateway():
     if _GATEWAY is None:
         _GATEWAY = GatewayManager(
             tool_index=_gateway_tool_index,
-            call_tool=lambda alias, args: CONNECTORS.call(alias, args),
+            call_tool=_gateway_call_tool,
             approve=_gateway_approve,
             cloudflared_path=components.cloudflared_path,
             logger=LOG)
@@ -3693,16 +3790,44 @@ def _gateway_servers(cfg=None) -> list:
     cfg = cfg or load_config()
     chosen = cfg.get("gateway_servers")
     if isinstance(chosen, list):
-        return [str(s) for s in chosen]
+        servers = [str(s) for s in chosen]
+    else:
+        try:
+            servers = [name for name, srv in (connectors.configured_servers() or {}).items()
+                       if srv.get("enabled") and srv.get("transport", "stdio") == "stdio"]
+        except Exception:
+            servers = []
+    # The workspace folder rides along as a built-in server unless its own
+    # toggle is off; it is not part of the MCP checklist saved in
+    # gateway_servers, so it is appended here at read time.
+    if (_gateway_workspace_on(cfg) and _chosen_ws() is not None
+            and _GATEWAY_WORKSPACE_SERVER not in servers):
+        servers.append(_GATEWAY_WORKSPACE_SERVER)
+    return servers
+
+
+def _gateway_session_key() -> str:
+    """Stable, non-secret fingerprint of the live gateway session.
+
+    Stored per chat so a continued Arena session is re-handed the gateway
+    block exactly when the tunnel it knows is gone (stopped, expired or a
+    fresh app start) — and not on every single message."""
     try:
-        return [name for name, srv in (connectors.configured_servers() or {}).items()
-                if srv.get("enabled") and srv.get("transport", "stdio") == "stdio"]
+        status = _gateway().status(include_pairing=True)
     except Exception:
-        return []
+        return ""
+    if status.get("state") != "on" or not status.get("url"):
+        return ""
+    material = f"{status.get('url')}|{status.get('pairing') or ''}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
 def _gateway_injection(data, cfg=None) -> str:
-    """Protocol block for a fresh native agent session (auto mode), or ''."""
+    """Protocol block for a native agent session (auto mode), or ''.
+
+    Ensures the gateway session is running — starting a fresh tunnel when
+    the previous one was stopped or expired (v5.6.1: also on continued
+    chats, not only new ones)."""
     cfg = cfg or load_config()
     if not _gateway_enabled(cfg) or cfg.get("gateway_auto") is not True:
         return ""
@@ -4012,6 +4137,30 @@ def _native_create_session(message, timezone, connectors, files=None):
                 continue
             break  # validation/auth/rate-limit: try the next body variant
     return None, last_error or "arena.ai kept refusing the agent session"
+
+
+def _native_cursor_max(local, remote):
+    """The later of two .out stream cursors; never moves consumption back.
+
+    The locally saved cursor points at the last record actually consumed
+    (the previous turn's turn-complete record included), while the session
+    snapshot's ``lastEventId`` can sit a few records earlier. Blindly
+    adopting the snapshot value replays that stale tail into the next turn,
+    whose first records then contain the OLD turn-complete — the v5.6.0
+    "continued chat finishes instantly empty" bug. Trigger stream ids are
+    time-ordered tokens, so same-shape ids compare lexicographically;
+    numeric ids compare numerically. Incomparable shapes keep the local
+    cursor, which reflects real consumption."""
+    if not local:
+        return remote
+    if not remote or str(remote) == str(local):
+        return local
+    a, b = str(local), str(remote)
+    if a.isdigit() and b.isdigit():
+        return a if int(a) >= int(b) else b
+    if len(a) == len(b):
+        return max(a, b)
+    return local
 
 
 def _native_refresh_cursor(session_id):
@@ -4411,7 +4560,8 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
             yield _sse({"type": "agent", "stage": "Continuing the existing Arena session…"})
             fresh = _native_refresh_cursor(session_id)
             if fresh:
-                last_event_id, needs_drain = fresh, False
+                last_event_id = _native_cursor_max(last_event_id, fresh)
+                needs_drain = False
                 publish_native()
                 LOG.info("native resume: cursor from session snapshot (%s)", fresh)
         if needs_drain and not last_event_id:
@@ -4449,6 +4599,12 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
     hitl_pause = {"since": None, "now": False}
     turn_done = False
     saw_record = False
+    # Stale-tail guard: a rewound cursor replays the previous turn's tail
+    # (finish + turn-complete) before the new turn's own records. Only a
+    # turn that has actually begun (start / start-step) or produced content
+    # chunks may be ended by a turn-complete / settled stream.
+    turn_started = False
+    turn_content_seen = False
     last_activity = time.monotonic()
     deadline = time.monotonic() + 1800
     cycles = 0
@@ -4466,6 +4622,7 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
         """Answer every waiting Arena capability, append the results to the
         same durable session, and reset the subscribe state for its reply."""
         nonlocal pat, turn_done, saw_record, last_activity, deadline, cycles
+        nonlocal turn_started, turn_content_seen
         batch = list(pending_hitl)
         pending_hitl.clear()
         hitl_pause.update({"since": None, "now": False})
@@ -4569,6 +4726,8 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
                             "media_choice": copy.deepcopy(public)})
         turn_done = False
         saw_record = False
+        turn_started = False
+        turn_content_seen = False
         last_activity = time.monotonic()
         deadline = time.monotonic() + 1800
         cycles = 0
@@ -4645,7 +4804,23 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
                     call_id = str(chunk.get("toolCallId") or "")
                     if call_id:
                         tool_inputs[call_id] = chunk.get("input")
+                if isinstance(chunk, dict) and not native_agent.is_control(chunk):
+                    chunk_type = str(chunk.get("type") or "")
+                    if chunk_type in ("start", "start-step"):
+                        turn_started = True
+                        turn_content_seen = True
+                    elif chunk_type in ("finish", "finish-step"):
+                        if turn_started:
+                            turn_content_seen = True
+                    elif chunk_type and chunk_type not in ("message-metadata", "raw"):
+                        turn_content_seen = True
                 if native_agent.is_turn_complete_record(record):
+                    if not turn_content_seen and not pending_hitl:
+                        # A turn-complete replayed from before this turn's own
+                        # records (rewound cursor): the new reply has not
+                        # started yet, so this cannot be its end.
+                        LOG.info("native stream: ignoring stale turn-complete before new-turn content")
+                        continue
                     LOG.info("native stream: turn-complete record received")
                     if pending_hitl:
                         hitl_pause["now"] = True
@@ -4746,7 +4921,7 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
                 turn_done = True
             continue
         if not turn_done and settled and not got_record:
-            if saw_record:
+            if turn_content_seen:
                 # The session reports itself settled (nothing running) and
                 # no new records arrived: the turn is over even if the
                 # explicit turn-complete record was missed. The records are
@@ -4755,7 +4930,7 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
                 turn_done = True
             else:
                 time.sleep(2)  # the run may still be booting
-        if not turn_done and not saw_record and time.monotonic() - last_activity > 360:
+        if not turn_done and not turn_content_seen and time.monotonic() - last_activity > 360:
             # Six minutes without a single record: do not spin subscribe
             # cycles for half an hour (the "old chat hangs forever" look).
             # The session state is saved by the caller either way.
@@ -6216,17 +6391,25 @@ def _api_chat_impl():
                 native_mem_hash = mem_hash
         if native_digest:
             native_prefix += _digest_block(native_digest)
-        # Agent Gateway: a fresh Arena session learns the temporary tunnel
-        # address + pairing in its first message (same hidden-prefix channel
-        # as memory/digest). Only with both opt-ins and Workspace Sync on.
-        if not (existing.get("native") or {}).get("session_id"):
-            try:
-                gateway_block = _gateway_injection(data)
-                if gateway_block:
-                    native_prefix += gateway_block + "\n"
-                    LOG.info("gateway: injected session block into new native chat")
-            except Exception:
-                LOG.exception("gateway injection failed")
+        # Agent Gateway: the Arena session learns the temporary tunnel
+        # address + pairing through the hidden-prefix channel (same as
+        # memory/digest). A continued session is re-handed the block when
+        # the gateway session it knows is gone — stopped, idle-expired or
+        # from a previous app run — so turning the gateway off and on (or
+        # coming back tomorrow) no longer strands the chat with dead
+        # credentials. Only with both opt-ins and Workspace Sync on.
+        gateway_key = existing.get("gateway_session") or ""
+        try:
+            gateway_block = _gateway_injection(data)
+            current_key = _gateway_session_key() if gateway_block else ""
+            fresh_session = not (existing.get("native") or {}).get("session_id")
+            if gateway_block and current_key and (fresh_session or current_key != gateway_key):
+                native_prefix += gateway_block + "\n"
+                gateway_key = current_key
+                LOG.info("gateway: injected session block into %s native chat",
+                         "new" if fresh_session else "continued")
+        except Exception:
+            LOG.exception("gateway injection failed")
         native_message = native_prefix + message
 
         def native_generate():
@@ -6262,7 +6445,8 @@ def _api_chat_impl():
                             _save_chat(chat_id, title=title, messages=list(nat_history), mode="agent",
                                        modality="text", model_a=None, model_b=None,
                                        eval_id=out["native"]["session_id"],
-                                       agent_backend="arena", native=out["native"])
+                                       agent_backend="arena", native=out["native"],
+                                       gateway_session=gateway_key or None)
                         except Exception:
                             LOG.exception("native chat session save failed")
                     yield event
@@ -6291,6 +6475,7 @@ def _api_chat_impl():
                                    eval_id=(native_state or {}).get("session_id"),
                                    agent_backend="arena", native=native_state,
                                    memory_hash=native_mem_hash,
+                                   gateway_session=gateway_key or None,
                                    pending_digest=("" if native_digest else None))
                     except Exception:
                         LOG.exception("native chat save failed")
