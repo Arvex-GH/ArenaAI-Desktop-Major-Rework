@@ -71,7 +71,7 @@ def main(path: str) -> int:
                    and b"createPairwiseFeedback" in engine))
 
     app = modules["arena.web.app"]
-    checks.append(("app: APP_VERSION 5.5.1", b"5.5.1" in app))
+    checks.append(("app: APP_VERSION 5.6.0", b"5.6.0" in app))
     checks.append(("app: native create direct with genuine-cx ladder",
                    b"genuine-cx+connectors" in app and b"_native_drive" not in app))
     checks.append(("app: turn-complete record detection + drain resume",
@@ -103,7 +103,7 @@ def main(path: str) -> int:
                    b"is_turn_complete_record" in native and b"trigger-control" in native))
 
     index = entries.get("arena/web/static/index.html", b"")
-    checks.append(("index.html: assets v=5.5.1", b"?v=5.5.1" in index))
+    checks.append(("index.html: assets v=5.6.0", b"?v=5.6.0" in index))
     checks.append(("index.html: Arena dropdown chips + resize handles, no segmented bars",
                    b'id="modeButton"' in index and b'id="modalityButton"' in index
                    and b'id="sidebarResize"' in index and b'id="workspaceResize"' in index
@@ -121,7 +121,7 @@ def main(path: str) -> int:
                    and b"cookie-policy" in index))
 
     app_js = entries.get("arena/web/static/app.js", b"")
-    checks.append(("app.js: demo app_version 5.5.0", b"app_version: '5.5.0'" in app_js))
+    checks.append(("app.js: demo app_version 5.6.0", b"app_version: '5.6.0'" in app_js))
     checks.append(("app.js: cloud chat open passes title",
                    b"openArenaChat(id, type, title)" in app_js))
     checks.append(("app.js: Arena dropdowns + vote + chat lock",
@@ -257,6 +257,19 @@ def main(path: str) -> int:
                    b"_run_children_pair" in app and b"msg_index" in app
                    and b"Edit automation" in app_js and b"Save changes" in app_js
                    and b"force ? '&force=1'" in app_js))
+    checks.append(("v5.6: linked-chat refresh endpoint + transcript merge",
+                   b"/refresh" in app and b"arena_refresh" in app
+                   and b"merge_messages" in history_sync
+                   and b"Refresh from Arena" in app_js))
+    checks.append(("v5.6: native Arena HITL ask_user + tool-results append",
+                   b"_native_ask_user_hitl" in app and b"build_hitl_append_body" in app
+                   and b"data-tool-results" in native_m
+                   and b"awaiting_user_response" in native_m))
+    checks.append(("v5.6: native image choice, CAS proxy and model reveal",
+                   b"_native_image_choice_hitl" in app and b"/api/native-cas/" in app
+                   and b"data-image-battle-reveal" in native_m
+                   and b"renderMediaChoiceCard" in app_js
+                   and b"Use this image" in app_js))
 
     ok = True
     for label, passed in checks:

@@ -21,7 +21,7 @@ LOG = logging.getLogger(__name__)
 _KNOWN_STRUCTURAL = {
     "start", "start-step", "finish", "finish-step", "text-start", "text-end",
     "reasoning-start", "reasoning-end", "tool-input-start", "tool-input-delta",
-    "tool-input-end", "message-metadata", "raw",
+    "tool-input-end", "message-metadata", "raw", "data-image-battle-reveal",
 }
 _SEEN_UNKNOWN: set = set()
 
@@ -128,9 +128,46 @@ def build_create_body(text: str, timezone=None, connectors=None, message_id=None
     return body
 
 
-def build_append_body(text: str, trigger_address: str, timezone=None,
-                      connectors=None, message_id=None, cx=None, files=None) -> dict:
-    message = user_message(text, message_id, files=files)
+HITL_TOOL_NAMES = {"ask_user", "add_voice", "propose_plan", "generate_image"}
+AWAITING_USER_RESPONSE = "awaiting_user_response"
+_TOOL_DISPLAY_NAMES = {
+    "ask_user": "Question",
+    "generate_image": "Generate image",
+    "add_voice": "Choose voice",
+    "propose_plan": "Plan",
+}
+
+
+def normalize_tool_name(name) -> str:
+    """Arena streams its own built-in capabilities as ``arena__<tool>``.
+
+    The desktop UI and transcript use the short capability name, which is
+    also the name Arena expects back inside a HITL tool-result envelope.
+    """
+    value = str(name or "tool")
+    if value.startswith("tool-"):
+        value = value[5:]
+    if value.startswith("arena__"):
+        value = value[7:]
+    return value or "tool"
+
+
+def tool_display_name(name) -> str:
+    short = normalize_tool_name(name)
+    return _TOOL_DISPLAY_NAMES.get(short, short)
+
+
+def user_message_parts(parts, message_id=None) -> dict:
+    return {
+        "id": message_id or new_uuid(),
+        "role": "user",
+        "parts": list(parts or []),
+    }
+
+
+def build_append_parts_body(parts, trigger_address: str, timezone=None,
+                            connectors=None, message_id=None, cx=None) -> dict:
+    message = user_message_parts(parts, message_id)
     return {
         "kind": "message",
         "payload": {
@@ -140,6 +177,173 @@ def build_append_body(text: str, trigger_address: str, timezone=None,
             "messageId": message["id"],
             "metadata": client_data(timezone, connectors, cx=cx),
         },
+    }
+
+
+def build_append_body(text: str, trigger_address: str, timezone=None,
+                      connectors=None, message_id=None, cx=None, files=None) -> dict:
+    message = user_message(text, message_id, files=files)
+    return build_append_parts_body(
+        message["parts"], trigger_address, timezone=timezone,
+        connectors=connectors, message_id=message["id"], cx=cx)
+
+
+def tool_results_part(results) -> dict:
+    """The exact user-message part Arena's web client appends for HITL."""
+    clean = []
+    for item in results or []:
+        if not isinstance(item, dict):
+            continue
+        clean.append({
+            "requestNodeId": item.get("requestNodeId") or item.get("request_node_id"),
+            "tool": normalize_tool_name(item.get("tool")),
+            "toolCallId": str(item.get("toolCallId") or item.get("tool_call_id") or ""),
+            "output": item.get("output") if isinstance(item.get("output"), dict) else {},
+        })
+    return {"type": "data-tool-results", "data": clean}
+
+
+def build_hitl_append_body(results, trigger_address: str, timezone=None,
+                           connectors=None, message_id=None, cx=None) -> dict:
+    return build_append_parts_body(
+        [tool_results_part(results)], trigger_address, timezone=timezone,
+        connectors=connectors, message_id=message_id, cx=cx)
+
+
+def output_status(output):
+    if isinstance(output, dict):
+        return str(output.get("status") or "")
+    if isinstance(output, str):
+        parsed = _json_or_none(output)
+        if isinstance(parsed, dict):
+            return str(parsed.get("status") or "")
+    return ""
+
+
+def message_ids_from_chunk(chunk):
+    """Return ``(message_id, node_id)`` visible in one stream chunk."""
+    if not isinstance(chunk, dict):
+        return None, None
+    message_id = chunk.get("messageId")
+    metadata = chunk.get("messageMetadata")
+    node_id = None
+    if isinstance(metadata, dict):
+        node_id = metadata.get("nodeId") or metadata.get("node_id")
+    return (str(message_id) if message_id else None,
+            str(node_id) if node_id else None)
+
+
+def ask_user_questions(tool_input):
+    """Normalise Arena's structured ``ask_user`` input for the desktop UI."""
+    if isinstance(tool_input, str):
+        tool_input = _json_or_none(tool_input)
+    if not isinstance(tool_input, dict):
+        return []
+    questions = tool_input.get("questions")
+    if not isinstance(questions, list):
+        # Be tolerant of a single-question shorthand if Arena ever sends it.
+        if tool_input.get("question"):
+            questions = [tool_input]
+        else:
+            return []
+    result = []
+    for index, question in enumerate(questions[:6]):
+        if not isinstance(question, dict):
+            continue
+        text = str(question.get("question") or "").strip()
+        if not text:
+            continue
+        options = []
+        for option_index, option in enumerate((question.get("options") or [])[:6]):
+            if isinstance(option, str):
+                option = {"label": option}
+            if not isinstance(option, dict):
+                continue
+            label = str(option.get("label") or "").strip()
+            if not label:
+                continue
+            options.append({
+                "id": str(option.get("id") or f"option_{option_index + 1}"),
+                "label": label,
+                "description": str(option.get("description") or "").strip(),
+            })
+        result.append({
+            "id": str(question.get("id") or f"question_{index + 1}"),
+            "question": text,
+            "options": options,
+            "allowCustomResponse": question.get("allowCustomResponse") is not False,
+        })
+    return result
+
+
+def _candidate_list(value):
+    candidates = []
+    if not isinstance(value, list):
+        return candidates
+    for fallback_index, item in enumerate(value[:16]):
+        if not isinstance(item, dict):
+            continue
+        try:
+            index = int(item.get("index", fallback_index))
+        except (TypeError, ValueError):
+            index = fallback_index
+        candidate = {"index": index}
+        if isinstance(item.get("hash"), str) and item["hash"]:
+            candidate["hash"] = item["hash"]
+        for key in ("url", "mediaType", "filename", "title"):
+            if isinstance(item.get(key), str) and item[key]:
+                candidate[key] = item[key]
+        candidates.append(candidate)
+    return candidates
+
+
+def _attribution_list(value):
+    attribution = []
+    if not isinstance(value, list):
+        return attribution
+    for fallback_index, item in enumerate(value[:16]):
+        if not isinstance(item, dict):
+            continue
+        try:
+            index = int(item.get("index", fallback_index))
+        except (TypeError, ValueError):
+            index = fallback_index
+        clean = {"index": index}
+        for key in ("model_name", "organization"):
+            if isinstance(item.get(key), str) and item[key]:
+                clean[key] = item[key]
+        if item.get("is_private") is not None:
+            clean["is_private"] = bool(item.get("is_private"))
+        attribution.append(clean)
+    return attribution
+
+
+def image_choice_from_output(output, tool_input=None):
+    """Normalised pending/completed state for ``generate_image`` output."""
+    if isinstance(output, str):
+        output = _json_or_none(output)
+    if not isinstance(output, dict):
+        return None
+    if isinstance(tool_input, str):
+        tool_input = _json_or_none(tool_input)
+    tool_input = tool_input if isinstance(tool_input, dict) else {}
+    candidates = _candidate_list(output.get("candidates"))
+    if not candidates:
+        return None
+    selected = output.get("selected_index")
+    try:
+        selected_index = int(selected) if selected is not None else None
+    except (TypeError, ValueError):
+        selected_index = None
+    return {
+        "kind": "image",
+        "status": str(output.get("status") or ("completed" if selected_index is not None else "")),
+        "prompt": str(tool_input.get("prompt") or output.get("prompt") or ""),
+        "file_path": str(output.get("file_path") or tool_input.get("file_path") or ""),
+        "candidates": candidates,
+        "selected_index": selected_index,
+        "selection_method": str(output.get("selection_method") or ""),
+        "attribution": _attribution_list(output.get("attribution")),
     }
 
 
@@ -342,25 +546,50 @@ def map_chunk(chunk, tool_names: dict) -> list:
         return [{"type": "reasoning", "model": "a", "text": str(delta)}] if delta else []
     if kind == "tool-input-available":
         call_id = str(chunk.get("toolCallId") or "")
-        name = str(chunk.get("toolName") or "tool")
+        name = normalize_tool_name(chunk.get("toolName"))
         if call_id:
             tool_names[call_id] = name
+        title = tool_display_name(name)
+        tool_input = chunk.get("input")
+        detail = _short(tool_input)
+        if name == "ask_user":
+            questions = ask_user_questions(tool_input)
+            if questions:
+                detail = questions[0]["question"]
+        elif name == "generate_image" and isinstance(tool_input, dict):
+            detail = str(tool_input.get("prompt") or tool_input.get("file_path") or detail)
         return [{
-            "type": "tool_call", "id": call_id, "tool": name, "name": name,
-            "model": "a", "title": name, "summary": name, "rel": name,
-            "path": _short(chunk.get("input")), "inside": False, "status": "running",
+            "type": "tool_call", "id": call_id, "tool": name, "name": title,
+            "model": "a", "title": title, "summary": title, "rel": title,
+            "path": detail, "inside": False, "status": "running",
         }]
     if kind in ("tool-output-available", "tool-output-error"):
         call_id = str(chunk.get("toolCallId") or "")
-        name = tool_names.get(call_id, "tool")
+        name = normalize_tool_name(tool_names.get(call_id, "tool"))
         ok = kind == "tool-output-available"
         output = chunk.get("output") if ok else (
             chunk.get("errorText") or chunk.get("error") or "")
-        return [{
-            "type": "tool_result", "id": call_id, "tool": name, "name": name,
-            "model": "a", "rel": name, "ok": ok,
+        if ok and output_status(output) == AWAITING_USER_RESPONSE:
+            return [{
+                "type": "hitl_wait", "id": call_id, "tool_call_id": call_id,
+                "tool": name, "name": tool_display_name(name), "model": "a",
+                "output": output if isinstance(output, dict) else _json_or_none(output) or {},
+            }]
+        events = [{
+            "type": "tool_result", "id": call_id, "tool": name,
+            "name": tool_display_name(name),
+            "model": "a", "rel": tool_display_name(name), "ok": ok,
             "status": "ok" if ok else "error", "output": _short(output),
         }]
+        if ok and name == "generate_image":
+            choice = image_choice_from_output(output)
+            if choice:
+                events.append({
+                    "type": "media_choice_done", "id": call_id,
+                    "tool_call_id": call_id, "tool": name, "model": "a",
+                    "media_choice": choice,
+                })
+        return events
     if kind == "tool-approval-request":
         call_id = str(chunk.get("toolCallId") or "")
         name = tool_names.get(call_id, "tool")
@@ -389,6 +618,13 @@ def map_chunk(chunk, tool_names: dict) -> list:
         }]
     if isinstance(kind, str) and kind.startswith("data-"):
         data = chunk.get("data")
+        if kind == "data-image-battle-reveal" and isinstance(data, dict):
+            return [{
+                "type": "media_reveal", "model": "a",
+                "tool_call_id": str(data.get("toolCallId") or data.get("tool_call_id") or ""),
+                "request_node_id": str(data.get("requestNodeId") or data.get("request_node_id") or ""),
+                "attribution": _attribution_list(data.get("attribution")),
+            }]
         if isinstance(data, dict):
             url = data.get("url")
             if isinstance(url, str) and url.startswith(("http://", "https://")):

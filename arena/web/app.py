@@ -264,7 +264,7 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "5.5.1"
+APP_VERSION = "5.6.0"
 
 
 @app.after_request
@@ -1347,6 +1347,100 @@ def api_chat_load(chat_id):
     return jsonify(data)
 
 
+@app.route("/api/chats/<chat_id>/refresh", methods=["POST"])
+def api_chat_refresh(chat_id):
+    """Pull later arena.ai turns into an already-linked local chat.
+
+    Importing used to be a one-time snapshot: if the same conversation was
+    continued in a browser, the desktop copy silently stayed behind.  This
+    endpoint downloads the authoritative Arena transcript again and merges it
+    without duplicating the turns already present locally.  It deliberately
+    refuses to pretend a refresh happened when Arena does not return a
+    readable transcript for a non-empty local chat.
+    """
+    global _conversation_history
+    if not _validate_chat_id(chat_id):
+        return jsonify({"error": "Invalid chat id", "code": "bad_request"}), 400
+    data = _load_chat(chat_id)
+    if not data:
+        return jsonify({"error": "Chat not found", "code": "not_found"}), 404
+    if _chat_generating(chat_id):
+        return jsonify({"error": "This chat is generating right now. Refresh it when the answer finishes.",
+                        "code": "busy"}), 409
+
+    native = data.get("native") if isinstance(data.get("native"), dict) else {}
+    session_id = native.get("session_id")
+    is_agentic = data.get("agent_backend") == "arena" or bool(session_id)
+    remote_id = session_id or data.get("eval_id")
+    if not remote_id:
+        return jsonify({"error": "This chat is not linked to an arena.ai conversation, so there is nothing to refresh.",
+                        "code": "unlinked"}), 422
+
+    local_messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+    if is_agentic:
+        session, error, status = _arena_get_json(
+            contracts.PATHS["chat_session"].format(
+                session_id=urllib.parse.quote(str(remote_id))), timeout=45)
+        if error:
+            code = 503 if status == 0 else status
+            return jsonify({"ok": False, "error": error, "code": "arena_refresh"}), code
+        if not isinstance(session, dict):
+            return jsonify({"ok": False, "error": "Arena did not return a readable Agent transcript.",
+                            "code": "arena_refresh"}), 422
+        remote_messages = history_sync.agentic_messages(session)
+        if local_messages and not remote_messages:
+            return jsonify({"ok": False, "error": "Arena did not return a readable Agent transcript.",
+                            "code": "arena_refresh"}), 422
+        merged, added = history_sync.merge_messages(local_messages, remote_messages)
+        title = history_sync.agentic_title(session) or data.get("title") or "Arena Agent"
+        cursor = history_sync.agentic_last_event_id(session)
+        native_out = dict(native)
+        native_out.update({
+            "backend": "arena",
+            "session_id": str(remote_id),
+            "trigger_address": native.get("trigger_address") or str(remote_id),
+            "last_event_id": cursor or native.get("last_event_id"),
+            "needs_drain": False if cursor else bool(native.get("needs_drain")),
+        })
+        _save_chat(chat_id, title=title, messages=merged, mode="agent", modality="text",
+                   model_a=None, model_b=None, eval_id=str(remote_id),
+                   source=data.get("source") or "arena", agent_backend="arena",
+                   native=native_out)
+        kind = "agentic"
+    else:
+        session, error, status = _arena_get_json(
+            contracts.PATHS["evaluation"].format(
+                eval_id=urllib.parse.quote(str(remote_id))), timeout=45)
+        if error:
+            code = 503 if status == 0 else status
+            return jsonify({"ok": False, "error": error, "code": "arena_refresh"}), code
+        try:
+            converted = history_sync.session_to_local(session, model_name=_model_name)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"Could not read this Arena chat: {exc}",
+                            "code": "arena_refresh"}), 422
+        remote_messages = converted.get("messages") or []
+        if local_messages and not remote_messages:
+            return jsonify({"ok": False, "error": "Arena did not return a readable transcript.",
+                            "code": "arena_refresh"}), 422
+        merged, added = history_sync.merge_messages(local_messages, remote_messages)
+        title = converted.get("title") or data.get("title") or "Arena chat"
+        _save_chat(chat_id, title=title, messages=merged,
+                   mode=data.get("mode") or converted.get("mode") or "battle",
+                   modality=data.get("modality") or converted.get("modality") or "text",
+                   model_a=data.get("model_a") or converted.get("model_a"),
+                   model_b=data.get("model_b") or converted.get("model_b"),
+                   eval_id=str(remote_id), source=data.get("source") or "arena")
+        kind = "evaluation"
+
+    if _current_chat_id == chat_id:
+        _conversation_history = merged
+        get_client().eval_id = str(remote_id)
+    LOG.info("chat refresh: chat=%s kind=%s added=%s total=%s", chat_id[:8], kind, added, len(merged))
+    return jsonify({"ok": True, "chat_id": chat_id, "kind": kind,
+                    "added": added, "total": len(merged), "title": title})
+
+
 @app.route("/api/chats/<chat_id>/compact", methods=["POST"])
 def api_chat_compact(chat_id):
     """Arm a context reset: the next message starts a fresh Arena session
@@ -1571,7 +1665,10 @@ def api_diagnostics():
 
 _QUESTIONS: dict = {}
 _questions_lock = threading.Lock()
+_MEDIA_CHOICES: dict = {}
+_media_choices_lock = threading.Lock()
 QUESTION_TIMEOUT = 600
+_NATIVE_CAS_HASH_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 STREAM_IDLE_TIMEOUT = 90   # seconds of silence before a stalled model stream is closed
 CHILD_TIME_BUDGET = 360    # max seconds one sub-agent (or fan-out child) may run
 
@@ -1580,6 +1677,78 @@ def _question_answer(qid):
     with _questions_lock:
         q = _QUESTIONS.get(qid)
         return (q or {}).get("answer")
+
+
+def _media_choice_answer(choice_id):
+    with _media_choices_lock:
+        item = _MEDIA_CHOICES.get(choice_id)
+        return copy.deepcopy((item or {}).get("answer"))
+
+
+def _native_cas_url(media_hash) -> Optional[str]:
+    value = str(media_hash or "")
+    return f"/api/native-cas/{value}" if _NATIVE_CAS_HASH_RE.match(value) else None
+
+
+def _apply_media_attribution(choice: dict, attribution) -> dict:
+    """Attach model reveal data to a media choice and each candidate."""
+    if not isinstance(choice, dict):
+        return choice
+    if not isinstance(attribution, list):
+        attribution = []
+    by_index = {}
+    current = choice.get("attribution") if isinstance(choice.get("attribution"), list) else []
+    for item in [*current, *attribution]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            index = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        merged = dict(by_index.get(index) or {"index": index})
+        for key in ("model_name", "organization", "is_private"):
+            if item.get(key) not in (None, ""):
+                merged[key] = item[key]
+        by_index[index] = merged
+    choice["attribution"] = [by_index[key] for key in sorted(by_index)]
+    for candidate in choice.get("candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        reveal = by_index.get(candidate.get("index")) or {}
+        for key in ("model_name", "organization", "is_private"):
+            if reveal.get(key) not in (None, ""):
+                candidate[key] = reveal[key]
+    return choice
+
+
+def _public_media_choice(choice: dict, choice_id=None, tool_call_id=None, chat_id=None) -> dict:
+    """Desktop-safe form of one native image choice.
+
+    Arena identifies generated candidates by content hash, not a public URL.
+    The UI therefore receives this app's authenticated same-origin CAS proxy
+    URL.  The hash remains in the saved choice so a later reopen can fetch the
+    same candidate again and so the exact server output can be rebuilt.
+    """
+    public = copy.deepcopy(choice or {})
+    public.setdefault("kind", "image")
+    public.setdefault("status", "awaiting_user_response")
+    if choice_id:
+        public["id"] = str(choice_id)
+    if tool_call_id:
+        public["tool_call_id"] = str(tool_call_id)
+    if chat_id:
+        public["chat_id"] = str(chat_id)
+    candidates = []
+    for candidate in public.get("candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        item = dict(candidate)
+        url = item.get("url")
+        if not (isinstance(url, str) and url.startswith(("http://", "https://", "/api/native-cas/"))):
+            item["url"] = _native_cas_url(item.get("hash"))
+        candidates.append(item)
+    public["candidates"] = candidates
+    return _apply_media_attribution(public, public.get("attribution") or [])
 
 
 def _parse_todos(raw: str) -> list:
@@ -1625,6 +1794,100 @@ def api_question_answer(qid):
             return jsonify({"error": "That question is no longer waiting.", "code": "gone"}), 404
         q["answer"] = answer[:2000]
     return jsonify({"ok": True})
+
+
+@app.route("/api/media-choices")
+def api_media_choices():
+    """Native Agent image choices still waiting for the user."""
+    with _media_choices_lock:
+        items = []
+        for item in _MEDIA_CHOICES.values():
+            if item.get("answer") is not None:
+                continue
+            public = copy.deepcopy(item.get("media_choice") or {})
+            public.update({
+                "id": item.get("id"),
+                "chat_id": item.get("chat_id"),
+                "tool_call_id": item.get("tool_call_id"),
+            })
+            items.append(public)
+    return jsonify(items)
+
+
+@app.route("/api/media-choices/<choice_id>", methods=["POST"])
+def api_media_choice_answer(choice_id):
+    data = request.get_json(silent=True) or {}
+    skip = data.get("skip") is True or data.get("selection_method") == "skip"
+    with _media_choices_lock:
+        item = _MEDIA_CHOICES.get(choice_id)
+        if not item or item.get("answer") is not None:
+            return jsonify({"error": "That image choice is no longer waiting.", "code": "gone"}), 404
+        candidates = ((item.get("media_choice") or {}).get("candidates") or [])
+        indexes = []
+        for candidate in candidates:
+            try:
+                indexes.append(int(candidate.get("index")))
+            except (AttributeError, TypeError, ValueError):
+                pass
+        if not indexes:
+            return jsonify({"error": "This image choice has no candidates.", "code": "empty"}), 422
+        if skip:
+            selected = indexes[0]
+        else:
+            try:
+                selected = int(data.get("selected_index"))
+            except (TypeError, ValueError):
+                return jsonify({"error": "Pick one of the images first.", "code": "empty"}), 400
+            if selected not in indexes:
+                return jsonify({"error": "That image is not one of the choices.", "code": "bad_index"}), 400
+        item["answer"] = {
+            "selected_index": selected,
+            "selection_method": "skip" if skip else "user",
+        }
+    return jsonify({"ok": True, "selected_index": selected,
+                    "selection_method": "skip" if skip else "user"})
+
+
+@app.route("/api/native-cas/<media_hash>")
+def api_native_cas(media_hash):
+    """Authenticated same-origin proxy for Arena Agent CAS candidates.
+
+    The candidate identifiers in the native stream are content hashes.  The
+    website serves them from /api/chat/workspace/cas/user/<hash> with the
+    signed-in session; proxying keeps the image same-origin for the desktop
+    UI and means no cookie or signed URL is ever persisted in chat.json.
+    """
+    if not _NATIVE_CAS_HASH_RE.match(str(media_hash or "")):
+        return jsonify({"error": "Invalid media identifier"}), 400
+    client = get_client()
+    if _engine_on():
+        if ENGINE.ready():
+            try:
+                ENGINE.sync_to(client)
+            except Exception:
+                LOG.exception("native CAS: engine cookie sync failed")
+        elif not client.cookie_str:
+            return jsonify({"error": "arena.ai session is still loading"}), 503
+    if not _signed_in_somewhere(client):
+        return jsonify({"error": "Not signed in"}), 401
+    try:
+        upstream = client.session.get(
+            f"{contracts.ORIGIN}/api/chat/workspace/cas/user/{media_hash}",
+            timeout=60)
+    except requests.RequestException as exc:
+        return jsonify({"error": f"Could not load this image: {exc}"}), 503
+    if upstream.status_code != 200:
+        return jsonify({"error": f"Arena returned HTTP {upstream.status_code} for this image"}), (
+            upstream.status_code if 400 <= upstream.status_code < 600 else 502)
+    content = upstream.content or b""
+    if len(content) > 35 * 1024 * 1024:
+        return jsonify({"error": "This image is too large to preview"}), 413
+    content_type = upstream.headers.get("Content-Type") or "application/octet-stream"
+    response = Response(content, content_type=content_type)
+    response.headers["Cache-Control"] = "private, max-age=3600"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Disposition"] = "inline"
+    return response
 
 
 # ---------- v5: chat search / export / fork, workspace snapshot, Elo, automations ----------
@@ -3805,6 +4068,213 @@ def _iter_records_idle(resp, idle_seconds, should_stop=None):
         yield item
 
 
+def _native_ask_user_hitl(pending: dict):
+    """Ask Arena Agent's structured questions in the desktop UI.
+
+    Yields SSE lines and returns ``(output, display)``.  ``output`` is the
+    exact object Arena expects in a data-tool-results part; ``None`` means
+    the user stopped the turn, so the caller must not append anything.
+    """
+    chat_id = getattr(_tl, "chat_id", None) or pending.get("chat_id")
+    entry = pending.get("entry") if isinstance(pending.get("entry"), dict) else {}
+    questions = native_agent.ask_user_questions(pending.get("input"))
+    if not questions:
+        entry.update({"ok": True, "status": "skipped",
+                      "question": "", "answer": "Skipped"})
+        yield _sse({"type": "notice", "model": "a",
+                    "text": "Arena Agent asked a question in a format Arena Desktop could not read; it was skipped."})
+        return {"skipped": True, "answers": []}, {"skipped": True, "questions": []}
+
+    entry.update({
+        "tool": "ask_user",
+        "summary": "Question: " + (" ".join(questions[0]["question"].split())[:120] or "…"),
+        "status": "waiting",
+        "questions": questions,
+        "answers": [],
+    })
+    answers = []
+    display_answers = []
+    for question in questions:
+        display_options = []
+        by_display = {}
+        for option in question["options"]:
+            label = option["label"]
+            if option.get("description"):
+                label = f"{label} — {option['description']}"
+            display_options.append(label)
+            by_display[label] = option
+            by_display[option["label"]] = option
+        qid = generate_uuidv7()
+        custom = bool(question.get("allowCustomResponse", True))
+        with _questions_lock:
+            _QUESTIONS[qid] = {
+                "id": qid, "chat_id": chat_id, "kind": "question",
+                "question": question["question"], "options": display_options,
+                "custom": custom, "lane": "a", "subagent": None,
+                "answer": None,
+            }
+        yield _sse({"type": "question", "id": qid, "lane": "a", "model": "a",
+                    "kind": "question", "question": question["question"],
+                    "options": display_options, "custom": custom,
+                    "chat_id": chat_id, "subagent": None})
+        _notify("Arena Desktop", "Arena Agent is waiting for your answer.", "question")
+        answer_text = yield from _wait_for(
+            lambda qid=qid: _question_answer(qid), QUESTION_TIMEOUT)
+        with _questions_lock:
+            _QUESTIONS.pop(qid, None)
+        yield _sse({"type": "question_done", "id": qid, "lane": "a",
+                    "answer": answer_text or ""})
+        if _stopped():
+            entry.update({"ok": False, "status": "cancelled",
+                          "question": question["question"],
+                          "options": display_options, "answer": ""})
+            return None, {"cancelled": True, "questions": questions,
+                          "answers": display_answers}
+        if not answer_text:
+            entry.update({"ok": True, "status": "skipped",
+                          "question": "\n\n".join(q["question"] for q in questions),
+                          "options": display_options, "answer": "Skipped",
+                          "answers": display_answers})
+            return {"skipped": True, "answers": []}, {
+                "skipped": True, "questions": questions, "answers": display_answers}
+        selected = by_display.get(str(answer_text))
+        if selected:
+            answers.append({
+                "questionId": question["id"],
+                "selectedOptionId": selected["id"],
+                "customResponse": None,
+            })
+            display_answers.append(selected["label"])
+        else:
+            clean = str(answer_text).strip()[:2000]
+            answers.append({
+                "questionId": question["id"],
+                "selectedOptionId": None,
+                "customResponse": clean,
+            })
+            display_answers.append(clean)
+
+    entry.update({
+        "question": "\n\n".join(q["question"] for q in questions),
+        "options": [option["label"] for q in questions for option in q["options"]],
+        "answer": "\n".join(display_answers),
+        "answers": answers,
+        "status": "waiting",
+        "ok": True,
+    })
+    return {"skipped": False, "answers": answers}, {
+        "skipped": False, "questions": questions, "answers": display_answers}
+
+
+def _native_image_choice_hitl(pending: dict):
+    """Show native ``generate_image`` candidates and wait for one choice.
+
+    Returns ``(server_output, public_choice)``.  A timeout follows Arena's
+    own no-choice path: the first candidate is reported with
+    ``selection_method: \"skip\"`` rather than leaving the durable session
+    waiting forever.  Stop returns ``(None, public_choice)``.
+    """
+    chat_id = getattr(_tl, "chat_id", None) or pending.get("chat_id")
+    entry = pending.get("entry") if isinstance(pending.get("entry"), dict) else {}
+    choice = native_agent.image_choice_from_output(
+        pending.get("output"), pending.get("input"))
+    if not choice:
+        entry.update({"ok": False, "status": "error"})
+        yield _sse({"type": "notice", "model": "a",
+                    "text": "Arena Agent generated image candidates in a format Arena Desktop could not read."})
+        return None, {}
+    choice_id = generate_uuidv7()
+    public = _public_media_choice(
+        choice, choice_id=choice_id,
+        tool_call_id=pending.get("tool_call_id"), chat_id=chat_id)
+    public["status"] = "awaiting_user_response"
+    public["selected_index"] = None
+    public["selection_method"] = ""
+    entry.update({
+        "tool": "generate_image",
+        "summary": "Generate image" + (f": {public.get('prompt')}" if public.get("prompt") else ""),
+        "status": "waiting",
+        "ok": True,
+        "media_choice": public,
+    })
+    with _media_choices_lock:
+        _MEDIA_CHOICES[choice_id] = {
+            "id": choice_id, "chat_id": chat_id,
+            "tool_call_id": pending.get("tool_call_id"),
+            "media_choice": copy.deepcopy(public), "answer": None,
+        }
+    yield _sse({"type": "media_choice", "id": choice_id, "model": "a",
+                "lane": "a", "chat_id": chat_id,
+                "tool_call_id": pending.get("tool_call_id"),
+                "media_choice": copy.deepcopy(public)})
+    _notify("Arena Desktop", "Arena Agent is waiting for you to choose an image.", "question")
+    answer = yield from _wait_for(
+        lambda choice_id=choice_id: _media_choice_answer(choice_id), QUESTION_TIMEOUT)
+    with _media_choices_lock:
+        _MEDIA_CHOICES.pop(choice_id, None)
+    candidate_indexes = [item.get("index") for item in public.get("candidates") or []
+                         if isinstance(item, dict)]
+    if _stopped():
+        public["status"] = "cancelled"
+        entry.update({"ok": False, "status": "cancelled", "media_choice": public})
+        yield _sse({"type": "media_choice_done", "id": choice_id, "model": "a",
+                    "tool_call_id": pending.get("tool_call_id"),
+                    "media_choice": copy.deepcopy(public)})
+        return None, public
+    if not answer:
+        selected_index = candidate_indexes[0] if candidate_indexes else 0
+        selection_method = "skip"
+    else:
+        selected_index = answer.get("selected_index")
+        if selected_index not in candidate_indexes:
+            selected_index = candidate_indexes[0] if candidate_indexes else 0
+            selection_method = "skip"
+        else:
+            selection_method = "skip" if answer.get("selection_method") == "skip" else "user"
+    public.update({
+        "status": "completed",
+        "selected_index": selected_index,
+        "selection_method": selection_method,
+    })
+    entry.update({"media_choice": public, "status": "waiting", "ok": True})
+    server_candidates = []
+    for candidate in choice.get("candidates") or []:
+        clean = {"index": candidate.get("index", 0)}
+        if candidate.get("hash"):
+            clean["hash"] = candidate["hash"]
+        server_candidates.append(clean)
+    server_output = {
+        "status": "completed",
+        "candidates": server_candidates,
+        "selected_index": selected_index,
+        "file_path": choice.get("file_path") or "",
+        "selection_method": selection_method,
+    }
+    if choice.get("attribution"):
+        server_output["attribution"] = choice["attribution"]
+    return server_output, public
+
+
+def _native_apply_media_reveal(result: dict, event: dict) -> Optional[dict]:
+    """Persist a model reveal onto the matching generate_image tool entry."""
+    attribution = event.get("attribution") or []
+    if not attribution:
+        return None
+    tools = result.get("tools") if isinstance(result, dict) else []
+    wanted = str(event.get("tool_call_id") or "")
+    fallback = None
+    for entry in tools or []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("media_choice"), dict):
+            continue
+        fallback = entry
+        if wanted and entry["media_choice"].get("tool_call_id") == wanted:
+            fallback = entry
+            break
+    if fallback is None:
+        return None
+    return _apply_media_attribution(fallback["media_choice"], attribution)
+
+
 def _native_drain_cursor(client, session_id, trigger_address, pat, timezone, max_cycles=3):
     """Advance past the backlog of an imported session's .out stream.
 
@@ -3972,11 +4442,138 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
     yield _sse({"type": "agent", "stage": "Arena Agent · session active"})
     tool_names: dict = {}
     tool_entries: dict = {}
+    tool_inputs: dict = {}
+    pending_hitl: list = []
+    current_message_id = None
+    current_node_id = None
+    hitl_pause = {"since": None, "now": False}
     turn_done = False
     saw_record = False
     last_activity = time.monotonic()
     deadline = time.monotonic() + 1800
     cycles = 0
+
+    def stream_should_stop():
+        if _stopped() or hitl_pause.get("now"):
+            return True
+        since = hitl_pause.get("since")
+        # Give records that are already queued for the same model step a
+        # brief chance to arrive (a finish-step or another HITL call), then
+        # close this subscribe cycle so the user can be asked promptly.
+        return bool(since is not None and time.monotonic() - since >= 2)
+
+    def process_pending_hitl():
+        """Answer every waiting Arena capability, append the results to the
+        same durable session, and reset the subscribe state for its reply."""
+        nonlocal pat, turn_done, saw_record, last_activity, deadline, cycles
+        batch = list(pending_hitl)
+        pending_hitl.clear()
+        hitl_pause.update({"since": None, "now": False})
+        if not batch:
+            return True
+        results = []
+        for pending in batch:
+            entry = pending.get("entry") if isinstance(pending.get("entry"), dict) else {}
+            if _stopped():
+                entry.update({"ok": False, "status": "cancelled"})
+                return False
+            tool_name = pending.get("tool")
+            if tool_name == "ask_user":
+                output, display = yield from _native_ask_user_hitl(pending)
+                pending["display"] = display
+            elif tool_name == "generate_image":
+                output, public = yield from _native_image_choice_hitl(pending)
+                pending["public_choice"] = public
+            else:
+                entry.update({"ok": False, "status": "error"})
+                yield _sse({"type": "notice", "model": "a",
+                            "text": (f"Arena Agent is waiting for a {tool_name or 'tool'} response, "
+                                     "but Arena Desktop cannot answer that prompt in the app yet. "
+                                     "The Arena session is saved so it can be continued on arena.ai.")})
+                return False
+            if output is None:
+                return False
+            if not pending.get("request_node_id"):
+                entry.update({"ok": False, "status": "error"})
+                yield fail("Arena Agent asked for input, but its stream did not identify the request. "
+                           "The session is saved; it can be continued on arena.ai.")
+                return False
+            pending["output"] = output
+            results.append({
+                "requestNodeId": pending.get("request_node_id"),
+                "tool": tool_name,
+                "toolCallId": pending.get("tool_call_id"),
+                "output": output,
+            })
+        if _stopped() or not results:
+            return False
+
+        cx = None
+        if _engine_on():
+            try:
+                preflight = ENGINE.native_preflight(native_agent.RECAPTCHA_V3_ACTION)
+                cx = (preflight or {}).get("cx")
+            except Exception:
+                LOG.exception("native HITL: preflight failed")
+        payload = native_agent.build_hitl_append_body(
+            results, trigger_address, timezone, connectors, cx=cx)
+        _, append_status = _native_append(client, trigger_address, pat, payload)
+        if append_status in (401, 403):
+            pat, _ = _native_pat(session_id, timezone, start=False)
+            if pat:
+                _, append_status = _native_append(client, trigger_address, pat, payload)
+        if append_status == 404:
+            pat, _ = _native_pat(session_id, timezone, start=True)
+            if pat:
+                _, append_status = _native_append(client, trigger_address, pat, payload)
+        LOG.info("native HITL append: HTTP %s tools=%s cx=%s", append_status,
+                 ",".join(item["tool"] for item in results), "genuine" if cx else "none")
+        if append_status != 200:
+            for pending in batch:
+                entry = pending.get("entry") if isinstance(pending.get("entry"), dict) else {}
+                entry.update({"ok": False, "status": "error"})
+                public = pending.get("public_choice") or {}
+                if public:
+                    public["status"] = "error"
+                    entry["media_choice"] = public
+                    yield _sse({"type": "media_choice_done", "id": public.get("id"),
+                                "model": "a", "tool_call_id": pending.get("tool_call_id"),
+                                "media_choice": copy.deepcopy(public)})
+            yield fail(f"Could not send your answer to Arena Agent (HTTP {append_status}). "
+                       "The session is saved.")
+            return False
+
+        for pending in batch:
+            entry = pending.get("entry") if isinstance(pending.get("entry"), dict) else {}
+            entry.update({"ok": True, "status": "ok"})
+            if pending.get("tool") == "ask_user":
+                display = pending.get("display") or {}
+                output_text = ("Skipped" if display.get("skipped")
+                               else "\n".join(display.get("answers") or []))
+            elif pending.get("tool") == "generate_image":
+                public = pending.get("public_choice") or {}
+                output_text = f"Selected image {(public.get('selected_index') or 0) + 1}"
+            else:
+                output_text = ""
+            yield _sse({
+                "type": "tool_result", "id": pending.get("tool_call_id"),
+                "tool": pending.get("tool"),
+                "name": native_agent.tool_display_name(pending.get("tool")),
+                "model": "a", "rel": native_agent.tool_display_name(pending.get("tool")),
+                "ok": True, "status": "ok", "output": output_text,
+            })
+            public = pending.get("public_choice") or {}
+            if public:
+                yield _sse({"type": "media_choice_done", "id": public.get("id"),
+                            "model": "a", "tool_call_id": pending.get("tool_call_id"),
+                            "media_choice": copy.deepcopy(public)})
+        turn_done = False
+        saw_record = False
+        last_activity = time.monotonic()
+        deadline = time.monotonic() + 1800
+        cycles = 0
+        publish_native()
+        return True
     while not turn_done and cycles < 24 and time.monotonic() < deadline:
         cycles += 1
         if _stopped():
@@ -4018,7 +4615,7 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
         got_record = False
         cycle_records = 0
         try:
-            for record in _iter_records_idle(resp, 120, _stopped):
+            for record in _iter_records_idle(resp, 120, stream_should_stop):
                 got_record = True
                 saw_record = True
                 last_activity = time.monotonic()
@@ -4031,9 +4628,32 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
                 if new_pat:
                     pat = new_pat
                 chunk = record.get("chunk")
+                message_id, node_id = native_agent.message_ids_from_chunk(chunk)
+                if isinstance(chunk, dict) and chunk.get("type") == "start":
+                    # A new assistant UIMessage must not inherit the previous
+                    # message's request node if this one has not named its own.
+                    current_message_id = message_id
+                    current_node_id = node_id
+                elif message_id:
+                    current_message_id = message_id
+                if node_id:
+                    current_node_id = node_id
+                    for pending in pending_hitl:
+                        if pending.get("message_id") == current_message_id:
+                            pending["request_node_id"] = node_id
+                if isinstance(chunk, dict) and chunk.get("type") == "tool-input-available":
+                    call_id = str(chunk.get("toolCallId") or "")
+                    if call_id:
+                        tool_inputs[call_id] = chunk.get("input")
                 if native_agent.is_turn_complete_record(record):
                     LOG.info("native stream: turn-complete record received")
-                    turn_done = True
+                    if pending_hitl:
+                        hitl_pause["now"] = True
+                    else:
+                        turn_done = True
+                    break
+                if pending_hitl and isinstance(chunk, dict) and chunk.get("type") in ("finish-step", "finish"):
+                    hitl_pause["now"] = True
                     break
                 if native_agent.is_control(chunk):
                     continue
@@ -4044,6 +4664,7 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
                         result["reasoning"] += event["text"]
                     elif event["type"] == "tool_call":
                         entry = {"tool": event["tool"], "summary": event["summary"],
+                                 "tool_call_id": event.get("id") or None,
                                  "lane": "a", "diff": None, "ok": True, "status": "running"}
                         result["tools"].append(entry)
                         if event.get("id"):
@@ -4053,6 +4674,49 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
                         if entry is not None:
                             entry["ok"] = event["ok"]
                             entry["status"] = event["status"]
+                    elif event["type"] == "hitl_wait":
+                        call_id = str(event.get("tool_call_id") or event.get("id") or "")
+                        entry = tool_entries.get(call_id)
+                        if entry is not None:
+                            entry["status"] = "waiting"
+                            entry["tool"] = event.get("tool") or entry.get("tool")
+                        pending_hitl.append({
+                            "tool": event.get("tool"),
+                            "tool_call_id": call_id,
+                            "input": copy.deepcopy(tool_inputs.get(call_id)),
+                            "output": copy.deepcopy(event.get("output") or {}),
+                            "request_node_id": current_node_id or current_message_id,
+                            "message_id": current_message_id,
+                            "entry": entry,
+                            "chat_id": getattr(_tl, "chat_id", None),
+                        })
+                        if hitl_pause.get("since") is None:
+                            hitl_pause["since"] = time.monotonic()
+                        continue  # internal event: the UI gets question/media_choice below
+                    elif event["type"] == "media_choice_done":
+                        call_id = str(event.get("tool_call_id") or event.get("id") or "")
+                        entry = tool_entries.get(call_id)
+                        incoming = _public_media_choice(
+                            event.get("media_choice") or {}, tool_call_id=call_id,
+                            chat_id=getattr(_tl, "chat_id", None))
+                        if entry is not None:
+                            existing_choice = entry.get("media_choice") if isinstance(entry.get("media_choice"), dict) else {}
+                            merged_choice = dict(existing_choice)
+                            for key, value in incoming.items():
+                                if value not in (None, "", [], {}):
+                                    merged_choice[key] = value
+                            merged_choice = _apply_media_attribution(
+                                merged_choice, incoming.get("attribution") or [])
+                            entry["media_choice"] = merged_choice
+                            event = dict(event, id=merged_choice.get("id") or event.get("id"),
+                                         media_choice=copy.deepcopy(merged_choice))
+                        else:
+                            event = dict(event, media_choice=incoming)
+                    elif event["type"] == "media_reveal":
+                        updated_choice = _native_apply_media_reveal(result, event)
+                        if updated_choice is not None:
+                            event = dict(event, id=updated_choice.get("id") or event.get("id"),
+                                         media_choice=copy.deepcopy(updated_choice))
                     elif event["type"] == "media" and event.get("url"):
                         known = {item["url"] for item in result["files"]}
                         if event["url"] not in known:
@@ -4071,8 +4735,16 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
             pass  # resubscribe from the cursor below
         finally:
             resp.close()
-        LOG.info("native stream: cycle %s version=%s settled=%s records=%s done=%s",
-                 cycles, version, settled, cycle_records, turn_done)
+        LOG.info("native stream: cycle %s version=%s settled=%s records=%s done=%s pending=%s",
+                 cycles, version, settled, cycle_records, turn_done, len(pending_hitl))
+        if pending_hitl:
+            answered = yield from process_pending_hitl()
+            if not answered:
+                if _stopped():
+                    _native_append(client, trigger_address, pat, native_agent.STOP_BODY)
+                    yield _sse({"type": "notice", "text": "Stopped."})
+                turn_done = True
+            continue
         if not turn_done and settled and not got_record:
             if saw_record:
                 # The session reports itself settled (nothing running) and

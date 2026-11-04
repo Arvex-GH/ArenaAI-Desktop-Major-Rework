@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.5.0-8b5cf6?style=flat-square" alt="Version 5.5.0" />
+  <img src="https://img.shields.io/badge/version-5.6.0-8b5cf6?style=flat-square" alt="Version 5.6.0" />
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue?style=flat-square" alt="Windows 10/11" />
   <img src="https://img.shields.io/badge/python-3.11%2B-3776ab?style=flat-square" alt="Python 3.11+" />
   <img src="https://img.shields.io/badge/models-400%2B%20via%20arena.ai-10b981?style=flat-square" alt="400+ models via arena.ai" />
@@ -94,7 +94,12 @@ The app orchestrates chats, tools, files and permissions around it.
 - **The model can ask you**: with the `ask_user` tool the Local Agent (and its sub-agents) can pause
   mid-task and ask a clarifying question with 2–4 answer options plus a free-text field — your
   answer returns to the model and the work continues, instead of it guessing on a fork that
-  matters. Unanswered questions time out with the assumption stated in the reply.
+  matters. The native Arena Agent's own structured questions work the same way: options and a
+  free-text answer appear in the app, the answer returns to the same Arena session, and the
+  question and answer stay in the transcript.
+- **Arena Agent image choices** (v5.6): when Arena generates two image options, both open
+  full-size in the app; picking one continues the same session. Both images—and, after the
+  choice, both model names—stay visible in the saved chat.
 - **Sub-agents**: the Local Agent (and Direct with Workspace Sync) can delegate a self-contained
   sub-task to a child chat with its own Arena session and tool loop — research (read-only) or work —
   and pick the sub-agent's model. Only the child's summary returns to the parent, so long projects
@@ -128,7 +133,8 @@ The app orchestrates chats, tools, files and permissions around it.
   per account and chat lists are separated. Switching is blocked while a chat is generating.
 - Chats appear in the sidebar **the moment you send**, can be reopened while still generating, and
   continue in the same arena.ai session. Cloud-only chats from arena.ai show under “Only on arena.ai”
-  and can be opened and continued.
+  and can be opened and continued. Linked chats also check arena.ai when opened, and
+  **Refresh from Arena** in the chat header pulls in turns added in a browser without duplicates.
 - The sidebar marks running chats with a spinner and finished-but-unread chats with a green check.
 - Deleting a chat in the app also archives it on arena.ai.
 - Several chats can generate **in parallel**, each with its own Stop button.

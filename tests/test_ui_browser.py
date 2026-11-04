@@ -1166,3 +1166,144 @@ def test_v551_workspace_rich_previews(site):
         page.keyboard.press('Escape')
         assert not errors
         browser.close()
+
+
+def test_v56_refresh_native_question_and_image_choice(site):
+    sync_api = pytest.importorskip('playwright.sync_api')
+
+    def svg(label, color):
+        return (
+            "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
+            f"width='320' height='200'%3E%3Crect width='320' height='200' fill='{color}'/%3E"
+            f"%3Ctext x='24' y='105' fill='white' font-family='Arial' font-size='24'%3E{label}%3C/text%3E%3C/svg%3E"
+        )
+
+    chat_id = '12345678-1234-4234-8234-123456789abc'
+    eval_id = '87654321-4321-4321-8321-cba987654321'
+    saved_choice = {
+        'id': 'saved-choice', 'tool_call_id': 'img-old', 'kind': 'image',
+        'status': 'completed', 'prompt': 'A saved poster', 'file_path': 'poster.png',
+        'selected_index': 0, 'selection_method': 'user',
+        'candidates': [
+            {'index': 0, 'url': svg('Saved One', '%23365f46'), 'hash': 'a' * 43},
+            {'index': 1, 'url': svg('Saved Two', '%234b4f7a'), 'hash': 'b' * 43},
+        ],
+        'attribution': [
+            {'index': 0, 'model_name': 'Saved Model One', 'organization': 'Org Alpha'},
+            {'index': 1, 'model_name': 'Saved Model Two', 'organization': 'Org Beta'},
+        ],
+    }
+    messages = [
+        {'role': 'user', 'text': 'Make a poster and ask me about the tone.'},
+        {
+            'role': 'assistant', 'text': 'The poster is ready.', 'text_b': '',
+            'names': {'a': 'Agent', 'b': None},
+            'tools': [
+                {'lane': 'a', 'tool': 'ask_user', 'summary': 'Question: Which tone?',
+                 'question': 'Which tone?', 'answer': 'Calm', 'status': 'ok', 'ok': True},
+                {'lane': 'a', 'tool': 'generate_image', 'summary': 'Generate image: A saved poster',
+                 'status': 'ok', 'ok': True, 'media_choice': saved_choice},
+            ],
+        },
+    ]
+    chat = {
+        'id': chat_id, 'title': 'Native Agent choices', 'mode': 'agent', 'modality': 'text',
+        'model_a': None, 'model_b': None, 'eval_id': eval_id, 'source': 'arena',
+        'agent_backend': 'arena', 'messages': messages,
+    }
+    pending_question = {
+        'id': 'q-native-1', 'chat_id': chat_id, 'lane': 'a', 'kind': 'question',
+        'question': 'Which color should Arena Agent use?',
+        'options': ['Red — Warm', 'Blue'], 'custom': True,
+    }
+    pending_choice = {
+        'id': 'choice-native-1', 'chat_id': chat_id, 'tool_call_id': 'img-new',
+        'kind': 'image', 'status': 'awaiting_user_response',
+        'prompt': 'Pick the live poster', 'file_path': 'live-poster.png',
+        'selected_index': None, 'selection_method': '',
+        'candidates': [
+            {'index': 0, 'url': svg('Live One', '%237a4b35'), 'hash': 'c' * 43},
+            {'index': 1, 'url': svg('Live Two', '%23355f7a'), 'hash': 'd' * 43},
+        ],
+        'attribution': [],
+    }
+    calls = {'refresh': 0, 'question_answers': [], 'media_answers': []}
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
+        page = browser.new_page(viewport={'width': 1400, 'height': 950})
+        errors = []
+        page.on('pageerror', lambda err: errors.append(str(err)))
+
+        def api(route):
+            path = route.request.url.split('?', 1)[0].split('/api/', 1)[1]
+            if path == f'chats/{chat_id}/refresh' and route.request.method == 'POST':
+                calls['refresh'] += 1
+                return route.fulfill(status=200, content_type='application/json', body=json.dumps(
+                    {'ok': True, 'added': 0, 'total': len(messages), 'title': chat['title']}))
+            if path.startswith('questions/') and route.request.method == 'POST':
+                calls['question_answers'].append(route.request.post_data_json)
+                return route.fulfill(status=200, content_type='application/json', body='{"ok": true}')
+            if path.startswith('media-choices/') and route.request.method == 'POST':
+                body = route.request.post_data_json
+                calls['media_answers'].append(body)
+                return route.fulfill(status=200, content_type='application/json', body=json.dumps(
+                    {'ok': True, 'selected_index': body.get('selected_index'), 'selection_method': 'user'}))
+            values = {
+                'status': {'authenticated': True, 'mode': 'agent', 'modality': 'text', 'desktop': True,
+                           'permission_mode': 'default', 'workspace': 'C:\\\\test'},
+                'chats': [chat],
+                'chats/' + chat_id: chat,
+                'history': messages,
+                'models': [],
+                'permissions': [],
+                'permission-mode': {'ok': True, 'mode': 'default'},
+                'questions': [pending_question],
+                'media-choices': [pending_choice],
+                'workspace': {'workspace': 'C:\\\\test', 'projects': []},
+            }
+            return route.fulfill(status=200, content_type='application/json',
+                                 body=json.dumps(values.get(path, {'ok': True})))
+
+        page.route('**/api/**', api)
+        page.goto(site, wait_until='networkidle')
+        page.get_by_role('button', name='Open chat: Native Agent choices').click()
+
+        saved_card = page.locator('[data-media-choice-card="saved-choice"]')
+        saved_card.wait_for(timeout=10000)
+        saved_text = saved_card.inner_text()
+        assert 'Saved Model One' in saved_text and 'Saved Model Two' in saved_text
+        assert 'Org Alpha' in saved_text and 'Org Beta' in saved_text
+        assert saved_card.locator('.media-choice-preview img').count() == 2
+        assert saved_card.locator('a', has_text='Full size').count() == 2
+        body_text = page.locator('body').inner_text()
+        assert 'Which tone?' in body_text and 'Calm' in body_text
+
+        question_card = page.locator('[data-question-card="q-native-1"]')
+        question_card.wait_for(timeout=10000)
+        assert 'Which color should Arena Agent use?' in question_card.inner_text()
+        question_card.locator('button', has_text='Blue').click()
+        page.wait_for_function(
+            "() => !document.querySelector('[data-question-card=\"q-native-1\"]')", timeout=10000)
+        assert calls['question_answers'] == [{'answer': 'Blue'}]
+
+        live_card = page.locator('[data-media-choice-card="choice-native-1"]')
+        live_card.wait_for(timeout=10000)
+        assert live_card.locator('.media-choice-preview img').count() == 2
+        assert 'Saved Model' not in live_card.inner_text()
+        live_card.locator('.media-choice-option').nth(1).locator('button', has_text='Use this image').click()
+        page.wait_for_function(
+            "() => document.querySelector('[data-media-choice-card=\"choice-native-1\"]')?.innerText.includes('Selected')",
+            timeout=10000)
+        assert calls['media_answers'] == [{'selected_index': 1}]
+        assert live_card.locator('.media-choice-preview img').count() == 2
+
+        refresh = page.get_by_role('button', name='Refresh this chat from arena.ai')
+        refresh.wait_for(timeout=10000)
+        before = calls['refresh']
+        refresh.click()
+        page.wait_for_function(
+            f"() => document.body.innerText.includes('already up to date')", timeout=10000)
+        assert calls['refresh'] > before
+        assert not errors, errors
+        browser.close()

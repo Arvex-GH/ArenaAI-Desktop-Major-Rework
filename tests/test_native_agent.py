@@ -204,3 +204,145 @@ def test_native_audio_files_map_to_audio_kind():
     assert out and out[0]["kind"] == "audio"
     # Unknown chunks are tolerated and yield nothing.
     assert native_agent.map_chunk({"type": "mystery-kind", "x": 1}, {}) == []
+
+
+def test_native_hitl_tool_names_outputs_and_append_body():
+    names = {}
+    call = na.map_chunk({
+        "type": "tool-input-available", "toolCallId": "q1",
+        "toolName": "arena__ask_user",
+        "input": {"questions": [{
+            "id": "color", "question": "Which color?",
+            "options": [{"id": "red", "label": "Red", "description": "Warm"},
+                        {"id": "blue", "label": "Blue"}],
+            "allowCustomResponse": False,
+        }]},
+    }, names)[0]
+    assert call["tool"] == "ask_user" and call["name"] == "Question"
+    assert call["path"] == "Which color?"
+    assert names == {"q1": "ask_user"}
+    waiting = na.map_chunk({
+        "type": "tool-output-available", "toolCallId": "q1",
+        "output": {"status": "awaiting_user_response"},
+    }, names)[0]
+    assert waiting["type"] == "hitl_wait" and waiting["tool"] == "ask_user"
+    questions = na.ask_user_questions({
+        "questions": [{
+            "id": "color", "question": "Which color?",
+            "options": [{"id": "red", "label": "Red", "description": "Warm"}],
+            "allowCustomResponse": False,
+        }]
+    })
+    assert questions[0]["options"][0] == {
+        "id": "red", "label": "Red", "description": "Warm"}
+    assert questions[0]["allowCustomResponse"] is False
+
+    body = na.build_hitl_append_body([
+        {"requestNodeId": "node-1", "tool": "arena__ask_user",
+         "toolCallId": "q1", "output": {"skipped": False, "answers": [
+             {"questionId": "color", "selectedOptionId": "red",
+              "customResponse": None}]}},
+    ], "addr-1", "Europe/Moscow", message_id="m-hit")
+    payload = body["payload"]
+    assert payload["chatId"] == "addr-1" and payload["messageId"] == "m-hit"
+    assert payload["message"] == {
+        "id": "m-hit", "role": "user",
+        "parts": [{"type": "data-tool-results", "data": [{
+            "requestNodeId": "node-1", "tool": "ask_user", "toolCallId": "q1",
+            "output": {"skipped": False, "answers": [
+                {"questionId": "color", "selectedOptionId": "red",
+                 "customResponse": None}]},
+        }]}],
+    }
+
+
+def test_native_message_ids_from_stream_chunks():
+    assert na.message_ids_from_chunk({
+        "type": "start", "messageId": "msg-1",
+        "messageMetadata": {"nodeId": "node-1"},
+    }) == ("msg-1", "node-1")
+    assert na.message_ids_from_chunk({
+        "type": "message-metadata",
+        "messageMetadata": {"nodeId": "node-2"},
+    }) == (None, "node-2")
+    assert na.message_ids_from_chunk(None) == (None, None)
+
+
+def test_native_generate_image_choice_and_reveal_mapping():
+    names = {}
+    call = na.map_chunk({
+        "type": "tool-input-available", "toolCallId": "img1",
+        "toolName": "arena__generate_image",
+        "input": {"file_path": "poster.png", "prompt": "A calm poster",
+                  "offer_options": True},
+    }, names)[0]
+    assert call["tool"] == "generate_image" and call["name"] == "Generate image"
+    assert call["path"] == "A calm poster"
+    output = {
+        "status": "awaiting_user_response",
+        "candidates": [{"index": 0, "hash": "a" * 43},
+                       {"index": 1, "hash": "b" * 43}],
+    }
+    waiting = na.map_chunk({
+        "type": "tool-output-available", "toolCallId": "img1", "output": output,
+    }, names)[0]
+    assert waiting["type"] == "hitl_wait" and waiting["output"] == output
+    choice = na.image_choice_from_output(output, {
+        "file_path": "poster.png", "prompt": "A calm poster"})
+    assert choice["status"] == "awaiting_user_response"
+    assert choice["selected_index"] is None
+    assert [item["hash"] for item in choice["candidates"]] == ["a" * 43, "b" * 43]
+
+    completed = {
+        "status": "completed", "candidates": output["candidates"],
+        "selected_index": 1, "file_path": "poster.png",
+        "selection_method": "user",
+        "attribution": [
+            {"index": 0, "model_name": "Model One", "organization": "Org A"},
+            {"index": 1, "model_name": "Model Two", "organization": "Org B"},
+        ],
+    }
+    events = na.map_chunk({
+        "type": "tool-output-available", "toolCallId": "img1", "output": completed,
+    }, names)
+    assert [event["type"] for event in events] == ["tool_result", "media_choice_done"]
+    assert events[1]["media_choice"]["selected_index"] == 1
+    assert events[1]["media_choice"]["attribution"][1]["model_name"] == "Model Two"
+
+    reveal = na.map_chunk({
+        "type": "data-image-battle-reveal",
+        "data": {"requestNodeId": "node-9", "toolCallId": "img1",
+                 "attribution": [{"index": 0, "model_name": "Model One"}]},
+    }, names)[0]
+    assert reveal["type"] == "media_reveal"
+    assert reveal["request_node_id"] == "node-9"
+    assert reveal["attribution"] == [{"index": 0, "model_name": "Model One"}]
+
+
+def test_history_refresh_merge_preserves_local_turn_details():
+    from arena import history_sync
+
+    local = [
+        {"role": "user", "text": "First"},
+        {"role": "assistant", "text": "Answer", "text_b": "",
+         "tools": [{"tool": "generate_image"}], "names": {"a": None, "b": None}},
+    ]
+    remote = [
+        {"role": "user", "text": "First"},
+        {"role": "assistant", "text": "Answer", "text_b": "",
+         "names": {"a": "Arena Model", "b": None}},
+        {"role": "user", "text": "Continued on the website"},
+        {"role": "assistant", "text": "New answer", "text_b": ""},
+    ]
+    merged, added = history_sync.merge_messages(local, remote)
+    assert added == 2 and len(merged) == 4
+    assert merged[1]["tools"] == [{"tool": "generate_image"}]
+    assert merged[1]["names"]["a"] == "Arena Model"
+
+    # A locally-enriched copy whose text no longer forms an exact prefix
+    # still receives only the missing remote turns, without duplicates.
+    local2 = local + [{"role": "assistant", "text": "Local detail", "text_b": ""}]
+    merged2, added2 = history_sync.merge_messages(local2, remote)
+    assert added2 == 2
+    assert [m["text"] for m in merged2].count("Answer") == 1
+    assert merged2[-1]["text"] == "New answer"

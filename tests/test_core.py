@@ -3349,3 +3349,303 @@ def test_cookie_import_syncs_current_account_first(web, monkeypatch):
     r = c.post("/api/login", json={"method": "manual", "cookie": "arena-auth-prod-v1.0=AAA"})
     assert r.status_code == 200
     assert synced  # the account being left kept its freshest cookie
+
+
+# ---------- v5.6: cloud refresh, native HITL and image choice ----------
+
+def _sse_events_from_raw(raw_lines):
+    parsed = []
+    for raw in raw_lines:
+        if raw.startswith("data: "):
+            parsed.append(json.loads(raw[6:]))
+    return parsed
+
+
+def test_linked_chat_refresh_merges_evaluation_and_agentic_turns(web, monkeypatch):
+    appmod, c, *_ = web
+    eval_id = "88888888-8888-4888-8888-888888888888"
+    local_id = "99999999-9999-4999-8999-999999999999"
+    agent_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    unlinked_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+    appmod._save_chat(
+        local_id, title="Imported evaluation", mode="direct", modality="text",
+        model_a="m1", eval_id=eval_id, source="arena",
+        messages=[
+            {"role": "user", "text": "First question"},
+            {"role": "assistant", "text": "First answer", "text_b": "",
+             "tools": [{"tool": "local-note", "summary": "Keep me"}],
+             "names": {"a": None, "b": None}},
+        ])
+    appmod._save_chat(
+        agent_id, title="Imported agent", mode="agent", modality="text",
+        eval_id=agent_id, source="arena", agent_backend="arena",
+        native={"backend": "arena", "session_id": agent_id,
+                "trigger_address": agent_id, "last_event_id": "7",
+                "needs_drain": True, "file_sync_ok": True,
+                "synced_files": {"a.txt": "hash"}},
+        messages=[{"role": "user", "text": "Agent first"},
+                  {"role": "assistant", "text": "Agent answer", "text_b": "",
+                   "names": {"a": "Agent", "b": None}}])
+    appmod._save_chat(unlinked_id, title="Local only", messages=[])
+
+    def fake_arena_get(path, timeout=30):
+        if eval_id in path:
+            return {
+                "id": eval_id, "title": "Imported evaluation", "mode": "direct-battle",
+                "maskedEvaluations": [{"modality": "chat"}],
+                "messages": [
+                    {"role": "user", "content": "First question",
+                     "createdAt": "2026-01-01T00:00:00Z"},
+                    {"role": "assistant", "participantPosition": "a", "modelId": "m1",
+                     "parentMessageIds": ["u1"], "content": "First answer",
+                     "createdAt": "2026-01-01T00:00:01Z"},
+                    {"role": "user", "content": "Continued in the browser",
+                     "createdAt": "2026-01-01T00:00:02Z"},
+                    {"role": "assistant", "participantPosition": "a", "modelId": "m1",
+                     "parentMessageIds": ["u2"], "content": "Browser answer",
+                     "createdAt": "2026-01-01T00:00:03Z"},
+                ],
+            }, None, 200
+        if agent_id in path:
+            return {
+                "id": agent_id, "title": "Imported agent", "lastEventId": "99",
+                "messages": [
+                    {"role": "user", "parts": [{"type": "text", "text": "Agent first"}],
+                     "createdAt": "2026-01-01T00:00:00Z"},
+                    {"role": "assistant", "parts": [{"type": "text", "text": "Agent answer"}],
+                     "createdAt": "2026-01-01T00:00:01Z"},
+                    {"role": "user", "parts": [{"type": "text", "text": "Agent continued"}],
+                     "createdAt": "2026-01-01T00:00:02Z"},
+                    {"role": "assistant", "parts": [{"type": "text", "text": "Agent new answer"}],
+                     "createdAt": "2026-01-01T00:00:03Z"},
+                ],
+            }, None, 200
+        raise AssertionError(path)
+
+    monkeypatch.setattr(appmod, "_arena_get_json", fake_arena_get)
+
+    refreshed = c.post(f"/api/chats/{local_id}/refresh", json={})
+    assert refreshed.status_code == 200
+    assert refreshed.get_json()["added"] == 2
+    saved = appmod._load_chat(local_id)
+    assert [m["text"] for m in saved["messages"]] == [
+        "First question", "First answer", "Continued in the browser", "Browser answer"]
+    assert saved["messages"][1]["tools"] == [{"tool": "local-note", "summary": "Keep me"}]
+    assert saved["mode"] == "direct" and saved["model_a"] == "m1"
+
+    refreshed_agent = c.post(f"/api/chats/{agent_id}/refresh", json={})
+    assert refreshed_agent.status_code == 200
+    assert refreshed_agent.get_json()["kind"] == "agentic"
+    assert refreshed_agent.get_json()["added"] == 2
+    saved_agent = appmod._load_chat(agent_id)
+    assert [m["text"] for m in saved_agent["messages"]][-2:] == [
+        "Agent continued", "Agent new answer"]
+    assert saved_agent["native"]["last_event_id"] == "99"
+    assert saved_agent["native"]["needs_drain"] is False
+    assert saved_agent["native"]["file_sync_ok"] is True
+    assert saved_agent["native"]["synced_files"] == {"a.txt": "hash"}
+
+    assert c.post(f"/api/chats/{unlinked_id}/refresh", json={}).status_code == 422
+    monkeypatch.setattr(appmod, "_chat_generating", lambda chat_id: True)
+    assert c.post(f"/api/chats/{local_id}/refresh", json={}).status_code == 409
+
+
+def test_media_choice_broker_and_native_cas_proxy(web, monkeypatch):
+    from types import SimpleNamespace
+
+    appmod, c, *_ = web
+    hash_a, hash_b = "a" * 43, "b" * 43
+    choice_id = "choice-test-1"
+    choice = appmod._public_media_choice({
+        "kind": "image", "status": "awaiting_user_response",
+        "prompt": "Poster", "file_path": "poster.png",
+        "candidates": [{"index": 0, "hash": hash_a}, {"index": 1, "hash": hash_b}],
+        "selected_index": None, "selection_method": "", "attribution": [],
+    }, choice_id=choice_id, tool_call_id="img1", chat_id="chat-1")
+    monkeypatch.setattr(appmod, "_MEDIA_CHOICES", {
+        choice_id: {"id": choice_id, "chat_id": "chat-1", "tool_call_id": "img1",
+                    "media_choice": choice, "answer": None}
+    })
+
+    pending = c.get("/api/media-choices").get_json()
+    assert pending[0]["candidates"][0]["url"] == f"/api/native-cas/{hash_a}"
+    assert c.post(f"/api/media-choices/{choice_id}", json={"selected_index": 9}).status_code == 400
+    answered = c.post(f"/api/media-choices/{choice_id}", json={"selected_index": 1})
+    assert answered.status_code == 200
+    assert answered.get_json()["selection_method"] == "user"
+    assert appmod._media_choice_answer(choice_id) == {
+        "selected_index": 1, "selection_method": "user"}
+    assert c.get("/api/media-choices").get_json() == []
+    assert c.post(f"/api/media-choices/{choice_id}", json={"selected_index": 0}).status_code == 404
+
+    class _CasResponse:
+        status_code = 200
+        content = b"fake-png"
+        headers = {"Content-Type": "image/png"}
+
+    seen = []
+    appmod._client.session = SimpleNamespace(
+        get=lambda url, timeout=None: (seen.append(url), _CasResponse())[1])
+    proxied = c.get(f"/api/native-cas/{hash_b}")
+    assert proxied.status_code == 200
+    assert proxied.data == b"fake-png"
+    assert proxied.headers["Content-Type"].startswith("image/png")
+    assert seen == [f"{appmod.contracts.ORIGIN}/api/chat/workspace/cas/user/{hash_b}"]
+    assert c.get("/api/native-cas/not-a-hash").status_code == 400
+
+
+def _native_hitl_setup(web, monkeypatch, streams):
+    appmod, c, *_ = web
+    engine = _FakeNativeChatEngine()
+    monkeypatch.setattr(appmod, "ENGINE", engine)
+    monkeypatch.setattr(appmod, "_QUESTIONS", {})
+    monkeypatch.setattr(appmod, "_MEDIA_CHOICES", {})
+    responses = list(streams)
+    monkeypatch.setattr(
+        appmod.requests, "get",
+        lambda url, headers=None, stream=False, timeout=None: responses.pop(0))
+    appends = []
+
+    class _AppendResp:
+        status_code = 200
+
+        def json(self):
+            return {"seq": len(appends)}
+
+    monkeypatch.setattr(
+        appmod.requests, "post",
+        lambda url, headers=None, json=None, timeout=None:
+        (appends.append((url, json)), _AppendResp())[1])
+    result = {"text": "", "reasoning": "", "tools": [], "files": [],
+              "native": None, "error": None}
+    gen = appmod._native_agent_run(
+        appmod.get_client(), "Please continue", {}, "Europe/Moscow", result=result)
+    return appmod, c, gen, result, appends
+
+
+def _lines(*chunks, start_id=70):
+    lines = []
+    for offset, chunk in enumerate(chunks):
+        lines.extend([f"id: {start_id + offset}", f"data: {json.dumps(chunk)}", ""])
+    return lines
+
+
+def test_native_arena_ask_user_is_shown_answered_and_continued(web, monkeypatch):
+    first = _FakeStreamResp(_lines(
+        {"type": "start", "messageId": "assistant-1",
+         "messageMetadata": {"nodeId": "node-1"}},
+        {"type": "tool-input-available", "toolCallId": "q1",
+         "toolName": "arena__ask_user",
+         "input": {"questions": [{
+             "id": "color", "question": "Which color should I use?",
+             "options": [
+                 {"id": "red", "label": "Red", "description": "Warm"},
+                 {"id": "blue", "label": "Blue"}],
+             "allowCustomResponse": True,
+         }]}},
+        {"type": "tool-output-available", "toolCallId": "q1",
+         "output": {"status": "awaiting_user_response"}},
+        {"type": "finish-step"},
+    ))
+    second = _FakeStreamResp(_lines(
+        {"type": "text-delta", "delta": "Blue it is."},
+        {"type": "trigger:turn-complete"},
+        start_id=90,
+    ))
+    appmod, c, gen, result, appends = _native_hitl_setup(
+        web, monkeypatch, [first, second])
+
+    collected = []
+    question = None
+    for raw in gen:
+        event = _sse_events_from_raw([raw])[0]
+        collected.append(event)
+        if event["type"] == "question":
+            question = event
+            break
+    assert question and question["question"] == "Which color should I use?"
+    assert question["options"] == ["Red — Warm", "Blue"]
+    assert c.post(f"/api/questions/{question['id']}", json={"answer": "Blue"}).status_code == 200
+    collected.extend(_sse_events_from_raw(list(gen)))
+
+    assert result["text"] == "Blue it is."
+    assert result["error"] is None
+    assert len(appends) == 1
+    hitl_part = appends[0][1]["payload"]["message"]["parts"][0]
+    assert hitl_part["type"] == "data-tool-results"
+    assert hitl_part["data"] == [{
+        "requestNodeId": "node-1", "tool": "ask_user", "toolCallId": "q1",
+        "output": {"skipped": False, "answers": [{
+            "questionId": "color", "selectedOptionId": "blue",
+            "customResponse": None}]},
+    }]
+    tool_entry = result["tools"][0]
+    assert tool_entry["tool"] == "ask_user" and tool_entry["status"] == "ok"
+    assert tool_entry["question"] == "Which color should I use?"
+    assert tool_entry["answer"] == "Blue"
+    assert any(e["type"] == "tool_result" and e.get("id") == "q1" for e in collected)
+
+
+def test_native_generate_image_choice_reveals_both_models(web, monkeypatch):
+    hash_a, hash_b = "a" * 43, "b" * 43
+    first = _FakeStreamResp(_lines(
+        {"type": "start", "messageId": "assistant-1",
+         "messageMetadata": {"nodeId": "node-1"}},
+        {"type": "tool-input-available", "toolCallId": "img1",
+         "toolName": "arena__generate_image",
+         "input": {"file_path": "poster.png", "prompt": "A calm poster",
+                   "offer_options": True}},
+        {"type": "tool-output-available", "toolCallId": "img1",
+         "output": {"status": "awaiting_user_response",
+                    "candidates": [{"index": 0, "hash": hash_a},
+                                   {"index": 1, "hash": hash_b}]}},
+        {"type": "finish-step"},
+    ))
+    second = _FakeStreamResp(_lines(
+        {"type": "data-image-battle-reveal",
+         "data": {"requestNodeId": "node-1", "toolCallId": "img1",
+                  "attribution": [
+                      {"index": 0, "model_name": "Model One", "organization": "Org A"},
+                      {"index": 1, "model_name": "Model Two", "organization": "Org B"},
+                  ]}},
+        {"type": "text-delta", "delta": "The second poster is ready."},
+        {"type": "trigger:turn-complete"},
+        start_id=100,
+    ))
+    appmod, c, gen, result, appends = _native_hitl_setup(
+        web, monkeypatch, [first, second])
+
+    collected = []
+    choice_event = None
+    for raw in gen:
+        event = _sse_events_from_raw([raw])[0]
+        collected.append(event)
+        if event["type"] == "media_choice":
+            choice_event = event
+            break
+    assert choice_event
+    candidates = choice_event["media_choice"]["candidates"]
+    assert [item["url"] for item in candidates] == [
+        f"/api/native-cas/{hash_a}", f"/api/native-cas/{hash_b}"]
+    assert all(not item.get("model_name") for item in candidates)
+    assert c.post(f"/api/media-choices/{choice_event['id']}",
+                  json={"selected_index": 1}).status_code == 200
+    collected.extend(_sse_events_from_raw(list(gen)))
+
+    assert result["text"] == "The second poster is ready."
+    assert len(appends) == 1
+    output = appends[0][1]["payload"]["message"]["parts"][0]["data"][0]["output"]
+    assert output == {
+        "status": "completed",
+        "candidates": [{"index": 0, "hash": hash_a}, {"index": 1, "hash": hash_b}],
+        "selected_index": 1, "file_path": "poster.png", "selection_method": "user",
+    }
+    saved_choice = result["tools"][0]["media_choice"]
+    assert saved_choice["selected_index"] == 1
+    assert [item["model_name"] for item in saved_choice["candidates"]] == [
+        "Model One", "Model Two"]
+    assert [item["organization"] for item in saved_choice["candidates"]] == [
+        "Org A", "Org B"]
+    assert any(e["type"] == "media_choice_done" for e in collected)
+    assert any(e["type"] == "media_reveal" for e in collected)

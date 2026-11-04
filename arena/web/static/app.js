@@ -504,6 +504,7 @@
     archiveArenaChat(id, type) { return this.request(`/api/arena-chats/${encodeURIComponent(id)}/archive`, { method: 'POST', body: { type } }); },
     vote(chatId, body) { return this.request(`/api/chats/${encodeURIComponent(chatId)}/vote`, { method: 'POST', body }); },
     getChat(id) { return this.request(`/api/chats/${encodeURIComponent(id)}`); },
+    refreshChat(id) { return this.request(`/api/chats/${encodeURIComponent(id)}/refresh`, { method: 'POST', body: {} }); },
     deleteChat(id) { return this.request(`/api/chats/${encodeURIComponent(id)}/delete`, { method: 'POST', body: {} }); },
     compactChat(id) { return this.request(`/api/chats/${encodeURIComponent(id)}/compact`, { method: 'POST', body: {} }); },
     getMemory() { return this.request('/api/memory'); },
@@ -520,6 +521,8 @@
     installComponent(id) { return this.request('/api/components/install', { method: 'POST', body: { id } }); },
     getQuestions() { return this.request('/api/questions'); },
     answerQuestion(id, answer) { return this.request(`/api/questions/${encodeURIComponent(id)}`, { method: 'POST', body: { answer } }); },
+    getMediaChoices() { return this.request('/api/media-choices'); },
+    answerMediaChoice(id, body) { return this.request(`/api/media-choices/${encodeURIComponent(id)}`, { method: 'POST', body }); },
     searchChats(q) { return this.request(`/api/search?q=${encodeURIComponent(q)}`); },
     forkChat(id, messageIndex) { return this.request(`/api/chats/${encodeURIComponent(id)}/fork`, { method: 'POST', body: { message_index: messageIndex } }); },
     restoreCheckpoint(id) { return this.request(`/api/checkpoints/${encodeURIComponent(id)}/restore`, { method: 'POST', body: {} }); },
@@ -767,6 +770,7 @@
     cloudMessages: {},
     connectors: [],
     pendingPermissions: [],
+    mediaChoices: [],
     loginAt: 0,
     pendingAdd: false,
     activeChatId: null,
@@ -1022,7 +1026,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '5.5.0',
+        app_version: '5.6.0',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -1191,6 +1195,10 @@
       const histChars = (demoStore.messages[chat.id] || []).reduce((sum, m) => sum + String(m.text || '').length + String(m.text_b || '').length, 0);
       return { ...chat, history_chars: histChars };
     },
+    async refreshChat(id) {
+      await sleep(80);
+      return { ok: true, chat_id: id, added: 0, total: (demoStore.messages[id] || []).length, demo: true };
+    },
     async deleteChat(id) {
       const chat = demoStore.chats.find((item) => item.id === id);
       demoStore.chats = demoStore.chats.filter((item) => item.id !== id);
@@ -1273,6 +1281,20 @@
     },
     async getQuestions() { await sleep(40); return []; },
     async answerQuestion() { await sleep(40); return { ok: true, demo: true }; },
+    async getMediaChoices() { await sleep(40); return demoClone(demoStore.mediaChoices || []); },
+    async answerMediaChoice(id, body = {}) {
+      await sleep(60);
+      const item = (demoStore.mediaChoices || []).find((choice) => String(choice.id) === String(id));
+      const selected = Number.isFinite(Number(body.selected_index)) ? Number(body.selected_index)
+        : Number(item?.candidates?.[0]?.index || 0);
+      if (item) {
+        item.status = 'completed';
+        item.selected_index = selected;
+        item.selection_method = body.skip ? 'skip' : 'user';
+      }
+      demoStore.mediaChoices = (demoStore.mediaChoices || []).filter((choice) => String(choice.id) !== String(id));
+      return { ok: true, selected_index: selected, selection_method: body.skip ? 'skip' : 'user', demo: true };
+    },
     async searchChats() { await sleep(40); return []; },
     async forkChat() { await sleep(40); return { ok: true, chat_id: null, demo: true }; },
     async restoreCheckpoint() { await sleep(40); return { ok: true, restored: 0, removed: 0, demo: true }; },
@@ -1737,6 +1759,12 @@ You can start with a more structured option: one script, short captions, and a c
     updateInfo: null,
     appSettings: null,
     pendingQuestions: [],
+    pendingMediaChoices: [],
+    answeringMediaChoices: new Set(),
+    activeChatEvalId: null,
+    activeChatSource: 'local',
+    refreshingChatId: null,
+    refreshCheckedAt: {},
     chatTodos: {},
     fanoutModels: [],
     eloModels: null,
@@ -2317,6 +2345,145 @@ You can start with a more structured option: one script, short captions, and a c
       alt: String(raw.alt ?? raw.title ?? "Media from server response"),
       demo: Boolean(raw.demo)
     };
+  }
+
+  function normalizeMediaChoice(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const attributionByIndex = new Map();
+    const attributionRaw = Array.isArray(raw.attribution) ? raw.attribution : [];
+    attributionRaw.forEach((item, position) => {
+      if (!item || typeof item !== 'object') return;
+      const index = Number.isFinite(Number(item.index)) ? Number(item.index) : position;
+      attributionByIndex.set(index, {
+        index,
+        model_name: textValue(item.model_name ?? item.modelName ?? item.name ?? ''),
+        organization: textValue(item.organization ?? item.org ?? ''),
+        is_private: Boolean(item.is_private ?? item.isPrivate)
+      });
+    });
+    const candidates = (Array.isArray(raw.candidates) ? raw.candidates : []).map((candidate, position) => {
+      if (!candidate || typeof candidate !== 'object') return null;
+      const index = Number.isFinite(Number(candidate.index)) ? Number(candidate.index) : position;
+      const reveal = attributionByIndex.get(index) || {};
+      const hash = textValue(candidate.hash || '');
+      let url = safeUrl(candidate.url ?? candidate.src ?? '', { image: true });
+      if (!url && /^[A-Za-z0-9_-]{43}$/.test(hash)) url = `/api/native-cas/${hash}`;
+      return {
+        index,
+        hash,
+        url,
+        title: textValue(candidate.title ?? candidate.filename ?? `Option ${index + 1}`),
+        model_name: textValue(candidate.model_name ?? candidate.modelName ?? reveal.model_name ?? ''),
+        organization: textValue(candidate.organization ?? candidate.org ?? reveal.organization ?? ''),
+        is_private: Boolean(candidate.is_private ?? candidate.isPrivate ?? reveal.is_private)
+      };
+    }).filter(Boolean);
+    if (!candidates.length) return null;
+    const selectedRaw = raw.selected_index ?? raw.selectedIndex;
+    const selectedIndex = selectedRaw === null || selectedRaw === undefined || selectedRaw === ''
+      ? null : (Number.isFinite(Number(selectedRaw)) ? Number(selectedRaw) : null);
+    const status = textValue(raw.status || (selectedIndex !== null ? 'completed' : 'awaiting_user_response'));
+    return {
+      id: raw.id ? String(raw.id) : null,
+      toolCallId: textValue(raw.tool_call_id ?? raw.toolCallId ?? ''),
+      chatId: raw.chat_id ?? raw.chatId ?? null,
+      kind: 'image',
+      status,
+      prompt: textValue(raw.prompt || ''),
+      filePath: textValue(raw.file_path ?? raw.filePath ?? ''),
+      candidates,
+      selectedIndex,
+      selectionMethod: textValue(raw.selection_method ?? raw.selectionMethod ?? ''),
+      attribution: [...attributionByIndex.values()]
+    };
+  }
+
+  function mediaChoiceIsPending(choice) {
+    return Boolean(choice && choice.selectedIndex === null
+      && !['completed', 'cancelled', 'error'].includes(String(choice.status || '').toLowerCase()));
+  }
+
+  function sameMediaChoice(left, right) {
+    if (!left || !right) return false;
+    if (left.id && right.id && String(left.id) === String(right.id)) return true;
+    return Boolean(left.toolCallId && right.toolCallId && left.toolCallId === right.toolCallId);
+  }
+
+  function mergeMediaChoice(existing, incoming) {
+    if (!existing) return incoming;
+    if (!incoming) return existing;
+    const merged = { ...existing, ...incoming };
+    // A completed stream event can be keyed only by tool-call id; preserve
+    // the broker id already shown in the waiting card whenever possible.
+    merged.id = existing.id || incoming.id;
+    merged.chatId = existing.chatId || incoming.chatId;
+    merged.toolCallId = existing.toolCallId || incoming.toolCallId;
+    if (!incoming.candidates?.length) merged.candidates = existing.candidates;
+    else if (existing.candidates?.length) {
+      const oldByIndex = new Map(existing.candidates.map((candidate) => [candidate.index, candidate]));
+      merged.candidates = incoming.candidates.map((candidate) => {
+        const old = oldByIndex.get(candidate.index) || {};
+        return {
+          ...old,
+          ...candidate,
+          url: candidate.url || old.url || '',
+          model_name: candidate.model_name || old.model_name || '',
+          organization: candidate.organization || old.organization || ''
+        };
+      });
+    }
+    const attribution = new Map();
+    [...(existing.attribution || []), ...(incoming.attribution || [])].forEach((item) => {
+      if (item && Number.isFinite(Number(item.index))) attribution.set(Number(item.index), item);
+    });
+    merged.attribution = [...attribution.values()];
+    merged.candidates = (merged.candidates || []).map((candidate) => {
+      const reveal = attribution.get(candidate.index) || {};
+      return {
+        ...candidate,
+        model_name: candidate.model_name || reveal.model_name || '',
+        organization: candidate.organization || reveal.organization || '',
+        is_private: Boolean(candidate.is_private || reveal.is_private)
+      };
+    });
+    return merged;
+  }
+
+  function upsertLaneMediaChoice(lane, raw) {
+    const incoming = normalizeMediaChoice(raw);
+    if (!incoming || !lane) return null;
+    if (!Array.isArray(lane.mediaChoices)) lane.mediaChoices = [];
+    const existingIndex = lane.mediaChoices.findIndex((choice) => sameMediaChoice(choice, incoming));
+    if (existingIndex >= 0) {
+      lane.mediaChoices[existingIndex] = mergeMediaChoice(lane.mediaChoices[existingIndex], incoming);
+      return lane.mediaChoices[existingIndex];
+    }
+    lane.mediaChoices.push(incoming);
+    return incoming;
+  }
+
+  function applyMediaReveal(lane, event) {
+    if (!lane) return null;
+    if (event?.media_choice?.candidates?.length) return upsertLaneMediaChoice(lane, event.media_choice);
+    if (!Array.isArray(lane.mediaChoices) || !lane.mediaChoices.length) return null;
+    const toolCallId = textValue(event?.tool_call_id ?? event?.toolCallId ?? '');
+    const choice = lane.mediaChoices.find((item) => toolCallId && item.toolCallId === toolCallId)
+      || lane.mediaChoices[lane.mediaChoices.length - 1];
+    if (!choice) return null;
+    const normalized = normalizeMediaChoice({
+      ...choice,
+      candidates: choice.candidates,
+      selected_index: choice.selectedIndex,
+      selection_method: choice.selectionMethod,
+      file_path: choice.filePath,
+      tool_call_id: choice.toolCallId,
+      chat_id: choice.chatId,
+      attribution: event?.attribution || []
+    });
+    const merged = mergeMediaChoice(choice, normalized);
+    const index = lane.mediaChoices.indexOf(choice);
+    if (index >= 0) lane.mediaChoices[index] = merged;
+    return merged;
   }
 
   function normalizeActivity(raw, type = 'tool') {
@@ -3079,6 +3246,20 @@ You can start with a more structured option: one script, short captions, and a c
       els.chatMeta.append(el('span', { class: 'meta-chip' }, iconEl('folder'), el('span', { text: workspaceName() })));
     }
     if (state.activeChatId && state.messages.length) {
+      const activeSummary = state.chats.find((chat) => String(chat.id) === String(state.activeChatId));
+      const linked = Boolean(state.activeChatEvalId || activeSummary?.eval_id);
+      if (linked) {
+        const refreshing = String(state.refreshingChatId || '') === String(state.activeChatId);
+        const generating = chatIsGenerating(state.activeChatId);
+        const refresh = el('button', {
+          class: 'meta-chip meta-chip-btn', type: 'button', disabled: refreshing || generating,
+          title: generating ? 'Refresh is available when this answer finishes'
+            : 'Download newer turns from arena.ai into this chat',
+          'aria-label': 'Refresh this chat from arena.ai'
+        }, iconEl('refresh'), el('span', { text: refreshing ? 'Refreshing…' : 'Refresh from Arena' }));
+        refresh.addEventListener('click', () => { void refreshActiveChat(); });
+        els.chatMeta.appendChild(refresh);
+      }
       const exp = el('button', { class: 'meta-chip meta-chip-btn', type: 'button', title: 'Download this chat as Markdown' },
         iconEl('download'), el('span', { text: 'Export .md' }));
       exp.addEventListener('click', () => exportChatMd());
@@ -3665,6 +3846,8 @@ You can start with a more structured option: one script, short captions, and a c
     if (sources) card.appendChild(sources);
     const media = renderMedia(lane);
     if (media) card.appendChild(media);
+    const mediaChoices = renderMediaChoices(lane);
+    if (mediaChoices) card.appendChild(mediaChoices);
     const activities = renderActivities(lane);
     if (activities) card.appendChild(activities);
     const artifacts = renderArtifactsInline(lane);
@@ -3848,6 +4031,202 @@ You can start with a more structured option: one script, short captions, and a c
     const section = el('section', { class: 'message-turn', 'aria-label': 'Question from the model' });
     mine.forEach((q) => section.appendChild(renderQuestionCard(q)));
     return section;
+  }
+
+  async function loadMediaChoices() {
+    try {
+      const items = await API.getMediaChoices();
+      state.pendingMediaChoices = (Array.isArray(items) ? items : [])
+        .map((item) => normalizeMediaChoice(item))
+        .filter((choice) => choice?.id && mediaChoiceIsPending(choice));
+      updatePendingPermissionsBadge();
+      if (state.view === 'chat') renderMessages();
+    } catch { /* live choices still arrive over the stream */ }
+  }
+
+  async function answerMediaChoiceUI(choice, body, card) {
+    if (!choice?.id) return;
+    const id = String(choice.id);
+    if (state.answeringMediaChoices.has(id)) return;
+    state.answeringMediaChoices.add(id);
+    card?.querySelectorAll('button').forEach((node) => { node.disabled = true; });
+    try {
+      const result = await API.answerMediaChoice(id, body);
+      const selected = Number.isFinite(Number(result?.selected_index))
+        ? Number(result.selected_index)
+        : (body.skip ? Number(choice.candidates[0]?.index || 0) : Number(body.selected_index));
+      const method = result?.selection_method || (body.skip ? 'skip' : 'user');
+      const apply = (target) => {
+        if (!target) return;
+        target.selectedIndex = selected;
+        target.selectionMethod = method;
+        target.status = state.demo ? 'completed' : 'submitting';
+      };
+      apply(choice);
+      Object.values(state.chatTurns || {}).forEach((turns) => {
+        (turns || []).forEach((turn) => {
+          Object.values(turn.lanes || {}).forEach((lane) => {
+            (lane.mediaChoices || []).forEach((target) => {
+              if (sameMediaChoice(target, choice)) apply(target);
+            });
+          });
+        });
+      });
+      (state.pendingMediaChoices || []).forEach((target) => {
+        if (sameMediaChoice(target, choice)) apply(target);
+      });
+      if (state.demo) {
+        state.pendingMediaChoices = state.pendingMediaChoices.filter((target) => !sameMediaChoice(target, choice));
+      }
+      updatePendingPermissionsBadge();
+      renderMessages();
+    } catch (error) {
+      toast(errorMessage(error), 'error', 'Image choice');
+    } finally {
+      state.answeringMediaChoices.delete(id);
+      if (state.view === 'chat') renderMessages();
+    }
+  }
+
+  function renderMediaChoiceCard(choice) {
+    const pending = mediaChoiceIsPending(choice);
+    const submitting = choice.status === 'submitting' || (choice.id && state.answeringMediaChoices.has(String(choice.id)));
+    const cancelled = choice.status === 'cancelled';
+    const failed = choice.status === 'error';
+    const completed = !pending && !cancelled && !failed && choice.selectedIndex !== null;
+    const card = el('section', {
+      class: `permission-card media-choice-card${completed ? ' is-done' : ''}`,
+      'data-media-choice-card': choice.id || choice.toolCallId || ''
+    });
+    const title = pending ? 'Choose an image'
+      : submitting ? 'Sending your choice…'
+        : cancelled ? 'Image choice cancelled'
+          : failed ? 'Image choice failed' : 'Image chosen';
+    const subtitle = pending ? 'Arena Agent is paused until you pick one'
+      : submitting ? 'Arena Agent will continue with the selected image'
+        : completed ? 'Both options stay in the transcript, with their models revealed'
+          : 'This choice is no longer waiting';
+    card.appendChild(el('div', { class: 'permission-head' },
+      el('span', { class: 'permission-icon' }, iconEl('image')),
+      el('div', { class: 'permission-heading' },
+        el('p', { class: 'permission-title', text: title }),
+        el('p', { class: 'permission-subtitle', text: subtitle }))));
+
+    const body = el('div', { class: 'permission-body media-choice-body' });
+    if (choice.prompt) body.appendChild(el('p', { class: 'media-choice-prompt', text: choice.prompt }));
+    if (choice.filePath) body.appendChild(el('p', { class: 'media-choice-file', text: choice.filePath }));
+
+    const grid = el('div', { class: 'media-choice-grid' });
+    choice.candidates.forEach((candidate) => {
+      const selected = choice.selectedIndex !== null && Number(candidate.index) === Number(choice.selectedIndex);
+      const figure = el('figure', { class: `media-choice-option${selected ? ' is-selected' : ''}` });
+      if (candidate.url) {
+        figure.appendChild(el('a', {
+          class: 'media-choice-preview', href: candidate.url, target: '_blank', rel: 'noopener noreferrer',
+          title: 'Open full size', 'aria-label': `Open image option ${candidate.index + 1} full size`
+        }, el('img', { src: candidate.url, alt: `Generated image option ${candidate.index + 1}`, loading: 'lazy' })));
+      } else {
+        figure.appendChild(el('div', { class: 'media-choice-preview is-placeholder' }, iconEl('image')));
+      }
+      const caption = el('figcaption', { class: 'media-choice-caption' });
+      caption.appendChild(el('div', { class: 'media-choice-caption-head' },
+        el('span', { class: 'media-choice-option-label', text: `Option ${candidate.index + 1}` }),
+        selected ? el('span', { class: 'media-choice-selected' }, iconEl('check'), el('span', { text: 'Selected' })) : null));
+      if (completed || submitting) {
+        const model = candidate.model_name || (candidate.is_private ? 'Private model' : 'Model not revealed yet');
+        caption.appendChild(el('div', { class: 'media-choice-model', text: candidate.organization ? `${model} · ${candidate.organization}` : model }));
+      }
+      const actions = el('div', { class: 'media-choice-actions' });
+      if (candidate.url) {
+        actions.appendChild(el('a', {
+          class: 'button button-small button-quiet', href: candidate.url, target: '_blank', rel: 'noopener noreferrer'
+        }, iconEl('external'), el('span', { text: 'Full size' })));
+      }
+      if (pending && choice.id) {
+        const use = el('button', {
+          class: 'button button-small', type: 'button', disabled: Boolean(submitting),
+          'aria-label': `Use image option ${candidate.index + 1}`
+        }, iconEl('check'), el('span', { text: 'Use this image' }));
+        use.addEventListener('click', () => {
+          void answerMediaChoiceUI(choice, { selected_index: candidate.index }, card);
+        });
+        actions.appendChild(use);
+      }
+      if (actions.childNodes.length) caption.appendChild(actions);
+      figure.appendChild(caption);
+      grid.appendChild(figure);
+    });
+    body.appendChild(grid);
+
+    if (pending && choice.id) {
+      const footer = el('div', { class: 'media-choice-footer' });
+      const skip = el('button', { class: 'button button-small button-quiet', type: 'button', disabled: Boolean(submitting) },
+        el('span', { text: 'Skip choice' }));
+      skip.addEventListener('click', () => { void answerMediaChoiceUI(choice, { skip: true }, card); });
+      footer.append(skip, el('span', { class: 'media-choice-note', text: 'Skip uses the first image, like Arena does when no choice is made.' }));
+      body.appendChild(footer);
+    } else if (pending && !choice.id) {
+      body.appendChild(el('p', { class: 'media-choice-note', text: 'This saved choice is no longer waiting in the app.' }));
+    } else if ((completed || submitting) && !choice.candidates.some((candidate) => candidate.model_name || candidate.is_private)) {
+      body.appendChild(el('p', { class: 'media-choice-note', text: 'Waiting for Arena to reveal the models for both images…' }));
+    }
+    card.appendChild(body);
+    return card;
+  }
+
+  function renderMediaChoices(lane) {
+    if (!Array.isArray(lane.mediaChoices) || !lane.mediaChoices.length) return null;
+    const wrap = el('div', { class: 'media-choice-list' });
+    lane.mediaChoices.forEach((choice) => wrap.appendChild(renderMediaChoiceCard(choice)));
+    return wrap;
+  }
+
+  function renderUnattachedMediaChoices() {
+    const visible = [];
+    (state.messages || []).forEach((turn) => {
+      Object.values(turn.lanes || {}).forEach((lane) => visible.push(...(lane.mediaChoices || [])));
+    });
+    const mine = (state.pendingMediaChoices || []).filter((choice) => {
+      if (choice.chatId && String(choice.chatId) !== String(state.activeChatId)) return false;
+      return !visible.some((shown) => sameMediaChoice(shown, choice));
+    });
+    if (!mine.length) return null;
+    const section = el('section', { class: 'message-turn', 'aria-label': 'Image choice from Arena Agent' });
+    mine.forEach((choice) => section.appendChild(renderMediaChoiceCard(choice)));
+    return section;
+  }
+
+  async function refreshActiveChat({ silent = false, automatic = false } = {}) {
+    const chatId = state.activeChatId;
+    if (!chatId || String(state.refreshingChatId || '') === String(chatId)) return;
+    if (chatIsGenerating(chatId)) {
+      if (!silent) toast('This chat is generating right now. Refresh it when the answer finishes.', 'warning', 'Refresh from Arena');
+      return;
+    }
+    const now = Date.now();
+    if (automatic && now - Number(state.refreshCheckedAt[String(chatId)] || 0) < 30000) return;
+    state.refreshCheckedAt[String(chatId)] = now;
+    state.refreshingChatId = String(chatId);
+    renderChatHead();
+    try {
+      const result = await API.refreshChat(chatId);
+      if (String(state.activeChatId) !== String(chatId)) return;
+      if (result?.title) state.activeChatTitle = result.title;
+      const added = Number(result?.added || 0);
+      if (added > 0) {
+        state.refreshingChatId = null;
+        await openChat(chatId, { skipRefresh: true });
+        toast(`Added ${added} newer ${added === 1 ? 'turn' : 'turns'} from arena.ai.`, 'success', 'Refresh from Arena');
+      } else {
+        void loadChats({ silent: true }).catch(() => undefined);
+        if (!silent) toast('This chat is already up to date with arena.ai.', 'info', 'Refresh from Arena');
+      }
+    } catch (error) {
+      if (!silent) toast(errorMessage(error), 'error', 'Refresh from Arena');
+    } finally {
+      if (String(state.refreshingChatId || '') === String(chatId)) state.refreshingChatId = null;
+      if (String(state.activeChatId) === String(chatId)) renderChatHead();
+    }
   }
 
   /* ------- v5: model pins / Elo / chat utilities ------- */
@@ -4219,6 +4598,8 @@ You can start with a more structured option: one script, short captions, and a c
     if (unattached) els.messageList.appendChild(unattached);
     const questions = renderUnattachedQuestions();
     if (questions) els.messageList.appendChild(questions);
+    const mediaChoices = renderUnattachedMediaChoices();
+    if (mediaChoices) els.messageList.appendChild(mediaChoices);
     const todos = renderUnattachedTodos();
     if (todos) els.messageList.appendChild(todos);
 
@@ -4644,7 +5025,8 @@ You can start with a more structured option: one script, short captions, and a c
   function updatePendingPermissionsBadge() {
     if (!els.pendingPermissionsBadge) return;
     const count = Math.max(Number(state.permissionCount) || 0, state.pendingPermissions.length)
-      + (state.pendingQuestions?.length || 0);
+      + (state.pendingQuestions?.length || 0)
+      + ((state.pendingMediaChoices || []).filter(mediaChoiceIsPending).length || 0);
     els.pendingPermissionsBadge.hidden = !count;
     els.pendingPermissionsBadge.textContent = String(count);
     els.pendingPermissionsBadge.title = `Awaiting your decision: ${count}`;
@@ -4811,6 +5193,7 @@ You can start with a more structured option: one script, short captions, and a c
       reasoning: '',
       sources: [],
       media: [],
+      mediaChoices: [],
       activities: [],
       permissions: [],
       notices: [],
@@ -4863,6 +5246,11 @@ You can start with a more structured option: one script, short captions, and a c
       if (item.reasoning) lane.reasoning += textValue(item.reasoning);
       if (Array.isArray(item.sources)) lane.sources.push(...item.sources.map(normalizeSource).filter(Boolean));
       if (Array.isArray(item.media)) lane.media.push(...item.media.map(normalizeMedia).filter(Boolean));
+      const rawMediaChoices = item.media_choices ?? item.mediaChoices;
+      if (Array.isArray(rawMediaChoices)) rawMediaChoices.forEach((choice) => upsertLaneMediaChoice(lane, choice));
+      if (Array.isArray(item.tools)) item.tools.forEach((step) => {
+        if (step?.media_choice || step?.mediaChoice) upsertLaneMediaChoice(lane, step.media_choice || step.mediaChoice);
+      });
       if (Array.isArray(item.artifacts)) lane.artifacts.push(...item.artifacts.map((artifact) => normalizeArtifact(artifact)).filter(Boolean));
       if (Array.isArray(item.permissions)) lane.permissions.push(...item.permissions.map(normalizePermission).filter(Boolean));
       if (Array.isArray(item.notices)) lane.notices.push(...item.notices.map(textValue).filter(Boolean));
@@ -4915,6 +5303,9 @@ You can start with a more structured option: one script, short captions, and a c
               reasoning: item.reasoning_b || '',
               sources: undefined,
               media: undefined,
+              media_choices: undefined,
+              mediaChoices: undefined,
+              tools: undefined,
               artifacts: undefined,
               permissions: undefined,
               notices: undefined,
@@ -4938,9 +5329,14 @@ You can start with a more structured option: one script, short captions, and a c
                 ? `${step.plan}${step.answer ? `\n\u2192 ${step.answer}` : ''}`
                 : step.summary);
             const stepName = step.tool === 'ask_user' ? 'Question'
-              : (step.tool === 'propose_plan' ? 'Plan' : (step.tool === 'set_todos' ? 'Checklist' : step.name));
+              : (step.tool === 'propose_plan' ? 'Plan'
+                : (step.tool === 'generate_image' ? 'Generate image'
+                  : (step.tool === 'set_todos' ? 'Checklist' : step.name)));
             const activity = normalizeActivity({ ...step, name: stepName, detail: stepDetail, status: step.status || (step.ok ? 'ok' : 'error') }, 'tool');
             if (activity) lane.activities.push(activity);
+            if (step.media_choice || step.mediaChoice) {
+              upsertLaneMediaChoice(lane, step.media_choice || step.mediaChoice);
+            }
             if (step.tool === 'set_todos' && Array.isArray(step.todos) && step.todos.length) {
               const hid = String(raw?.chat_id || raw?.id || state.activeChatId || '');
               if (hid) state.chatTodos[hid] = step.todos;
@@ -4987,7 +5383,7 @@ You can start with a more structured option: one script, short captions, and a c
   /* ---------------------------------------------------------------------- */
   /* Chat navigation and empty/error states                                */
   /* ---------------------------------------------------------------------- */
-  async function openChat(chatId, { retry = false } = {}) {
+  async function openChat(chatId, { retry = false, skipRefresh = false } = {}) {
     if (!chatId) return;
     if (state.creatingChat) return;
     closePopover(false);
@@ -4997,6 +5393,8 @@ You can start with a more structured option: one script, short captions, and a c
     markChatSeen(chatId);
     const known = state.chats.find((chat) => chat.id === String(chatId));
     state.activeChatId = String(chatId);
+    state.activeChatEvalId = known?.eval_id || null;
+    state.activeChatSource = known?.source || 'local';
     restoreComposerDraft();
     syncGenerationState();
     const historyToken = (state.historyRequest || 0) + 1;
@@ -5021,6 +5419,8 @@ You can start with a more structured option: one script, short captions, and a c
       const chat = normalizeChat(chatRaw);
       if (chat) {
         state.activeChatTitle = chat.title || state.activeChatTitle;
+        state.activeChatEvalId = chat.eval_id || chat.raw?.eval_id || null;
+        state.activeChatSource = chat.source || 'local';
         const selection = normalizeSelection(chat.mode || state.mode, chat.modality || state.modality);
         state.mode = selection.mode;
         state.modality = selection.modality;
@@ -5068,6 +5468,10 @@ You can start with a more structured option: one script, short captions, and a c
       renderMessages({ preserveScroll: false });
       syncGenerationState();
       void loadQuestions();
+      void loadMediaChoices();
+      if (!skipRefresh && state.activeChatEvalId && !chatIsGenerating(chatId)) {
+        void refreshActiveChat({ silent: true, automatic: true });
+      }
       announce(`Dialog “${state.activeChatTitle}” loaded.`);
     } catch (error) {
       if (historyToken !== state.historyRequest) return;
@@ -5095,6 +5499,8 @@ You can start with a more structured option: one script, short captions, and a c
       stashActiveTurns();
       saveComposerDraft();
       state.activeChatId = String(chatId);
+      state.activeChatEvalId = null;
+      state.activeChatSource = 'local';
       restoreComposerDraft();
       state.activeChatTitle = String(raw?.title ?? raw?.chat?.title ?? "New chat");
       state.messages = [];
@@ -5576,6 +5982,48 @@ You can start with a more structured option: one script, short captions, and a c
         const media = normalizeMedia(item);
         if (media) lane.media.push(media);
       });
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'media_choice') {
+      const rawChoice = event.media_choice && typeof event.media_choice === 'object' ? event.media_choice : event;
+      const choice = upsertLaneMediaChoice(lane, {
+        ...rawChoice,
+        id: event.id || rawChoice.id,
+        tool_call_id: event.tool_call_id || rawChoice.tool_call_id || rawChoice.toolCallId,
+        chat_id: event.chat_id || generation.chatId || rawChoice.chat_id || rawChoice.chatId
+      });
+      if (choice && mediaChoiceIsPending(choice)) {
+        const pendingIndex = state.pendingMediaChoices.findIndex((item) => sameMediaChoice(item, choice));
+        if (pendingIndex >= 0) state.pendingMediaChoices[pendingIndex] = choice;
+        else state.pendingMediaChoices.push(choice);
+        if (String(choice.chatId || generation.chatId) !== String(state.activeChatId)) {
+          toast('Arena Agent is waiting for an image choice in another chat.', 'warning', 'Image choice');
+        } else {
+          announce('Arena Agent generated image options. Choose one to continue.');
+        }
+      }
+      updatePendingPermissionsBadge();
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'media_choice_done') {
+      const rawChoice = event.media_choice && typeof event.media_choice === 'object' ? event.media_choice : event;
+      const choice = upsertLaneMediaChoice(lane, {
+        ...rawChoice,
+        id: rawChoice.id || event.id,
+        tool_call_id: event.tool_call_id || rawChoice.tool_call_id || rawChoice.toolCallId,
+        chat_id: event.chat_id || generation.chatId || rawChoice.chat_id || rawChoice.chatId
+      });
+      state.pendingMediaChoices = state.pendingMediaChoices.filter((item) => !sameMediaChoice(item, choice || {
+        id: event.id, toolCallId: event.tool_call_id || ''
+      }));
+      updatePendingPermissionsBadge();
+      scheduleChatRender();
+      return;
+    }
+    if (type === 'media_reveal') {
+      applyMediaReveal(lane, event);
       scheduleChatRender();
       return;
     }

@@ -8,6 +8,7 @@ are mirrored here; all network access stays in the authenticated app engine.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _WIRE_TO_UI_MODE = {
@@ -277,3 +278,71 @@ def session_to_local(session: Dict[str, Any],
         "created_at": session.get("createdAt") or "",
         "source": "arena",
     }
+
+
+def _message_signature(message: Dict[str, Any]) -> Tuple[str, str, str]:
+    """Stable-enough identity for a local turn during a cloud refresh.
+
+    Imported local messages do not retain Arena's remote IDs, so refresh
+    compares role plus whitespace-normalised text.  Reasoning is excluded:
+    Arena and the local stream may preserve it with slightly different
+    framing while the visible turn is identical.
+    """
+
+    def clean(value: Any) -> str:
+        return " ".join(str(value or "").strip().split())
+
+    return (
+        str(message.get("role") or ""),
+        clean(message.get("text")),
+        clean(message.get("text_b")),
+    )
+
+
+def merge_messages(local_messages: Any, remote_messages: Any) -> Tuple[List[Dict[str, Any]], int]:
+    """Merge a fresh Arena transcript into an existing local one.
+
+    The common case is that the cloud transcript simply continues the
+    local one; shared turns then keep their local desktop-only details
+    (tool calls, votes and saved media choices), gain any missing remote
+    metadata, and the remote tail is appended.  When the transcripts do
+    not form an exact prefix, keep every local entry and append only
+    remote turns whose signatures are not already represented locally.
+    The return value is ``(merged, added)``.
+    """
+    local = [dict(item) for item in local_messages if isinstance(item, dict)] if isinstance(local_messages, list) else []
+    remote = [dict(item) for item in remote_messages if isinstance(item, dict)] if isinstance(remote_messages, list) else []
+    if not remote:
+        return local, 0
+    local_sigs = [_message_signature(item) for item in local]
+    remote_sigs = [_message_signature(item) for item in remote]
+    # Empty placeholder turns are not useful identity anchors.  They are
+    # rare, but avoiding them prevents a blank assistant slot from being
+    # treated as a real shared turn.
+    if local and len(remote) >= len(local) and remote_sigs[:len(local)] == local_sigs:
+        merged = []
+        for local_message, remote_message in zip(local, remote):
+            item = dict(local_message)
+            for key, value in remote_message.items():
+                if key == "names" and isinstance(value, dict) and isinstance(item.get("names"), dict):
+                    names = dict(item["names"])
+                    for lane, name in value.items():
+                        if name and not names.get(lane):
+                            names[lane] = name
+                    item["names"] = names
+                elif item.get(key) in (None, "", [], {}):
+                    item[key] = value
+            merged.append(item)
+        merged.extend(remote[len(local):])
+        return merged, len(remote) - len(local)
+    seen = Counter(local_sigs)
+    merged = local
+    added = 0
+    for message, signature in zip(remote, remote_sigs):
+        if seen[signature] > 0:
+            seen[signature] -= 1
+            continue
+        merged.append(message)
+        seen[signature] += 1
+        added += 1
+    return merged, added
