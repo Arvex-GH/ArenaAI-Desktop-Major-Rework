@@ -9,16 +9,33 @@ its own copy of the folder (option-a, option-b) so their work never collides.
 """
 
 import difflib
+import hashlib
+import json
 import re
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-OUTPUT_LIMIT = 40_000
+MAX_ROUNDS = 8
+OUTPUT_LIMIT = 6000
+# Outputs longer than this are saved to a file in the workspace and only a
+# preview travels back to the model (it can read_file the rest on demand),
+# so long tool chats stop drowning the Arena-side context in raw output.
+INLINE_LIMIT = 1500
+PREVIEW_LIMIT = 600
+ARTIFACTS_DIR = ".arena-artifacts"
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _TOOL_RE = re.compile(r"<tool\s+name\s*=\s*[\"']?([\w-]+)[\"']?\s*>(.*?)</tool\s*>", re.S | re.I)
 _EMPTY_FENCE = re.compile(r"```[\w-]*[ \t]*\n?\s*```")
-_PARAM_RE = re.compile(r"<([a-z_]+)>(.*?)</\1\s*>", re.S | re.I)
+_PARAM_RE = re.compile(r"<([A-Za-z_][\w-]*)>(.*?)</\1\s*>", re.S | re.I)
+# Some models ignore the guide's tag form and answer with Anthropic-style
+# invokes instead; accept those too so their work is not lost.
+_INVOKE_RE = re.compile(r"<invoke\s+name\s*=\s*[\"']?([\w-]+)[\"']?\s*>(.*?)</invoke\s*>", re.S | re.I)
+_INVOKE_PARAM_RE = re.compile(r"<parameter\s+name\s*=\s*[\"']?([\w-]+)[\"']?\s*>(.*?)</parameter\s*>", re.S | re.I)
+_FUNCTION_CALLS_RE = re.compile(r"<function_calls>.*?</function_calls\s*>", re.S | re.I)
 _SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", ".next", "dist", "build"}
 _WRITES = {"write_file", "edit_file", "mkdir", "delete"}
 LANE_DIRS = {"a": "option-a", "b": "option-b"}
@@ -29,7 +46,7 @@ Permission mode: {mode_label}. {mode_note}{lane_note}
 
 To use a tool, write its tag as plain text in your reply, not inside a code block. The app runs the tags in order and sends you the results in the next message.
 <tool name="ls"><path>.</path></tool>
-<tool name="read_file"><path>src/main.py</path></tool>
+<tool name="read_file"><path>src/main.py</path></tool> (optional <start_line>40</start_line><end_line>120</end_line>)
 <tool name="search"><pattern>def main</pattern><path>.</path></tool>
 <tool name="write_file"><path>index.html</path><content>
 FULL FILE CONTENT
@@ -38,8 +55,21 @@ FULL FILE CONTENT
 <tool name="mkdir"><path>assets/img</path></tool>
 <tool name="delete"><path>old_notes.txt</path></tool>
 <tool name="run_cmd"><cmd>python -m pytest -q</cmd></tool>
+<tool name="ask_user"><question>Which database should I use?</question><option1>SQLite</option1><option2>PostgreSQL</option2></tool>
+<tool name="propose_plan"><plan>1. Inspect the project layout
+2. Refactor the parser
+3. Run the tests</plan></tool>
+<tool name="set_todos"><todos>[x] Inspect the project layout
+[~] Refactor the parser
+[ ] Run the tests</todos></tool>
+<tool name="read_files"><paths>src/main.py
+src/util.py
+README.md</paths></tool>
+{extra_tools}{delegate}
+Rules: paths are relative to the folder. Read a file before editing it. write_file takes the whole file. When the task is done, reply with a short summary and no tool tags. If the message does not need files, just answer it. Use ask_user only for choices that are genuinely the user's (preferences, ambiguous requirements): one clear question with 2-4 short options \u2014 the user can also type their own answer, and it comes back to you as the tool result. Never ask what you can find out from the files, and do not ask twice in a row. For work with several steps, keep a checklist with set_todos: set it before you start and update it as steps finish ([x] done, [~] in progress, [ ] pending), so the user sees live progress. Before substantial or risky changes, present the intended steps with propose_plan and wait for the user's decision; if they ask for revisions, present the updated plan.
+Keep the context lean: batch independent tool calls in one reply instead of one call per round. Every extra round re-sends the whole context to the model and burns the user's daily Arena balance, so fewer, fuller rounds finish the same work for less. To read several files at once, use read_files with one path per line inside <paths>; re-reading a file that has not changed returns a short note instead of repeating the content. read_file accepts <start_line> and <end_line> — read only the part you need, and do not re-read files you just wrote. Very long tool outputs are saved under .arena-artifacts/ and you only see a preview; read_file that path if you need the full text.
 
-Rules: paths are relative to the folder. Read a file before editing it. write_file takes the whole file. When the task is done, reply with a short summary and no tool tags. If the message does not need files, just answer it.
+Persistent memory: MEMORY.md in the workspace root is shared across chats about this project, and its content may be included above as established context. When you learn durable facts worth keeping beyond this chat \u2014 project conventions, decisions, user preferences, the current state of the work \u2014 update MEMORY.md briefly with write_file/edit_file (short bullet points; point to files instead of copying code). Do not store secrets, one-off details, or anything obvious from the code itself. If the user says \u201cremember this\u201d, that goes to MEMORY.md. If the project root has AGENTS.md, those are the maintainer's standing instructions; they may be included above as context - follow them, and do not copy them into MEMORY.md.
 
 User message:
 """
@@ -50,7 +80,7 @@ LANE_NOTE = ("\nTwo assistants answer this chat side by side. Each one's file ch
 
 MODE_NOTES = {
     "plan": "Plan mode is on: only ls, read_file and search will run. Do not change anything; "
-            "finish with a numbered plan the user can approve.",
+            "finish with a numbered plan and present it with the propose_plan tool so the user can approve it in one click.",
     "default": "The user approves each change and command.",
     "acceptEdits": "File edits run without asking; deletes and commands need approval.",
     "auto": "Work inside the project folder runs without asking; risky commands need approval.",
@@ -58,21 +88,145 @@ MODE_NOTES = {
 }
 
 
-def guide(root, mode_label: str, mode_note: str, dual: bool = False) -> str:
+READ_ONLY_TOOLS = {"ls", "read_file", "read_files", "search", "ask_user", "propose_plan", "set_todos"}
+
+
+def delegate_guide(models) -> str:
+    """Guide section describing sub-agent delegation (shown to parents only)."""
+    lines = [
+        "",
+        "Sub-agents: for a self-contained sub-task \u2014 exploring part of the project, "
+        "researching how something works, checking several places \u2014 you may delegate it "
+        "instead of doing it here. The sub-agent works in its own chat with the same folder "
+        "tools and only its final summary returns to you, so your context stays clean. Write "
+        "the task so it stands alone: the sub-agent does not see this conversation. "
+        "<mode>research</mode> (the default) is read-only; <mode>work</mode> may also edit "
+        "files and run commands. Delegates run one at a time, at most 3 per turn. You may pick "
+        "the sub-agent's model when it matters (a fast model for search, the strongest for hard "
+        "reasoning); omit <model> to auto-assign.",
+        '<tool name="delegate_task"><task>Find everywhere the config file is parsed; report '
+        'file:line for each place with a one-line note.</task><mode>research</mode></tool>',
+        "Each delegate result starts with [sub-agent chat: <id>]. Once you have used a "
+        "sub-agent's summary and no longer need its chat, delete it so the user's chat "
+        "list stays clean: <tool name=\"delete_subagent\"><child_id>the id</child_id></tool>. "
+        "You can only delete chats you delegated in this conversation.",
+    ]
+    if models:
+        lines.append("Models you may name in <model> (use the id in brackets): "
+                     + ", ".join(f"{name} [{mid}]" for mid, name in models))
+    return "\n".join(lines) + "\n"
+
+
+def guide(root, mode_label: str, mode_note: str, dual: bool = False, extra_tools: str = "",
+          delegate: str = "") -> str:
     """The tool guide that goes in front of the first message of a conversation."""
-    return GUIDE.format(root=root, mode_label=mode_label, mode_note=mode_note, lane_note=LANE_NOTE if dual else "")
+    return GUIDE.format(root=root, mode_label=mode_label, mode_note=mode_note,
+                        lane_note=LANE_NOTE if dual else "", extra_tools=extra_tools or "",
+                        delegate=delegate or "")
 
 
 def parse_tool_calls(text: str) -> List[Dict[str, Any]]:
     calls = []
+    found = []
     for m in _TOOL_RE.finditer(text or ""):
-        params = {p.group(1).lower(): p.group(2) for p in _PARAM_RE.finditer(m.group(2))}
-        calls.append({"name": m.group(1).lower(), "params": params})
+        params: Dict[str, Any] = {}
+        for p in _PARAM_RE.finditer(m.group(2)):
+            # Keep MCP argument names case-sensitive, while retaining the
+            # lower-case aliases the built-in file tools have always used.
+            params[p.group(1)] = p.group(2)
+            params.setdefault(p.group(1).lower(), p.group(2))
+        found.append((m.start(), {"name": m.group(1).lower(), "params": params}))
+    for m in _INVOKE_RE.finditer(text or ""):
+        params = {}
+        for p in _INVOKE_PARAM_RE.finditer(m.group(2)):
+            params[p.group(1)] = p.group(2)
+            params.setdefault(p.group(1).lower(), p.group(2))
+        found.append((m.start(), {"name": m.group(1).lower(), "params": params}))
+    found.sort(key=lambda item: item[0])
+    calls.extend(call for _pos, call in found)
     return calls
 
 
+def coerce_mcp_arguments(call: Dict[str, Any], schema: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Turn the XML form of an MCP call into JSON arguments.
+
+    The preferred form is ``<arguments>{...}</arguments>``.  Plain child
+    elements are also accepted and coerced from strings using the JSON Schema
+    advertised by the MCP server.
+    """
+    params = dict(call.get("params") or {})
+    raw = None
+    for key in ("arguments", "args", "json"):
+        if isinstance(params.get(key), str) and params[key].strip():
+            raw = params.pop(key).strip()
+            break
+    if raw is not None:
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I | re.S).strip()
+        try:
+            value = json.loads(raw)
+        except ValueError as e:
+            raise ValueError(f"MCP arguments are not valid JSON: {e}") from e
+        if not isinstance(value, dict):
+            raise ValueError("MCP arguments must be a JSON object")
+        return _coerce_mcp_value(value, schema or {})
+
+    properties = {}
+    if isinstance(schema, dict) and isinstance(schema.get("properties"), dict):
+        properties = schema["properties"]
+    out: Dict[str, Any] = {}
+    seen_lower = set()
+    for key, value in params.items():
+        # parse_tool_calls adds lower-case aliases for built-in tools; do not
+        # emit the same MCP property twice under two spellings.
+        if key.lower() in seen_lower and key not in properties:
+            continue
+        seen_lower.add(key.lower())
+        prop = properties.get(key) if isinstance(properties.get(key), dict) else {}
+        out[key] = _coerce_mcp_value(value, prop)
+    return out
+
+
+def _coerce_mcp_value(value: Any, prop: Dict[str, Any]) -> Any:
+    if isinstance(value, dict):
+        properties = prop.get("properties") if isinstance(prop, dict) else None
+        if not isinstance(properties, dict):
+            return value
+        return {
+            key: _coerce_mcp_value(item, properties.get(key) if isinstance(properties.get(key), dict) else {})
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        items = prop.get("items") if isinstance(prop, dict) else None
+        if not isinstance(items, dict):
+            return value
+        return [_coerce_mcp_value(item, items) for item in value]
+    if not isinstance(value, str):
+        return value
+    kind = prop.get("type")
+    if isinstance(kind, list):
+        kind = next((item for item in kind if item != "null"), None)
+    text = value.strip()
+    try:
+        if kind == "integer":
+            return int(float(text)) if text else 0
+        if kind == "number":
+            number = float(text)
+            return int(number) if number.is_integer() else number
+        if kind == "boolean":
+            return text.lower() in ("1", "true", "yes", "on")
+        if kind in ("array", "object"):
+            parsed = json.loads(text)
+            return _coerce_mcp_value(parsed, prop)
+    except (ValueError, TypeError):
+        return value
+    return value
+
+
 def strip_tool_calls(text: str) -> str:
-    return _EMPTY_FENCE.sub("", _TOOL_RE.sub("", text or ""))
+    cleaned = _FUNCTION_CALLS_RE.sub("", text or "")
+    cleaned = _INVOKE_RE.sub("", cleaned)
+    return _EMPTY_FENCE.sub("", _TOOL_RE.sub("", cleaned))
 
 
 def _body(text: str) -> str:
@@ -96,28 +250,202 @@ def _diff(old: str, new: str, name: str, limit: int = 80) -> str:
     return "\n".join(lines)
 
 
-def _result_lines(outcomes) -> List[str]:
+def trim_output(text: str) -> str:
+    """Shrink a tool output for the trip back to the model: no ANSI codes,
+    repeated lines collapsed, head+tail kept when it is still too long."""
+    cleaned = _ANSI_RE.sub("", str(text or ""))
+    out_lines: List[str] = []
+    run_line, run_count = None, 0
+    for line in cleaned.splitlines():
+        if line == run_line:
+            run_count += 1
+            continue
+        if run_count > 2:
+            out_lines.append(f"... (same line x{run_count})")
+        elif run_count == 2:
+            out_lines.append(run_line or "")
+        run_line, run_count = line, 1
+        out_lines.append(line)
+    if run_count > 2:
+        out_lines.append(f"... (same line x{run_count})")
+    elif run_count == 2 and run_line is not None:
+        out_lines.append(run_line)
+    cleaned = "\n".join(out_lines)
+    if len(cleaned) > OUTPUT_LIMIT:
+        head = cleaned[: OUTPUT_LIMIT * 3 // 5]
+        tail = cleaned[-(OUTPUT_LIMIT * 2 // 5):]
+        cleaned = head + f"\n... [{len(cleaned) - len(head) - len(tail)} chars omitted] ...\n" + tail
+    return cleaned
+
+
+def _offload(output: str, call, artifact_dir, artifact_rel: str) -> str:
+    """Save a long output under .arena-artifacts/ and return a preview +
+    pointer instead of the whole text. Falls back to trimming on any error."""
+    try:
+        digest = hashlib.sha1(output.encode("utf-8", "replace")).hexdigest()[:8]
+        name = f"{call.get('name') or 'tool'}-{digest}.txt"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / name).write_text(output[:200_000], encoding="utf-8")
+        return (output[:PREVIEW_LIMIT]
+                + f"\n... [full output ({len(output)} chars) saved to {artifact_rel}/{name}"
+                  " - use read_file on it if you need the rest]")
+    except OSError:
+        return trim_output(output)
+
+
+SHELL_IDLE_LIMIT = 30     # seconds without output -> kill (waiting on input, pager, hang)
+SHELL_TOTAL_LIMIT = 600   # hard cap for a single command
+
+_INTERACTIVE_FIRST = {
+    "vim", "vi", "nvim", "nano", "emacs", "less", "more", "most", "top",
+    "htop", "ssh", "telnet", "ftp", "sftp", "mysql", "psql", "mongo",
+    "redis-cli", "watch", "edit", "notepad",
+}
+_BARE_SHELLS = {"cmd", "powershell", "pwsh", "bash", "sh", "zsh", "fish"}
+_BARE_INTERPRETERS = {"python", "python3", "py", "node", "irb", "ruby", "php", "lua", "perl"}
+
+
+def _interactive_refusal(cmd: str) -> str:
+    """Explain (for the model) why a command cannot run here, or "" if it can."""
+    tokens = re.split(r"[\s;|&]+", cmd.strip())
+    tokens = [t for t in tokens if t and "=" not in t.split("/")[-1].split("\\")[-1]]
+    if not tokens:
+        return ""
+    first = tokens[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if first.endswith(".exe"):
+        first = first[:-4]
+    rest = [t.lower() for t in tokens[1:]]
+    why = ""
+    if first in _INTERACTIVE_FIRST:
+        why = f"'{first}' is an interactive program"
+    elif first == "tail" and ("-f" in rest or "--follow" in rest):
+        why = "'tail -f' never exits"
+    elif first in _BARE_SHELLS and not any(t in ("/c", "-c", "-command", "-encodedcommand") for t in rest):
+        why = f"a bare '{first}' starts an interactive shell"
+    elif first in _BARE_INTERPRETERS and (not rest or "-i" in rest):
+        why = f"a bare '{first}' starts a REPL"
+    if not why:
+        return ""
+    return (f"Error: not run: {why}. run_cmd is non-interactive (stdin is closed, and a "
+            "command with no output for 30 seconds is killed). Use a one-shot form instead, "
+            "e.g. a script file, 'python script.py', 'git log -5', or redirect input from a file.")
+
+
+def run_shell_command(cmd: str, cwd) -> str:
+    """Run one shell command with an idle watchdog; returns formatted output.
+
+    Output streams through pump threads purely so silence can be detected:
+    a command that produces nothing for SHELL_IDLE_LIMIT seconds is killed
+    (it is almost certainly waiting for input or hung), which previously
+    blocked the whole agent loop until the user pressed Stop.
+    """
+    cmd = (cmd or "").strip()
+    if not cmd:
+        raise ValueError("cmd is empty")
+    refusal = _interactive_refusal(cmd)
+    if refusal:
+        return refusal
+    proc = subprocess.Popen(cmd, shell=True, cwd=str(cwd), stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace")
+    out_chunks: List[str] = []
+    err_chunks: List[str] = []
+    state = {"last": time.time()}
+
+    def pump(stream, sink):
+        try:
+            while True:
+                data = stream.read(1024)
+                if not data:
+                    break
+                sink.append(data)
+                state["last"] = time.time()
+        except Exception:
+            pass
+
+    threads = [threading.Thread(target=pump, args=(st, sink), daemon=True)
+               for st, sink in ((proc.stdout, out_chunks), (proc.stderr, err_chunks)) if st is not None]
+    for t in threads:
+        t.start()
+    started = time.time()
+    killed = ""
+    while proc.poll() is None:
+        now = time.time()
+        if now - state["last"] > SHELL_IDLE_LIMIT:
+            killed = f"killed after {SHELL_IDLE_LIMIT}s without output (waiting for input or hung)"
+            break
+        if now - started > SHELL_TOTAL_LIMIT:
+            killed = f"killed after the {SHELL_TOTAL_LIMIT}s limit"
+            break
+        time.sleep(0.15)
+    if killed:
+        try:
+            if os_name_is_windows():
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                               capture_output=True, timeout=10)
+            else:
+                proc.kill()
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    try:
+        proc.wait(timeout=10)
+    except Exception:
+        pass
+    for t in threads:
+        t.join(timeout=2)
+    stdout = "".join(out_chunks).strip()
+    stderr = "".join(err_chunks).strip()
+    if killed:
+        merged = (stdout + ("\n" if stdout and stderr else "") + stderr)[-OUTPUT_LIMIT:]
+        return (f"{killed}\n{merged}").strip() or killed
+    parts = [f"exit code {proc.returncode}"]
+    if stdout:
+        parts.append(stdout[-OUTPUT_LIMIT:])
+    if stderr:
+        parts.append(f"[STDERR]\n{stderr[-1500:]}")
+    if proc.returncode:
+        parts.append(f"[Process exited with code {proc.returncode}]")
+    elif not stdout and not stderr:
+        parts.append("(command finished with no output)")
+    return "\n".join(parts)
+
+
+def os_name_is_windows() -> bool:
+    import os as _os
+    return _os.name == "nt"
+
+
+def _result_lines(outcomes, artifact_dir=None, artifact_rel: str = ARTIFACTS_DIR) -> List[str]:
     lines = []
     for i, (call, status, output) in enumerate(outcomes, 1):
         target = call["params"].get("path") or call["params"].get("cmd") or ""
         lines.append(f"[{i}] {call['name']} {target}: {status}")
         if output:
-            lines.append(str(output)[:OUTPUT_LIMIT])
+            cleaned = _ANSI_RE.sub("", str(output))
+            if (artifact_dir is not None and call.get("name") not in ("read_file", "read_files")
+                    and len(cleaned) > INLINE_LIMIT):
+                lines.append(_offload(cleaned, call, artifact_dir, artifact_rel))
+            else:
+                lines.append(trim_output(cleaned))
     return lines
 
 
 _CONTINUE = "Continue the task. When it is complete, reply with a short summary and no tool tags."
 
 
-def format_results(outcomes) -> str:
-    return "\n".join(["Tool results:"] + _result_lines(outcomes) + [_CONTINUE])
+def format_results(outcomes, artifact_dir=None, artifact_rel: str = ARTIFACTS_DIR) -> str:
+    return "\n".join(["Tool results:"] + _result_lines(outcomes, artifact_dir, artifact_rel) + [_CONTINUE])
 
 
-def format_lane_results(per_lane) -> str:
+def format_lane_results(per_lane, artifact_dirs=None, artifact_rel: str = ARTIFACTS_DIR) -> str:
     """Results for a two-model chat: one block per reply, each listing the calls it answers."""
     parts = ["Tool results for both replies. Use only the block for the tool calls you wrote."]
     for lane, outcomes in per_lane.items():
-        parts.append(f"Reply {lane.upper()}:\n" + "\n".join(_result_lines(outcomes)) if outcomes
+        lane_dir = (artifact_dirs or {}).get(lane)
+        parts.append(f"Reply {lane.upper()}:\n" + "\n".join(_result_lines(outcomes, lane_dir, artifact_rel)) if outcomes
                      else f"Reply {lane.upper()}: no tool calls.")
     return "\n\n".join(parts + [_CONTINUE])
 
@@ -236,7 +564,26 @@ class LocalTools:
         if target.stat().st_size > 1_000_000:
             raise ValueError("file is larger than 1 MB")
         text = _read(target)
-        return text if len(text) <= 40_000 else text[:40_000] + "\n...[truncated]"
+        lines = text.splitlines()
+        total = len(lines)
+        try:
+            start = int(prm.get("start_line") or 0)
+        except (TypeError, ValueError):
+            start = 0
+        try:
+            end = int(prm.get("end_line") or 0)
+        except (TypeError, ValueError):
+            end = 0
+        if start > 0 or end > 0:
+            start = max(1, start or 1)
+            end = min(total, end or total)
+            part = "\n".join(lines[start - 1:end])
+            return f"[lines {start}-{end} of {total}]\n{part}"
+        if len(text) > OUTPUT_LIMIT:
+            return (text[:OUTPUT_LIMIT]
+                    + f"\n... [file continues: {total} lines total - call read_file with "
+                      "start_line/end_line to read a specific part]")
+        return text
 
     def _t_search(self, prm) -> str:
         target, _ = self.resolve(prm.get("path", "."))
@@ -316,12 +663,6 @@ class LocalTools:
         raise FileNotFoundError(f"{self._rel(target)} does not exist")
 
     def _t_run_cmd(self, prm) -> str:
-        cmd = (prm.get("cmd") or "").strip()
-        if not cmd:
-            raise ValueError("cmd is empty")
         cwd = self.out or self.root
         cwd.mkdir(parents=True, exist_ok=True)
-        r = subprocess.run(cmd, shell=True, cwd=str(cwd), capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=120)
-        out = (r.stdout or "") + (("\n" + r.stderr) if r.stderr else "")
-        return f"exit code {r.returncode}\n{out[-OUTPUT_LIMIT:]}".strip()
+        return run_shell_command(prm.get("cmd") or "", cwd)

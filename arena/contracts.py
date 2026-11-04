@@ -21,11 +21,30 @@ PATHS: Dict[str, str] = {
     "create": "/nextjs-api/stream/create-evaluation",
     "post": "/nextjs-api/stream/post-to-evaluation/{eval_id}",
     "me": "/api/me",
+    "history_unified": "/api/history/unified",
+    "evaluation": "/api/evaluation/{eval_id}",
+    "connectors": "/api/connectors",
+    "connectors_status": "/api/connectors/status",
+    "connectors_sync": "/api/connectors/sync",
+    "connector": "/api/connectors/{slug}",
+    "connector_link_token": "/api/connectors/{slug}/link-token",
+    "auto_modality": "/nextjs-api/auto-modality",
+    # File uploads: Arena mints a presigned PUT URL, the browser uploads the
+    # bytes, then asks for a signed read URL (evaluation chats) — or the
+    # content-addressed agent variant keyed by the file's SHA-256.
+    "storage_upload_url": "/api/storage/generate-upload-url",
+    "storage_signed_url": "/api/storage/get-signed-url",
+    "storage_agent_upload_url": "/api/storage/generate-agent-upload-url",
+    # Native Arena Agent Mode (Trigger.dev AI Chat behind Arena's proxy).
+    "create_chat": "/nextjs-api/stream/create-chat",
+    "chat_trigger_session": "/api/chat/trigger-session",
+    "chat_trigger_token": "/api/chat/trigger-token",
+    "chat_session": "/api/chat/{session_id}",
+    "chat_archive": "/api/chat/{session_id}/archive",
+    "ai_proxy": "/ai-proxy",
     "catalog": "/nextjs-api/model-catalog",
     "webdev": "/api/evaluation/webdev/{message_id}",
     "sign_out": "/nextjs-api/sign-out",
-    "storage_upload": "/api/storage/generate-upload-url",
-    "storage_signed": "/api/storage/get-signed-url",
 }
 KEYS: Dict[str, str] = {
     "v3": "6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0",
@@ -38,8 +57,43 @@ SITE_KEY_RE = re.compile(r"6L[0-9A-Za-z_-]{38}")
 API_MODES = ("battle", "side-by-side", "direct-battle", "direct")
 API_MODALITIES = ("auto", "chat", "webdev", "search", "image", "p2l", "video", "audio")
 UI_MODES = {"battle": "battle", "side-by-side": "side-by-side", "direct": "direct-battle", "agent": "direct-battle"}
-UI_MODALITIES = {"auto": "chat", "text": "chat", "chat": "chat", "code": "webdev", "webdev": "webdev",
+UI_MODALITIES = {"auto": "auto", "text": "chat", "chat": "chat", "code": "webdev", "webdev": "webdev",
                  "search": "search", "image": "image", "video": "video", "audio": "audio"}
+
+# Arena's product rules, expressed after UI values have been mapped to API
+# values.  Keeping the matrix here prevents the desktop UI, CLI and HTTP API
+# from drifting apart:
+#   * model pickers exist only in Direct (one model) and Side by Side (two);
+#   * Video Arena and Auto are Battle-only; Arena selects both models, and
+#     Auto is resolved to a concrete modality by Arena's own auto-modality
+#     router before the first message is created (exactly like the website);
+#   * this app's local Agent is a text/tool workflow with automatic internal
+#     model assignment, so it accepts no user-selected model and no non-text
+#     modality.  Max remains an ordinary manually selectable Direct model.
+UI_MODE_API_MODALITIES = {
+    "battle": ("auto", "chat", "webdev", "search", "image", "video"),
+    "side-by-side": ("chat", "webdev", "search", "image"),
+    "direct": ("chat", "webdev", "search", "image"),
+    "agent": ("chat",),
+}
+MANUAL_MODEL_UI_MODES = ("direct", "side-by-side")
+
+# Attachment rules, mirroring Arena's help center and client code.
+# Evaluation chats (Battle/Direct/Side by Side): images + PDF only.
+EVAL_ATTACHMENT_MIME_TYPES = ("image/png", "image/jpeg", "image/webp", "application/pdf")
+EVAL_ATTACHMENT_MAX_BYTES = 15 * 1024 * 1024
+VIDEO_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
+# Agent Mode: the website's AGENT_UPLOAD_ALLOWED_MIME_TYPES list.
+AGENT_ATTACHMENT_MIME_TYPES = (
+    "image/png", "image/webp", "image/jpeg", "image/gif",
+    "text/plain", "text/markdown", "text/csv", "text/html", "text/xml",
+    "text/css", "text/javascript", "application/json", "application/xml",
+    "application/javascript", "application/pdf",
+)
+AGENT_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
+AGENT_PDF_MAX_BYTES = 10 * 1024 * 1024
+AGENT_ATTACHMENTS_MAX_BYTES_PER_TURN = 50 * 1024 * 1024
+AGENT_ATTACHMENTS_MAX_PER_TURN = 20
 
 # AI SDK data-stream type codes. arena prefixes each line with a lane: a or b.
 STREAM_TYPES = {"0": "text", "2": "data", "3": "error", "8": "annotation", "9": "tool_call",
@@ -59,6 +113,82 @@ def api_modality(ui_modality: str) -> str:
     if modality not in API_MODALITIES:
         raise ValueError(f"Unknown modality {ui_modality!r}")
     return modality
+
+
+def validate_ui_selection(ui_mode: str, ui_modality: str) -> Tuple[str, str]:
+    """Validate a UI mode/modality pair and return Arena API values.
+
+    This is deliberately stricter than merely checking that each enum exists:
+    Arena does not offer every Cartesian combination shown by two independent
+    dropdowns.  In particular, Video is Battle-only and Agent is text-only.
+    """
+    if ui_mode not in UI_MODES:
+        raise ValueError(f"Unknown mode {ui_mode!r}")
+    mode = api_mode(ui_mode)
+    modality = api_modality(ui_modality)
+    allowed = UI_MODE_API_MODALITIES[ui_mode]
+    if modality not in allowed:
+        if modality == "video":
+            raise ValueError("Video is available only in Battle mode; Arena selects both video models.")
+        if modality == "auto":
+            raise ValueError("Auto is available only in Battle mode.")
+        if ui_mode == "agent":
+            raise ValueError("Agent mode is text-only.")
+        raise ValueError(f"{ui_mode} mode does not support {ui_modality} modality.")
+    return mode, modality
+
+
+def normalize_ui_selection(ui_mode: str, ui_modality: str) -> Tuple[str, str]:
+    """Coerce a saved legacy UI selection to the closest supported pair."""
+    mode = ui_mode if ui_mode in UI_MODES else "battle"
+    modality = ui_modality if ui_modality in UI_MODALITIES else "text"
+    try:
+        validate_ui_selection(mode, modality)
+        return mode, modality
+    except ValueError:
+        # Agent wins over a stale work-type selection: picking Agent never
+        # requires choosing Text first (the work-type selector is hidden
+        # while Agent is selected).
+        if mode == "agent":
+            return mode, "text"
+        if api_modality(modality) == "video":
+            return "battle", modality
+        return mode, "text"
+
+
+# Arena's auto-modality router returns probabilities keyed by work type.
+AUTO_MODALITY_KEYS = {"text": "chat", "code": "webdev", "search": "search",
+                      "image": "image", "video": "video"}
+AUTO_MODALITY_CODE_THRESHOLD = 0.25
+
+
+def pick_auto_modality(probabilities, has_image: bool = False) -> str:
+    """Resolve Arena's auto-modality probabilities the way the website does.
+
+    ``probabilities`` is the router's {text, code, search, image, video}
+    mapping. Search is disabled when the prompt carries an image, Code wins
+    at its low confidence threshold, otherwise the highest probability wins.
+    Returns an Arena API modality; anything unusable falls back to chat.
+    """
+    if not isinstance(probabilities, dict):
+        return "chat"
+    probs: Dict[str, float] = {}
+    for key in AUTO_MODALITY_KEYS:
+        try:
+            probs[key] = float(probabilities.get(key) or 0.0)
+        except (TypeError, ValueError):
+            probs[key] = 0.0
+    if has_image:
+        probs["search"] = 0.0
+        total = sum(probs.values())
+        if total > 0:
+            probs = {k: v / total for k, v in probs.items()}
+        else:
+            probs["text"] = 1.0
+    if probs["code"] >= AUTO_MODALITY_CODE_THRESHOLD:
+        return "webdev"
+    best = max(probs, key=lambda k: probs[k])
+    return AUTO_MODALITY_KEYS.get(best, "chat")
 
 
 def load_overrides(path: Optional[Path] = None) -> List[str]:
@@ -93,7 +223,7 @@ def discover_site_keys(html: str) -> Dict[str, str]:
 
 def build_chat(*, eval_id: str, new: bool, mode: str, modality: str, content: str, ids: Callable[[], str],
                model_a: Optional[str] = None, model_b: Optional[str] = None, attachments=None,
-               v2_token: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+               v2_token: Optional[str] = None, auto_model: bool = False) -> Tuple[str, Dict[str, Any]]:
     """Return (path, body) for one user message. mode and modality are arena values.
 
     arena enforces: battle takes no model ids; direct starts as direct-battle with one
@@ -102,10 +232,20 @@ def build_chat(*, eval_id: str, new: bool, mode: str, modality: str, content: st
     """
     if mode not in API_MODES:
         raise ValueError(f"Unknown mode {mode!r}")
-    if mode != "battle" and not model_a:
+    if modality not in API_MODALITIES:
+        raise ValueError(f"Unknown modality {modality!r}")
+    if modality == "video" and mode != "battle":
+        raise ValueError("Video is available only in Battle mode; Arena selects both video models.")
+    if mode == "battle" and (model_a or model_b):
+        raise ValueError("Battle mode does not accept model ids; Arena selects both models.")
+    if mode != "battle" and not model_a and not (auto_model and mode in ("direct", "direct-battle")):
         raise ValueError("Pick a model first: this mode talks to the model you choose.")
     if mode == "side-by-side" and not model_b:
         raise ValueError("Side by Side compares two models: pick model B too.")
+    if mode == "side-by-side" and model_a == model_b:
+        raise ValueError("Side by Side compares two different models.")
+    if mode in ("direct", "direct-battle") and model_b:
+        raise ValueError("Direct mode accepts exactly one model.")
     body: Dict[str, Any] = {
         "id": eval_id,
         "userMessageId": ids(),
@@ -115,7 +255,7 @@ def build_chat(*, eval_id: str, new: bool, mode: str, modality: str, content: st
     }
     if mode in ("battle", "side-by-side"):
         body["modelBMessageId"] = ids()
-    if mode != "battle":
+    if mode != "battle" and model_a:
         body["modelAId"] = model_a
     if mode == "side-by-side":
         body["modelBId"] = model_b
@@ -161,14 +301,77 @@ class LineSplitter:
         return [rest] if rest.strip() else []
 
 
-def classify_error(status: int, text: str = "") -> Dict[str, Any]:
+VIDEO_MESSAGE_MAX_LENGTH = 2500
+DAILY_SPEND_LIMIT_MESSAGE = "daily spend limit reached"
+ACCOUNT_TOO_NEW_FOR_VIDEO = "account_too_new_for_video"
+
+
+def _rate_limit_reset(headers) -> Optional[float]:
+    """Epoch seconds when a rate limit resets, from Arena's response headers.
+
+    Mirrors the website's own parser: ``RateLimit-Reset`` (epoch seconds),
+    then ``Retry-After`` (seconds or HTTP-date), then ``Ratelimit-Remaining``.
+    """
+    if not headers:
+        return None
+    try:
+        items = {str(k).lower(): v for k, v in dict(headers).items()}
+    except (TypeError, ValueError):
+        return None
+    import time as _time
+    raw = items.get("ratelimit-reset")
+    if raw is not None:
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            pass
+    raw = items.get("retry-after")
+    if raw is not None:
+        try:
+            return _time.time() + float(raw)
+        except (TypeError, ValueError):
+            try:
+                from email.utils import parsedate_to_datetime
+                return parsedate_to_datetime(str(raw)).timestamp()
+            except (TypeError, ValueError):
+                pass
+    raw = items.get("ratelimit-remaining")
+    if raw is not None:
+        try:
+            return _time.time() + float(raw)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _human_wait(reset_epoch) -> str:
+    """'2 hours' / '35 minutes' / 'a moment' for a rate-limit reset time."""
+    if not reset_epoch:
+        return ""
+    import time as _time
+    seconds = reset_epoch - _time.time()
+    if seconds <= 45:
+        return "a moment"
+    minutes = int(-(-seconds // 60))
+    if minutes < 60:
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    hours = int(-(-minutes // 60))
+    if hours < 48:
+        return f"{hours} hour{'s' if hours != 1 else ''}"
+    days = int(-(-hours // 24))
+    return f"{days} day{'s' if days != 1 else ''}"
+
+
+def classify_error(status: int, text: str = "", headers=None) -> Dict[str, Any]:
     """Turn an arena.ai failure into a code, a plain-language message and retry advice."""
     raw = text or ""
     low = raw.lower()
     detail = raw
+    body: Dict[str, Any] = {}
     try:
         obj = json.loads(raw)
         if isinstance(obj, dict):
+            body = obj
             detail = str(obj.get("error") or obj.get("message") or raw)
     except ValueError:
         pass
@@ -181,15 +384,54 @@ def classify_error(status: int, text: str = "") -> Dict[str, Any]:
         return out("network", "Can't reach arena.ai. Check your internet connection, then retry.", True, 5)
     if "just a moment" in low or "cf-chl" in low or ("cloudflare" in low and status in (403, 503)):
         return out("cloudflare", "Cloudflare wants to check this browser. Finish the check in the arena.ai window that opened.", True)
-    if "too many requests" in low or "rate limit" in low or "rate-limit" in low:
-        return out("rate_limit", "arena.ai is rate-limiting this account. Wait about a minute, then send again.", True, 60)
     if "captcha" in low:
         return out("challenge", "arena.ai asked for a quick human check. Complete it in the arena.ai window; "
                                 "your message resends by itself.", True)
     if status == 401:
         return out("auth", "Your arena.ai session ended. Sign in again from Settings, Account.")
+    if status == 403 and str(body.get("error") or "") == ACCOUNT_TOO_NEW_FOR_VIDEO:
+        need = body.get("minAccountAgeHours")
+        have = body.get("accountAgeHours")
+        try:
+            need_h, have_h = float(need), float(have)
+            return out("forbidden",
+                       f"Video needs an older Arena account: yours is {have_h:.0f} hour(s) old, "
+                       f"and Video opens at {need_h:.0f} hours. Try Video again later — "
+                       "the other work types already work.")
+        except (TypeError, ValueError):
+            return out("forbidden", "This Arena account is too new for Video. Video opens once the account is older.")
     if status == 429:
-        return out("rate_limit", "arena.ai is rate-limiting this account. Wait about a minute, then send again.", True, 60)
+        reset = _rate_limit_reset(headers)
+        wait_text = _human_wait(reset)
+        wait_s = 60
+        if reset:
+            import time as _time
+            wait_s = max(1, min(86400, int(reset - _time.time())))
+        if DAILY_SPEND_LIMIT_MESSAGE in low:
+            if wait_text:
+                return out("rate_limit", f"You've reached your Arena daily usage limit. Try again in {wait_text}.", True, wait_s)
+            return out("rate_limit", "You've reached your Arena daily usage limit. Try again tomorrow.", True, wait_s)
+        limited_modality = None
+        if headers:
+            try:
+                limited_modality = {str(k).lower(): v for k, v in dict(headers).items()}.get("ratelimit-modality")
+            except (TypeError, ValueError):
+                limited_modality = None
+        if limited_modality:
+            label = {"video": "Video", "image": "Image", "chat": "Text", "webdev": "Code",
+                     "search": "Web Search"}.get(str(limited_modality), str(limited_modality))
+            if wait_text:
+                return out("rate_limit", f"You've reached the {label} rate limit on Arena. Try again in {wait_text}.", True, wait_s)
+            return out("rate_limit", f"You've reached the {label} rate limit on Arena. Try again later.", True, wait_s)
+        if body.get("modelId"):
+            if wait_text:
+                return out("rate_limit", f"That model is rate-limited on Arena right now. Try again in {wait_text}, or pick another model.", True, wait_s)
+            return out("rate_limit", "That model is rate-limited on Arena right now. Wait a moment, or pick another model.", True, wait_s)
+        if wait_text and wait_text != "a moment":
+            return out("rate_limit", f"Arena is rate-limiting this account. Try again in {wait_text}.", True, wait_s)
+        if reset:
+            return out("rate_limit", "Arena is rate-limiting this account. Wait a moment, then send again.", True, wait_s)
+        return out("rate_limit", "Arena is rate-limiting this account. Wait about a minute, then send again.", True, 60)
     if "cannot pass model for battle" in low:
         return out("bad_request", "Battle mode picks the models for you. Switch to Direct to choose one.")
     if "must start with one model" in low:

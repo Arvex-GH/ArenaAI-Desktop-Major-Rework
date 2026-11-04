@@ -7,7 +7,8 @@ import unittest
 from unittest.mock import MagicMock
 
 from arena.models import (
-    MODALITIES, MAX_ROUTER_ID, get_models_for_modality, check_model_capability
+    MODALITIES, MAX_ROUTER_ID, get_models_for_modality, check_model_capability,
+    get_router_model, get_auto_agent_model
 )
 from arena.api import ArenaClient
 
@@ -22,7 +23,7 @@ class TestModalities(unittest.TestCase):
                 "arena": "text",
                 "is_router": True,
                 "user_selectable": True,
-                "capabilities": {}
+                "capabilities": {"inputCapabilities": {"text": True}, "outputCapabilities": {"text": True, "web": True, "search": True, "image": True}}
             },
             {
                 "id": "model-webdev-1",
@@ -31,9 +32,7 @@ class TestModalities(unittest.TestCase):
                 "arena": "code",
                 "rank": 1,
                 "user_selectable": True,
-                "capabilities": {
-                    "outputCapabilities": {"web": True, "text": True}
-                }
+                "capabilities": {"inputCapabilities": {"text": True}, "outputCapabilities": {"web": True, "text": True}}
             },
             {
                 "id": "model-search-1",
@@ -42,9 +41,7 @@ class TestModalities(unittest.TestCase):
                 "arena": "search",
                 "rank": 2,
                 "user_selectable": True,
-                "capabilities": {
-                    "outputCapabilities": {"search": True, "text": True}
-                }
+                "capabilities": {"inputCapabilities": {"text": True}, "outputCapabilities": {"search": True, "text": True}}
             },
             {
                 "id": "model-text-only",
@@ -53,9 +50,7 @@ class TestModalities(unittest.TestCase):
                 "arena": "text",
                 "rank": 5,
                 "user_selectable": True,
-                "capabilities": {
-                    "outputCapabilities": {"text": True}
-                }
+                "capabilities": {"inputCapabilities": {"text": True}, "outputCapabilities": {"text": True}}
             },
             {
                 "id": "model-image-1",
@@ -64,20 +59,7 @@ class TestModalities(unittest.TestCase):
                 "arena": "text-to-image",
                 "rank": 1,
                 "user_selectable": True,
-                "capabilities": {
-                    "outputCapabilities": {"image": True}
-                }
-            },
-            {
-                "id": "model-video-1",
-                "name": "Veo Video",
-                "org": "google",
-                "arena": "text-to-video",
-                "rank": 3,
-                "user_selectable": True,
-                "capabilities": {
-                    "outputCapabilities": {"video": True}
-                }
+                "capabilities": {"inputCapabilities": {"text": True}, "outputCapabilities": {"image": True}}
             }
         ]
 
@@ -86,34 +68,36 @@ class TestModalities(unittest.TestCase):
         self.assertIn("webdev", MODALITIES)
         self.assertIn("search", MODALITIES)
         self.assertIn("image", MODALITIES)
-        self.assertIn("video", MODALITIES)
 
         self.assertEqual(MODALITIES["webdev"]["api_modality"], "webdev")
         self.assertEqual(MODALITIES["search"]["api_modality"], "search")
         self.assertEqual(MODALITIES["image"]["api_modality"], "image")
-        self.assertEqual(MODALITIES["video"]["api_modality"], "video")
         self.assertEqual(MODALITIES["chat"]["api_modality"], "chat")
 
     def test_get_models_for_modality(self):
-        # Search modality should include Max Router and search model
-        search_models = get_models_for_modality(self.mock_models, "search")
-        ids = [m["id"] for m in search_models]
-        self.assertIn(MAX_ROUTER_ID, ids)
-        self.assertIn("model-search-1", ids)
-        self.assertNotIn("model-text-only", ids)
+        # Arena's Max documentation limits the picker to Direct + Text, even
+        # though live router capabilities are broader.
+        search_ids = [m["id"] for m in get_models_for_modality(self.mock_models, "search")]
+        self.assertNotIn(MAX_ROUTER_ID, search_ids)
+        self.assertIn("model-search-1", search_ids)
+        self.assertNotIn("model-text-only", search_ids)
 
-        # Webdev modality should include Max Router and webdev model
-        web_models = get_models_for_modality(self.mock_models, "webdev")
-        web_ids = [m["id"] for m in web_models]
-        self.assertIn(MAX_ROUTER_ID, web_ids)
+        web_ids = [m["id"] for m in get_models_for_modality(self.mock_models, "webdev")]
+        self.assertNotIn(MAX_ROUTER_ID, web_ids)
         self.assertIn("model-webdev-1", web_ids)
         self.assertNotIn("model-image-1", web_ids)
 
-        # Video must use the video arena/capabilities, never the image list
-        video_models = get_models_for_modality(self.mock_models, "video")
-        video_ids = [m["id"] for m in video_models]
-        self.assertIn("model-video-1", video_ids)
-        self.assertNotIn("model-image-1", video_ids)
+        direct_text_ids = [m["id"] for m in get_models_for_modality(self.mock_models, "chat", mode="direct")]
+        side_text_ids = [m["id"] for m in get_models_for_modality(self.mock_models, "chat", mode="side-by-side")]
+        agent_ids = [m["id"] for m in get_models_for_modality(self.mock_models, "chat", mode="agent")]
+        self.assertEqual(direct_text_ids[0], MAX_ROUTER_ID)
+        self.assertNotIn(MAX_ROUTER_ID, side_text_ids)
+        self.assertEqual(agent_ids, [])
+        self.assertEqual(get_auto_agent_model(self.mock_models)["id"], "model-webdev-1")
+        self.assertEqual(get_auto_agent_model(self.mock_models, preferred_id="model-text-only")["id"], "model-text-only")
+        self.assertEqual(get_auto_agent_model(self.mock_models, preferred_id=MAX_ROUTER_ID)["id"], "model-webdev-1")
+        self.assertEqual(get_models_for_modality(self.mock_models, "video", mode="battle"), [])
+        self.assertEqual(get_router_model(self.mock_models)["id"], MAX_ROUTER_ID)
 
     def test_check_model_capability(self):
         router = self.mock_models[0]
@@ -121,19 +105,21 @@ class TestModalities(unittest.TestCase):
         search_model = self.mock_models[2]
         text_model = self.mock_models[3]
 
-        # Router can handle all modalities
-        self.assertTrue(check_model_capability(router, "search"))
-        self.assertTrue(check_model_capability(router, "webdev"))
-        self.assertTrue(check_model_capability(router, "image"))
+        # Max is policy-limited to manual Direct Text; Agent exposes no picker.
+        self.assertFalse(check_model_capability(router, "search"))
+        self.assertFalse(check_model_capability(router, "webdev"))
+        self.assertFalse(check_model_capability(router, "image"))
         self.assertTrue(check_model_capability(router, "chat"))
+        self.assertFalse(check_model_capability(router, "chat", mode="agent"))
+        self.assertFalse(check_model_capability(text_model, "chat", mode="agent"))
+        self.assertFalse(check_model_capability(router, "chat", mode="side-by-side"))
+        self.assertFalse(check_model_capability(router, "video", mode="battle"))
 
-        # Dedicated models
+        # Dedicated models use Arena's capability predicates.
         self.assertTrue(check_model_capability(web_model, "webdev"))
         self.assertTrue(check_model_capability(search_model, "search"))
-        self.assertTrue(check_model_capability(self.mock_models[5], "video"))
-        self.assertFalse(check_model_capability(self.mock_models[4], "video"))
 
-        # Text-only model cannot handle search
+        # Text-only model cannot handle search.
         self.assertFalse(check_model_capability(text_model, "search"))
 
     def test_stream_parser_detects_deployment_and_sources(self):

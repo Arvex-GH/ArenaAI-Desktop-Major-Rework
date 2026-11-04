@@ -10,7 +10,10 @@ import socket
 import sys
 import threading
 import time
+import urllib.parse
 from pathlib import Path
+
+LOG = logging.getLogger("arena.desktop")
 
 
 def find_free_port() -> int:
@@ -35,6 +38,219 @@ def wait_port(port: int, timeout: float = 10.0) -> bool:
     return False
 
 
+def _flag_value(name):
+    """Value after a --flag in argv, or None (flags: --profile, --mode, --background)."""
+    if name in sys.argv:
+        i = sys.argv.index(name)
+        if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("--"):
+            return sys.argv[i + 1]
+    return None
+
+
+def _switch_profile(port, wanted):
+    """--profile <id|email>: activate that account on the local server before the UI loads."""
+    try:
+        import requests
+        data = requests.get(f"http://127.0.0.1:{port}/api/accounts", timeout=5).json()
+        items = data.get("accounts") if isinstance(data, dict) else data
+        for acc in items or []:
+            if str(acc.get("id")) == wanted or str(acc.get("email") or "").lower() == wanted.lower():
+                if acc.get("current"):
+                    return
+                requests.post(f"http://127.0.0.1:{port}/api/accounts/switch",
+                              json={"id": acc.get("id"), "account_id": acc.get("id")}, timeout=15)
+                return
+        LOG.info("profile %r not found", wanted)
+    except Exception:
+        LOG.exception("profile switch failed")
+
+
+_QUICK_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Quick ask</title>
+<style>
+ body{margin:0;background:#14171a;color:#e9f2ea;font-family:Segoe UI,system-ui,sans-serif}
+ .wrap{padding:14px}
+ h1{font-size:13px;margin:0 0 8px;font-weight:650}
+ textarea{width:100%;box-sizing:border-box;height:74px;resize:none;border-radius:8px;border:1px solid #3b4140;background:#1d2221;color:#e9f2ea;padding:8px;font:inherit}
+ .row{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}
+ button{border-radius:7px;border:1px solid #8dd39a;background:#b8e5bf;color:#17251a;padding:6px 14px;font-weight:650;cursor:pointer}
+ button.q{background:#262a2b;color:#cfd8d2;border-color:#3b4140}
+</style></head><body><div class="wrap">
+<h1>Quick ask \u2014 starts a new chat</h1>
+<textarea id="t" placeholder="Ask something\u2026 (Enter to send, Shift+Enter for a new line)"></textarea>
+<div class="row"><button class="q" id="cancel">Cancel</button><button id="send">Send</button></div>
+</div><script>
+ const t=document.getElementById('t'); t.focus();
+ const go=()=>{ const v=t.value.trim(); if(!v) return; window.pywebview.api.submit(v); };
+ document.getElementById('send').onclick=go;
+ document.getElementById('cancel').onclick=()=>window.pywebview.api.submit('');
+ t.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();go();} if(e.key==='Escape') window.pywebview.api.submit(''); });
+</script></body></html>"""
+
+
+class _QuickAskApi:
+    """js_api of the quick-ask window; submit('') just closes it."""
+
+    def __init__(self, tray):
+        self._tray = tray
+        self._window = None
+
+    def submit(self, text):
+        self._tray._quick_submit(text)
+
+class Tray:
+    """System-tray icon + global Ctrl+Alt+A show/hide hotkey (Windows, best effort).
+
+    Optional chrome around the window: every failure is logged and the app
+    keeps running without it. With the tray on, closing the window hides it
+    instead of quitting; Quit lives in the tray menu."""
+
+    def __init__(self, window, icon_path):
+        self.window = window
+        self.icon_path = icon_path
+        self.icon = None
+        self.visible = True
+        self.quitting = False
+        self.quick_window = None
+
+    def show_window(self):
+        self.visible = True
+        try:
+            self.window.show()
+            self.window.restore()
+        except Exception:
+            pass
+
+    def hide_window(self):
+        self.visible = False
+        try:
+            self.window.hide()
+        except Exception:
+            pass
+
+    def toggle(self):
+        self.hide_window() if self.visible else self.show_window()
+
+    def hotkey_pressed(self):
+        # Ctrl+Alt+A: hide when open; otherwise open the quick-ask window
+        # (the fastest path from anywhere in Windows to a new chat).
+        self.hide_window() if self.visible else self.open_quick_ask()
+
+    def notify(self, title, text, kind="done"):
+        # Questions always toast (the agent is blocked on the user);
+        # finished generations only when the window is tucked away.
+        if kind == "done" and self.visible:
+            return
+        try:
+            if self.icon:
+                self.icon.notify(text, title)
+        except Exception:
+            LOG.exception("tray notify failed")
+
+    def open_quick_ask(self):
+        try:
+            import webview
+            if self.quick_window is not None:
+                try:
+                    self.quick_window.show()
+                    self.quick_window.restore()
+                    return
+                except Exception:
+                    self.quick_window = None
+            api = _QuickAskApi(self)
+            self.quick_window = webview.create_window(
+                "Quick ask - Arena Desktop", html=_QUICK_HTML, js_api=api,
+                width=560, height=200, resizable=False, on_top=True)
+            api._window = self.quick_window
+        except Exception:
+            LOG.exception("quick ask unavailable")
+            self.show_window()
+
+    def _quick_submit(self, text):
+        text = (text or "").strip()
+        if self.quick_window is not None:
+            try:
+                self.quick_window.destroy()
+            except Exception:
+                pass
+            self.quick_window = None
+        if not text:
+            return
+        self.show_window()
+        try:
+            import json as _json
+            self.window.evaluate_js(
+                "window.__quickAsk && window.__quickAsk(" + _json.dumps(text) + ")")
+        except Exception:
+            LOG.exception("quick ask handoff failed")
+
+    def on_closing(self):
+        if self.quitting:
+            return True
+        self.hide_window()
+        return False  # cancel the close; the app lives in the tray
+
+    def quit(self):
+        self.quitting = True
+        try:
+            if self.icon:
+                self.icon.stop()
+        except Exception:
+            pass
+        os._exit(0)
+
+    def start(self) -> bool:
+        try:
+            import pystray
+            from PIL import Image
+            image = Image.open(self.icon_path)
+        except Exception:
+            LOG.exception("tray unavailable (pystray/Pillow/icon)")
+            return False
+        menu = pystray.Menu(
+            pystray.MenuItem("Open Arena Desktop", lambda *_: self.show_window(), default=True),
+            pystray.MenuItem("Quick ask...", lambda *_: self.open_quick_ask()),
+            pystray.MenuItem("Hide", lambda *_: self.hide_window()),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Quit", lambda *_: self.quit()),
+        )
+        self.icon = pystray.Icon("Arena Desktop", image, "Arena Desktop", menu)
+        try:
+            from arena.web import app as _webapp
+            _webapp.NOTIFY_HOOK = lambda title, text, kind="done": self.notify(title, text, kind)
+        except Exception:
+            LOG.exception("notify hook wiring failed")
+        threading.Thread(target=self._run_icon, daemon=True).start()
+        if sys.platform == "win32":
+            threading.Thread(target=self._hotkey_loop, daemon=True).start()
+        return True
+
+    def _run_icon(self):
+        try:
+            run_detached = getattr(self.icon, "run_detached", None)
+            if run_detached:
+                run_detached()
+            else:
+                self.icon.run()
+        except Exception:
+            LOG.exception("tray icon stopped")
+
+    def _hotkey_loop(self):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            MOD_ALT, MOD_CONTROL, VK_A, WM_HOTKEY = 0x0001, 0x0002, 0x41, 0x0312
+            user32 = ctypes.WinDLL("user32")
+            if not user32.RegisterHotKey(None, 1, MOD_CONTROL | MOD_ALT, VK_A):
+                LOG.info("global hotkey Ctrl+Alt+A could not be registered")
+                return
+            msg = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message == WM_HOTKEY:
+                    self.hotkey_pressed()
+        except Exception:
+            LOG.exception("global hotkey unavailable")
+
+
 def _dialog(name: str):
     import webview
     fd = getattr(webview, "FileDialog", None)
@@ -49,7 +265,6 @@ class JsBridge:
 
     def __init__(self):
         self._window = None
-        self._titlebar = None
 
     def open_file_dialog(self, file_types=None):
         ft = tuple(file_types or ()) + ("All files (*.*)",)
@@ -65,19 +280,6 @@ class JsBridge:
     def choose_folder(self):
         result = self._window.create_file_dialog(_dialog("FOLDER"))
         return (result[0] if result else None) if isinstance(result, (list, tuple)) else result
-
-    # ── custom title bar (the window is frameless) ──
-    def tb_minimize(self):
-        if self._titlebar:
-            self._titlebar.minimize()
-
-    def tb_toggle_maximize(self):
-        if self._titlebar:
-            self._titlebar.toggle_maximize()
-
-    def tb_close(self):
-        if self._titlebar:
-            self._titlebar.close()
 
 
 def _user32():
@@ -96,47 +298,6 @@ def _user32():
     u.GetClientRect.argtypes = [w.HWND, ctypes.POINTER(w.RECT)]
     u.SetWindowPos.argtypes = [w.HWND, w.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, w.UINT]
     return u
-
-
-class TitleBar:
-    """Custom title bar for the frameless window: the page draws drag space and
-    min/max/close buttons (like VS Code), and calls back into this class."""
-
-    def __init__(self):
-        self._window = None
-        self._maximized = False
-
-    def bind(self, window):
-        self._window = window
-
-    def notify(self):
-        if self._window:
-            self._window.evaluate_js("window.titlebarState && titlebarState(%s)" % ("true" if self._maximized else "false"))
-
-    def on_maximized(self, state: bool):
-        self._maximized = state
-        self.notify()
-
-    def minimize(self):
-        try:
-            self._window.minimize()
-        except Exception:
-            logging.getLogger("arena.desktop").exception("titlebar minimize failed")
-
-    def toggle_maximize(self):
-        try:
-            if self._maximized:
-                self._window.restore()
-            else:
-                self._window.maximize()
-        except Exception:
-            logging.getLogger("arena.desktop").exception("titlebar toggle_maximize failed")
-
-    def close(self):
-        try:
-            self._window.destroy()
-        except Exception:
-            logging.getLogger("arena.desktop").exception("titlebar close failed")
 
 
 class Dock:
@@ -243,6 +404,35 @@ class Dock:
             pass
 
 
+def _ensure_webview2() -> None:
+    """Pre-flight (v5.5): without the WebView2 Runtime no window can open at
+    all, so detect it before any UI exists and offer Microsoft's official
+    bootstrapper instead of failing obscurely inside pywebview."""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        from arena import components
+        if any(c["id"] == "webview2" and c["installed"] for c in components.detect()):
+            return
+    except Exception:
+        return  # detection problems must never block launch on their own
+    try:
+        import ctypes
+        import webbrowser
+        MB_YESNO, MB_ICONQUESTION, IDYES = 0x4, 0x20, 6
+        answer = ctypes.windll.user32.MessageBoxW(
+            None,
+            "Arena Desktop needs the free Microsoft Edge WebView2 Runtime, "
+            "which was not found on this PC.\n\nOpen the official Microsoft "
+            "download page now? Install it, then start Arena Desktop again.",
+            "Arena Desktop — WebView2 Runtime missing", MB_YESNO | MB_ICONQUESTION)
+        if answer == IDYES:
+            webbrowser.open("https://developer.microsoft.com/en-us/microsoft-edge/webview2/")
+    except Exception:
+        pass
+    os._exit(1)
+
+
 def main():
     import webview
     from arena import contracts
@@ -264,32 +454,42 @@ def main():
     port = int(os.environ.get("ARENA_PORT") or 0) or find_free_port()
     threading.Thread(target=start_flask, args=(port,), daemon=True).start()
     wait_port(port)
+    profile = _flag_value("--profile")
+    if profile:
+        _switch_profile(port, profile)
 
     base = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
     ico = base / "assets" / "arena-cli.ico"
 
+    _ensure_webview2()
     webview.settings["ALLOW_DOWNLOADS"] = True  # zip and media downloads from the UI
+    from arena.config import load_config as _load_cfg
+    cfg = _load_cfg()
+    background = "--background" in sys.argv
+    start_url = f"http://127.0.0.1:{port}/"
+    mode_flag = _flag_value("--mode")
+    if mode_flag:
+        start_url += "?mode=" + urllib.parse.quote(mode_flag)
     bridge = JsBridge()
-    # Frameless window with a page-drawn title bar (drag space + min/max/close), like VS Code,
-    # so the app owns the whole window height. easy_drag off: the drag area is our own.
-    main_win = webview.create_window("Arena Desktop", f"http://127.0.0.1:{port}", width=1280, height=840,
-                                     min_size=(860, 600), background_color="#242422", text_select=True, js_api=bridge,
-                                     frameless=True, easy_drag=False)
+    main_win = webview.create_window("Arena Desktop", start_url, width=1280, height=840,
+                                     min_size=(860, 600), background_color="#242422", text_select=True,
+                                     js_api=bridge, hidden=background)
     bridge._window = main_win
-    titlebar = TitleBar()
-    titlebar.bind(main_win)
-    bridge._titlebar = titlebar
-    main_win.events.maximized += lambda *a: titlebar.on_maximized(True)
-    main_win.events.restored += lambda *a: titlebar.on_maximized(False)
     engine_win = webview.create_window("arena.ai - Arena Desktop", contracts.ORIGIN, width=1000, height=760, x=120, y=120,
                                        hidden=True, background_color="#242422", js_api=ENGINE.bridge())
     ENGINE.attach(engine_win, main_win)
-    if sys.platform == "win32":
-        dock = ENGINE.dock = Dock(main_win, engine_win)
-        main_win.events.resized += lambda *a: dock.layout()
-        main_win.events.loaded += lambda *a: dock.prime()
-        main_win.events.closing += lambda *a: dock.vanish()
+    # Keep the Arena WebView as a genuine top-level window. Login, OAuth and
+    # human checks need a separate window rather than a reparented child view.
+    ENGINE.dock = None
     main_win.events.closed += lambda *a: os._exit(0)
+    # Optional tray life: close hides to the tray; Ctrl+Alt+A toggles the window.
+    if cfg.get("tray_enabled") or background:
+        tray = Tray(main_win, base / "assets" / "logo.png")
+        tray.visible = not background
+        if tray.start():
+            main_win.events.closing += tray.on_closing
+        elif background:
+            main_win.show()  # no tray to bring it back from: never start invisible
 
     storage = CONFIG_DIR / "webview"
     storage.mkdir(parents=True, exist_ok=True)
