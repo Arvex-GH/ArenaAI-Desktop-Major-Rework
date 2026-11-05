@@ -18,13 +18,16 @@ Things that are broken or unfinished in Arena Desktop. Fixes and pull requests a
 ## Workspace
 
 - **Tree does not auto-refresh.** Changing files outside the app (e.g. in VS Code) does not update the workspace panel until you manually navigate or refresh.
-- **Workspace preview no longer runs scripts.** HTML previews are sandboxed without `allow-scripts` as of v1.2.0-beta. Interactive HTML pages will not work in the preview pane.
+- **Workspace preview runs scripts in a sandbox.** As of v1.3.0, `allow-scripts` is re-enabled with an opaque origin. Scripts run but cannot access the app's cookies or API token.
 
-## Security (v1.2.0-beta fixes)
+## Security (v1.4.0)
 
 - **CDN scripts still load without subresource integrity.** Planned for a future release.
 - **Release binary is unsigned.** No code signature, no SBOM, no CI pipeline yet. SmartScreen will warn.
 - **Dependencies are unpinned.** `requirements.txt` uses lower bounds only. `pip-compile --generate-hashes` planned.
+- **Cookie plaintext fallback.** If DPAPI fails, cookies are stored unencrypted. Low risk on single-user Windows desktops.
+- **No rate limiting on localhost API.** Mitigated by per-launch random token and localhost binding.
+- **SSRF TOCTOU gap.** DNS rebinding can bypass the `ipaddress` check between resolve and fetch. Full fix requires connecting to the resolved IP directly.
 
 ## Testing
 

@@ -1,10 +1,7 @@
 # Arena.ai CLI — Handoff & Continuation Guide
 
-**Date:** 2026-10-31
-**Status:** CLI is functional but the user wants to convert it into a full web-based IDE
-**Working directory:** `C:\Users\Moses\Desktop\Dev Code\Pen testing\AI-CHATBOTS\arena.ai`
-**GitHub copy:** `C:\Users\Moses\Documents\GitHub\arena.ai-cli` (stale — needs re-copy after changes)
-**Usage cap:** 70% weekly, be efficient. No subagents/forks.
+**Date:** 2026-11-05
+**Status:** Desktop app v1.4.0 — Flask + pywebview, full web UI, 8 security patches applied
 
 ---
 

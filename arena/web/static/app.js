@@ -4010,7 +4010,8 @@ You can start with a more structured option: one script, short captions, and a c
     const markdown = el('div', { class: 'markdown' });
     const visibleText = visibleLaneText(lane);
     if (visibleText) markdown.appendChild(renderMarkdown(visibleText));
-    if (lane.streaming && !visibleText) {
+    const showTypewriter = lane.streaming && !visibleText;
+    if (showTypewriter) {
       markdown.appendChild(createThinkingTypewriter());
     }
     if (lane.streaming && visibleText) markdown.appendChild(el('span', { class: 'stream-cursor', 'aria-hidden': 'true' }));

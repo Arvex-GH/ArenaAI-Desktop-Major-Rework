@@ -18,3 +18,6 @@ Arena-Desktop.exe
 
 # release notes draft
 RELEASE_v*.md
+
+# test checklist
+TESTS_v*.md

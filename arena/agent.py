@@ -344,11 +344,21 @@ def run_shell_command(cmd: str, cwd) -> str:
     refusal = _interactive_refusal(cmd)
     if refusal:
         return refusal
-    import shlex
-    _DANGEROUS_FLAGS = re.compile(r"^-[ce]$|^--eval$|^-enc$|^-encodedcommand$", re.I)
+    import shlex, shutil
+    _DANGEROUS_FLAGS = re.compile(r"^-[cer]$|^--eval$|^--exec$|^-enc$|^-encodedcommand$|^/c$", re.I)
+    _DANGEROUS_CMDS = frozenset({"mshta", "wscript", "cscript", "rundll32"})
     argv = shlex.split(cmd)
+    if argv[0].lower().rstrip(".exe") in _DANGEROUS_CMDS:
+        return f"Error: {argv[0]} is blocked for safety."
     if any(_DANGEROUS_FLAGS.match(a) for a in argv[1:]):
-        return "Error: inline code execution flags (-c, -e, --eval, -enc) are blocked for safety."
+        return "Error: inline code execution flags (-c, -e, -r, --eval, -enc, /c) are blocked for safety."
+    _SAFE_BUILTINS = frozenset({"echo", "dir", "type", "ver", "cls", "set", "cd", "date", "time"})
+    if argv[0].lower() in _SAFE_BUILTINS and not shutil.which(argv[0]):
+        argv = ["cmd.exe", "/c"] + argv
+    else:
+        resolved = shutil.which(argv[0])
+        if resolved:
+            argv[0] = resolved
     proc = subprocess.Popen(argv, shell=False, cwd=str(cwd), stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace")
@@ -471,6 +481,10 @@ class LocalTools:
         if ":" in rel.split("/")[-1].split("\\")[-1] and not (len(rel) >= 2 and rel[1] == ":"):
             raise PermissionError("NTFS alternate data streams not allowed")
         p = Path(rel).expanduser()
+        if p.is_symlink() or (self.root / p).is_symlink():
+            real = (p if p.is_absolute() else self.root / p).resolve()
+            if real != self.root and self.root not in real.parents:
+                raise PermissionError("Access denied: symlink target outside workspace")
         target = (p if p.is_absolute() else self.root / p).resolve()
         inside = target == self.root or self.root in target.parents
         if inside and target != self.root:

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Arena Desktop logo" width="96" />
+  <img src="assets/logo.svg" alt="Arena Desktop logo" width="96" />
 </p>
 
 <h1 align="center">Arena Desktop</h1>
@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/PlayzAe/arena.ai-desktop/stargazers"><img src="https://img.shields.io/github/stars/PlayzAe/arena.ai-desktop?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/PlayzAe/arena.ai-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/PlayzAe/arena.ai-desktop?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.3.0-brightgreen?style=flat-square" alt="v1.3.0" />
+  <img src="https://img.shields.io/badge/version-1.4.0-brightgreen?style=flat-square" alt="v1.4.0" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -32,7 +32,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.3.0](#whats-new-in-v130)
+- [What's new in v1.4.0](#whats-new-in-v140)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -43,29 +43,42 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.3.0
+## What's new in v1.4.0
 
-### AI can read your folders
+### Bash and MCP fully working
 
-The big one: **Workspace Sync now lets the AI read, list, and browse files in your chosen project folder.** Upload files and folders directly from the UI, and the model sees your actual code. This is the closest you get to Claude Code-style local file access through arena.ai.
+Shell builtins (`echo`, `dir`, `ver`) now work in the terminal. 8 security findings patched from a full code audit. 46 feature tests + 22 security verification tests all pass.
 
-### New features
+### Security (v1.3.0 → v1.4.0) — 8 findings patched
 
-- **Typewriter loading animation** — while the AI thinks, a monospace typewriter cycles through 30 random phrases ("argmaxxing...", "consulting the oracle", "traversing the latent space") with a typing/erasing effect. Replaces the old static spinner.
-- **Rate limit reference** — Settings → Usage now documents all 8 known arena.ai rate limits (daily balance, agent rounds, burst caps, video/image limits, 429 handling) so you know exactly what hit you.
-- **Chat replay cleaned up** — returning to old chats no longer shows system prompts and tool exchanges as visible user messages. They're filtered and collapsed into small notices.
+- **CRITICAL: Settings import filtered** — crafted settings files can no longer inject `permission_mode` or `gateway_auto` via `/api/settings/import`
+- **HIGH: Upload blocks sensitive dirs** — writes to `.git/`, `.ssh/`, `.env/` blocked on upload endpoint
+- **HIGH: Workspace panel blocks sensitive dirs** — reads from `.git/`, `.ssh/`, `.env/` blocked on tree/file/preview
+- **MEDIUM: SSRF hardened** — private IP blocking now covers `172.16/12`, `::1`, `fc00::/7`, `0.0.0.0` via `ipaddress` module
+- **MEDIUM: Terminal scoped to workspace** — commands run in user's chosen workspace, not ArenaProjects
+- **MEDIUM: Dead symlink check removed** — was always False after `.resolve()`, removed dead code
+- **MEDIUM: Agent symlink check** — agent tool loop now verifies symlink targets stay inside workspace
+- **LOW: Error messages sanitized** — terminal no longer exposes internal paths in error responses
 
-### Fixes
+### Also fixed
 
-- **Send button arrow visible** — the arrow icon was rendering at 0×0 pixels due to a missing CSS class. Fixed.
-- **About dialog logo** — now shows the actual Arena Desktop colosseum logo instead of a generic star icon.
+- Shell builtins (`echo`, `dir`, `ver`) routed through `cmd.exe /c` after security checks
+- `.git` added to REST API `_SENSITIVE_DIRS` blocklist
 
-### Security (v1.2.0-beta → v1.3.0)
+### Previous: v1.3.0
 
-- **Upload endpoint unblocked** — `/api/workspace/upload` now works (was blocked by the JSON body check).
-- **Upload caps enforced** — max 200 files, 500 MB total per upload batch.
-- **Null bytes stripped** — filenames are sanitized to remove `\x00` before path resolution.
-- **Workspace preview CSP** — `allow-scripts` re-added to the sandbox directive so previewed HTML can run JavaScript (needed for framework previews).
+<details>
+<summary>What was new in v1.3.0</summary>
+
+- **Workspace file reading** — AI models can read, list, browse files in workspace
+- **Typewriter loading animation** — 30 random phrases with typing/erasing effect
+- **Rate limit reference** — all 8 known arena.ai rate limits documented in Settings
+- **Chat replay fixed** — system prompts filtered from visible messages
+- **Send button arrow** — missing CSS class fixed
+- **About dialog logo** — colosseum logo instead of star
+- Upload endpoint unblocked, caps enforced, null bytes stripped, preview CSP updated
+
+</details>
 
 ### Previous security work (v1.2.0-alpha → beta, carried forward)
 

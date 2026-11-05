@@ -266,7 +266,7 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 _API_TOKEN = secrets.token_urlsafe(32)
 _secrets = hmac
@@ -1652,7 +1652,9 @@ def api_settings_import():
         return jsonify({"error": f"Could not back up the current settings first: {e}",
                         "code": "backup_failed"}), 500
     cfg = load_config()
-    cfg.update(data["config"])
+    for key, val in data["config"].items():
+        if key in _SETTINGS_ALLOWLIST:
+            cfg[key] = val
     save_config(cfg)
     try:
         if isinstance(data.get("memory_global"), str):
@@ -6808,7 +6810,8 @@ def _api_chat_impl():
 # ---------- File CRUD (IDE) ----------
 
 _SENSITIVE_DIRS = frozenset({".ssh", ".aws", ".gnupg", ".gnupg2", ".config",
-    "AppData", ".azure", ".kube", ".docker", ".npmrc"})
+    "AppData", ".azure", ".kube", ".docker", ".npmrc",
+    ".git", ".env", ".gitconfig", ".bash_history", ".zsh_history"})
 
 def _safe_resolve(rel_path: str) -> Path:
     """Resolve a user-supplied path, blocking traversal outside workspace/projects."""
@@ -6833,10 +6836,6 @@ def _safe_resolve(rel_path: str) -> Path:
         p = (root / p).resolve()
         if p != root and root not in p.parents:
             raise PermissionError("Access denied: outside workspace")
-    if p.is_symlink():
-        real = p.resolve()
-        if real != root and root not in real.parents:
-            raise PermissionError("Access denied: symlink target outside workspace")
     parts_lower = {part.lower() for part in p.relative_to(root).parts} if p != root else set()
     if parts_lower & {s.lower() for s in _SENSITIVE_DIRS}:
         raise PermissionError("Access denied: sensitive directory")
@@ -6953,6 +6952,9 @@ def api_terminal():
         r"(\brm\s+-[a-z]*r|\bformat\s+[a-z]:|\b(rd|rmdir)\s+/s|\bdel\s+/[a-z]|\bmkfs\b|"
         r"\bshutdown\b|:\(\)\s*\{|\bdiskpart\b|\bbcdedit\b|\bvssadmin\s+delete\b|\bcipher\s+/w|"
         r"\bpython\s+-c\b|\bpython3\s+-c\b|\bpy\s+-c\b|\bpowershell\s+-enc|\bpwsh\s+-enc|"
+        r"\bnode\s+-e\b|\bnode\s+--eval\b|\bruby\s+-e\b|\bperl\s+-e\b|\bphp\s+-r\b|"
+        r"\bbash\s+-c\b|\bsh\s+-c\b|\bcmd\s+/c\b|\bpython\s+-m\s+http\b|"
+        r"\bmshta\b|\bwscript\b|\bcscript\b|\brundll32\b|"
         r"\bcertutil\b|\bcurl\b.*-o|\bwget\b|\biwr\b|\binvoke-webrequest\b)", re.I)
     if _BLOCKED_RE.search(cmd):
         return jsonify({"error": "Blocked command pattern"}), 403
@@ -6962,7 +6964,16 @@ def api_terminal():
         argv = shlex.split(cmd)
     except ValueError as e:
         return jsonify({"error": f"Invalid command: {e}"}), 400
-    cwd = str(workspace.PROJECTS_DIR)
+    import shutil as _shutil
+    _SAFE_BUILTINS = frozenset({"echo", "dir", "type", "ver", "cls", "set", "cd", "date", "time"})
+    if argv[0].lower() in _SAFE_BUILTINS and not _shutil.which(argv[0]):
+        argv = ["cmd.exe", "/c"] + argv
+    else:
+        _resolved = _shutil.which(argv[0])
+        if _resolved:
+            argv[0] = _resolved
+    _ws = _workspace_dir()
+    cwd = str(_ws.resolve()) if _ws.is_dir() else str(workspace.PROJECTS_DIR)
     try:
         result = subprocess.run(
             argv, shell=False, capture_output=True, text=True,
@@ -6975,8 +6986,8 @@ def api_terminal():
         })
     except subprocess.TimeoutExpired:
         return jsonify({"error": "Command timed out (30s)"}), 408
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        return jsonify({"error": "Command failed to execute"}), 500
 
 
 # ---------- Guard, permissions, engine, diagnostics, workspace ----------
@@ -7149,6 +7160,10 @@ def _workspace_panel_path(rel: str = "."):
     target = (root / candidate).resolve()
     if target != root and root not in target.parents:
         raise PermissionError("Access denied: outside the workspace folder")
+    if target != root:
+        parts_lower = {part.lower() for part in target.relative_to(root).parts}
+        if parts_lower & {s.lower() for s in _SENSITIVE_DIRS}:
+            raise PermissionError("Access denied: sensitive directory")
     return target, root
 
 
@@ -7282,6 +7297,10 @@ def api_workspace_upload():
             workspace._inside(root, rel)
         except Exception:
             results.append({"path": rel, "error": "Path outside workspace"})
+            continue
+        parts_lower = {part.lower() for part in Path(rel).parts}
+        if parts_lower & {s.lower() for s in _SENSITIVE_DIRS}:
+            results.append({"path": rel, "error": "Sensitive directory"})
             continue
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -7783,8 +7802,17 @@ def api_media_save():
         else:
             u = urllib.parse.urlparse(url)
             host = (u.hostname or "").lower()
-            if u.scheme != "https" or not host or host == "localhost" or host.startswith(("127.", "10.", "192.168.", "169.254.")):
+            if u.scheme != "https" or not host or host == "localhost":
                 return jsonify({"ok": False, "error": "Only https media links can be saved."}), 400
+            import ipaddress as _ipmod, socket as _sock
+            try:
+                resolved = _sock.getaddrinfo(host, None)
+                for _, _, _, _, addr in resolved:
+                    ip = _ipmod.ip_address(addr[0])
+                    if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
+                        return jsonify({"ok": False, "error": "Private/internal addresses not allowed."}), 400
+            except _sock.gaierror:
+                return jsonify({"ok": False, "error": "Cannot resolve hostname."}), 400
             r = requests.get(url, timeout=60, stream=True)
             r.raise_for_status()
             blob = b""
