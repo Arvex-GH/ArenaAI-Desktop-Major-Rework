@@ -8,6 +8,10 @@ Arena-Desktop-Setup-1.6.0.exe    ← what users download and double-click
 Arena-Desktop-1.6.0.exe          ← the same binary, for people who want no install
 ```
 
+<p align="center">
+  <img src="docs/screenshots/installer.png" alt="Arena Desktop setup window: brand, one progress line" width="520" />
+</p>
+
 ## Installing
 
 1. Download `Arena-Desktop-Setup-<version>.exe`.
@@ -40,6 +44,10 @@ The app checks the release feed of the official upstream repo
 Arena Desktop 1.6.1 is available      ← dialog, not a browser link
 [Later]  [Download and install]
 ```
+
+<p align="center">
+  <img src="docs/screenshots/update-dialog.png" alt="The in-app update dialog" width="720" />
+</p>
 
 1. **Download and install** streams the published build into
    `%TEMP%\ArenaDesktopUpdate`.
