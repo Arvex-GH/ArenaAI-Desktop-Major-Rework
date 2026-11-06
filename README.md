@@ -155,14 +155,22 @@ If Windows SmartScreen warns: click **More info → Run anyway** (the EXE is not
 - **Every arena mode in-app** — I built in Battle, Side by Side, Direct, and Agent Mode so you don't need a browser tab.
 - **Every modality** — Text, Image, Web Search, Code, Video, Auto (same rules as the website).
 - **Workspace Sync** — models can list, read, write, edit files and run commands in a folder you choose, under a permission mode you control.
+- **Files land on your PC** — files the Arena Agent writes in its cloud sandbox are copied into your folder as it works, and `arena.site` links open in an in-app preview.
 - **MCP servers + Arena connectors** — local MCP servers (presets, JSON, CLI) and official Arena connectors with per-connector toggles.
 - **Multi-account** — switch arena.ai accounts in one click, parallel chats, local + cloud history.
 - **Agent Gateway** — the genuine Arena Agent can use your local MCP servers and workspace folder through a pairing-protected tunnel.
 - **Sub-agents, plan approval, memory, automations, compact context, undo.**
 
-<p align="center">
-  <img src="docs/screenshots/agent-mode.png" alt="Agent Mode with Workspace Sync" width="900" />
-</p>
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/agent-tools.png" alt="Agent Mode tool rows: a file read, npm output, an edit diff and a failing test" /><br /><sub><b>Agent Mode</b>: Claude Code–style tool rows with live command output, diffs and failures.</sub></td>
+    <td width="50%"><img src="docs/screenshots/agent-result.png" alt="Agent answer with a code block and the permission note" /><br /><sub><b>Answers</b>: code blocks with copy buttons, and a plain note of each permission decision.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/battle.png" alt="Battle Mode with two anonymous answers and vote buttons" /><br /><sub><b>Battle Mode</b>: two anonymous models answer, then you vote.</sub></td>
+    <td width="50%"><img src="docs/screenshots/workspace-connectors.png" alt="Workspace panel with the folder tree, Arena connectors and local MCP servers" /><br /><sub><b>Workspace panel</b>: your folder's files, with Arena connectors and local MCP servers kept apart.</sub></td>
+  </tr>
+</table>
 
 ## How it works
 
