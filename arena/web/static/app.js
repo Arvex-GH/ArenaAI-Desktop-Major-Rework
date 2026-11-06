@@ -11526,6 +11526,7 @@ You can start with a more structured option: one script, short captions, and a c
     els.modelsNavBtn = $('#modelsNavBtn');
     els.modelsNavCount = $('#modelsNavCount');
     els.searchNavBtn = $('#searchNavBtn');
+    els.artifactsNavBtn = $('#artifactsNavBtn');
     els.workspacePanelNavBtn = $('#workspacePanelNavBtn');
     els.connectorsNavBtn = $('#connectorsNavBtn');
     els.connectorsNavCount = $('#connectorsNavCount');
@@ -11733,16 +11734,10 @@ You can start with a more structured option: one script, short captions, and a c
         els.recentsBody.hidden = false;
       }
     });
-    els.modelsNavBtn?.addEventListener('click', () => {
-      if (!allowsManualModels()) {
-        toast("In this mode, model selection is disabled.", 'info');
-        return;
-      }
-      if (state.generating) {
-        toast("Models can be changed after generation is complete.", 'info');
-        return;
-      }
-      openModelPicker('a', els.modelsNavBtn);
+    // The rail names the section; the feature behind it returns with the
+    // workspace panel. Saying so beats a row that silently does nothing.
+    els.artifactsNavBtn?.addEventListener('click', () => {
+      toast('Artifacts open with the workspace panel, in the next step.', 'info', 'Not yet');
     });
     els.chatSearch?.addEventListener('input', () => {
       state.chatFilter = els.chatSearch.value;
