@@ -163,6 +163,17 @@
           <a class="button button-small button-quiet" id="bannerDemo" href="?demo=1">Open demo</a>
         </div>
       </div>
+      <div class="system-banner arena-status-banner" id="arenaStatusBanner" role="status" hidden>
+        <span class="banner-icon" data-icon="alert"></span>
+        <div class="banner-copy">
+          <strong id="arenaStatusTitle">arena.ai is having problems</strong>
+          <span id="arenaStatusText"></span>
+        </div>
+        <div class="banner-actions">
+          <a class="button button-small button-quiet" href="https://status.arena.ai" target="_blank" rel="noopener noreferrer">Status page</a>
+          <button class="button button-small button-quiet" type="button" id="arenaStatusHide">Hide</button>
+        </div>
+      </div>
 
       <div class="system-banner demo-banner" id="demoBanner" role="status" hidden>
         <span class="banner-icon" data-icon="flask"></span>
@@ -325,6 +336,9 @@
             <button class="icon-button" type="button" data-action="workspace" aria-label="Choose workspace" title="Choose folder">
               <span data-icon="folder"></span>
             </button>
+            <button class="icon-button" id="workspaceRunButton" type="button" aria-label="Run this project on this PC" title="Run on this PC: install packages and start the dev server">
+              <span data-icon="play"></span>
+            </button>
             <button class="icon-button" id="workspaceOpenButton" type="button" aria-label="Open folder in Explorer" title="Open in Explorer">
               <span data-icon="external"></span>
             </button>
@@ -336,6 +350,7 @@
             </button>
           </div>
         </header>
+        <div class="workspace-run" id="workspaceRunStatus" role="status" aria-live="polite" hidden></div>
         <section class="workspace-files-pane" aria-label="Workspace file tree">
           <div class="workspace-tree" id="workspaceTree" role="tree" aria-label="Workspace files"></div>
         </section>

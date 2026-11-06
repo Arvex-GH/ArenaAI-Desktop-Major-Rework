@@ -363,6 +363,12 @@ def _human_wait(reset_epoch) -> str:
     return f"{days} day{'s' if days != 1 else ''}"
 
 
+HUMAN_CHECK_PHRASES = ("captcha", "not a robot", "verify you are human", "verify that you are human",
+                       "verify you're human", "human verification", "are you a robot")
+SESSION_FULL_PHRASES = ("reached its token usage limit", "session has reached its token",
+                        "token usage limit")
+
+
 def classify_error(status: int, text: str = "", headers=None) -> Dict[str, Any]:
     """Turn an arena.ai failure into a code, a plain-language message and retry advice."""
     raw = text or ""
@@ -381,13 +387,19 @@ def classify_error(status: int, text: str = "", headers=None) -> Dict[str, Any]:
     def out(code, message, retry=False, wait=0):
         return {"code": code, "status": status, "message": message, "detail": detail, "retry": retry, "wait": wait}
 
+    # The human check comes first: a send held back by an open check also
+    # arrives with status 0, and that is not a network problem.
+    if any(phrase in low for phrase in HUMAN_CHECK_PHRASES):
+        return out("challenge", "arena.ai asked for a quick human check (\"I'm not a robot\"). Complete it in the "
+                                "arena.ai window; your message resends by itself.", True)
+    if any(phrase in low for phrase in SESSION_FULL_PHRASES):
+        return out("session_full", "This arena.ai chat session is full: arena.ai limits how many tokens one chat "
+                                   "session can use (Code chats fill up fastest, because the sandbox agent's own "
+                                   "steps count too). Start a new chat to continue; your files stay in your folder.")
     if status == 0:
         return out("network", "Can't reach arena.ai. Check your internet connection, then retry.", True, 5)
     if "just a moment" in low or "cf-chl" in low or ("cloudflare" in low and status in (403, 503)):
         return out("cloudflare", "Cloudflare wants to check this browser. Finish the check in the arena.ai window that opened.", True)
-    if "captcha" in low:
-        return out("challenge", "arena.ai asked for a quick human check. Complete it in the arena.ai window; "
-                                "your message resends by itself.", True)
     if status == 401:
         return out("auth", "Your arena.ai session ended. Sign in again from Settings, Account.")
     if status == 403 and str(body.get("error") or "") == ACCOUNT_TOO_NEW_FOR_VIDEO:

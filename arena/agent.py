@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-MAX_ROUNDS = 8
+MAX_ROUNDS = 20  # tool rounds per reply (8 made real tasks stop for 'continue')
 OUTPUT_LIMIT = 6000
 # Outputs longer than this are saved to a file in the workspace and only a
 # preview travels back to the model (it can read_file the rest on demand),
@@ -57,7 +57,7 @@ FULL FILE CONTENT
 <tool name="run_cmd"><cmd>python -m pytest -q</cmd></tool>
 <tool name="run_cmd"><cmd>npm install && npm run build</cmd></tool> (commands run on this computer in the folder: {shell_name}; &&, | and > work but each such command needs the user's OK)
 <tool name="run_cmd"><cmd>npm run dev</cmd><background>true</background></tool> (servers and watchers: starts it, returns its first output and URL, keeps it running)
-<tool name="stop_cmd"><id>bg1</id></tool> (stop a background command)
+<tool name="stop_cmd"><id>bg1</id></tool> (stop a background command. Stop servers you started only to check your work before you finish; for one the user wants running, end your reply with its URL, e.g. http://localhost:3000)
 <tool name="ask_user"><question>Which database should I use?</question><option1>SQLite</option1><option2>PostgreSQL</option2></tool>
 <tool name="propose_plan"><plan>1. Inspect the project layout
 2. Refactor the parser

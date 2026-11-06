@@ -288,6 +288,7 @@ class JsBridge:
         url = str(url or "")
         if not url.startswith(("https://", "http://127.0.0.1:", "http://localhost:")):
             return False
+        import webview
         label = f"{str(title or 'Preview')[:60]} - Arena Desktop"
         win = getattr(self, "_preview", None)
         if win is not None:
@@ -300,9 +301,28 @@ class JsBridge:
             except Exception:
                 self._preview = None
         win = webview.create_window(label, url, width=1180, height=800, background_color="#242422")
+        # Closing only hides the window, like the arena.ai window: tearing a
+        # WebView2 window down while the app runs can hang every window.
+        win.events.closing += self._preview_closing
         win.events.closed += lambda *a: setattr(self, "_preview", None)
         self._preview = win
         return True
+
+    def _preview_closing(self, *a):
+        win = getattr(self, "_preview", None)
+
+        def _hide_later():
+            # pywebview may still be inside the close when this handler returns.
+            time.sleep(0.15)
+            try:
+                win.hide()
+                win.load_url("about:blank")  # stop the site's scripts and media
+            except Exception:
+                pass
+
+        if win is not None:
+            threading.Thread(target=_hide_later, daemon=True).start()
+        return False  # cancel the close
 
 
 def _user32():

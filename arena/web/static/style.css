@@ -682,6 +682,12 @@ svg { display: block; }
 .demo-banner .banner-copy strong { color: #f1d9ae; }
 .demo-banner .banner-copy span { color: #b9ab94; }
 .demo-banner .button { background: transparent; border-color: #554a37; color: #ddc69f; }
+/* status.arena.ai: red for an outage, amber for degraded service */
+.arena-status-banner.is-minor { color: #ddcfba; background: #292721; border-bottom-color: #4b4130; }
+.arena-status-banner.is-minor .banner-icon { color: var(--amber); }
+.arena-status-banner.is-minor .banner-copy strong { color: #f1d9ae; }
+.arena-status-banner.is-minor .banner-copy span { color: #b9ab94; }
+.arena-status-banner.is-minor .button { background: transparent; border-color: #554a37; color: #ddc69f; }
 .demo-banner .button:hover { background: #343027; }
 
 .main-area {
@@ -2465,6 +2471,11 @@ textarea.input { height: auto; min-height: 74px; resize: vertical; line-height: 
 .diag-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; transition: background 200ms; }
 .diag-name { flex: 1; color: #c8ceca; }
 .diag-ms { color: #6b756d; font-size: 11px; font-variant-numeric: tabular-nums; min-width: 40px; text-align: right; }
+.diag-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.diag-text .diag-name { flex: none; }
+.diag-detail { color: #8f9891; font-size: 11.5px; line-height: 1.4; overflow-wrap: anywhere; }
+.diag-detail:empty { display: none; }
+.diag-fail .diag-detail { color: #f0b3b3; }
 .diag-pending .diag-dot { background: #444; }
 .diag-running .diag-dot { background: #f59e0b; animation: island-pulse 1s ease-in-out infinite; }
 .diag-pass .diag-dot { background: #34d399; }
@@ -2728,6 +2739,30 @@ textarea.input { height: auto; min-height: 74px; resize: vertical; line-height: 
 .connectors-head .icon-button:hover { background: #30302e; color: #ffffff; }
 .workspace-files-pane { flex: 1 1 auto; min-height: 0; background: transparent; }
 .workspace-tree { padding: 8px; font-size: 12px; }
+.workspace-panel-actions .icon-button[aria-busy="true"] { opacity: .5; pointer-events: none; }
+/* Run on this PC: status of the local dev server */
+.workspace-run {
+  margin: 0 8px 4px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  font-size: 12px;
+}
+.workspace-run[hidden] { display: none; }
+.workspace-run-title { margin: 0; color: #e8e6e1; font-weight: 500; overflow-wrap: anywhere; }
+.workspace-run-log {
+  margin: 6px 0 0;
+  max-height: 96px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #a9a69f;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.workspace-run-actions { display: flex; gap: 6px; margin-top: 8px; }
+.workspace-run-actions .button { min-height: 26px; padding: 2px 10px; font-size: 12px; }
 .workspace-tree-row {
   min-height: 28px;
   padding: 4px 6px;
@@ -3038,20 +3073,23 @@ body.is-resizing-y, body.is-resizing-y * { cursor: ns-resize !important; }
 .chat-group-title .icon { display: none; }
 .cloud-chat-badge { display: none; }
 
-/* --- v4.10: accounts menu --- */
-.account-menu { width: 252px; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
-.account-menu-head {
-  margin: 4px 8px 6px; color: #8b8c84; font-size: 9.5px; font-weight: 700;
-  letter-spacing: .09em; text-transform: uppercase;
-}
-.account-menu-note { margin: 2px 8px 6px; color: #9a9b92; font-size: 11px; line-height: 1.45; }
+/* --- v1.5.1: accounts menu (who is signed in, switch, add, then app links) --- */
+.account-menu { width: 272px; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.account-menu-current { display: flex; align-items: center; gap: 10px; padding: 8px 8px 10px; }
+.account-menu-current .account-menu-avatar { width: 34px; height: 34px; flex-basis: 34px; font-size: 12px; }
+.account-menu-current .account-menu-email { font-size: 13px; }
+.account-menu-label { margin: 6px 8px 2px; color: #8b8c84; font-size: 11px; font-weight: 500; }
 .account-menu-row { display: flex; align-items: center; border-radius: 9px; }
-.account-menu-row:hover { background: #2c2c2a; }
+.account-menu-row:hover, .account-menu-row.is-busy { background: #2c2c2a; }
+.account-menu-row:has(.account-menu-main:disabled):not(.is-busy):hover { background: transparent; }
 .account-menu-main {
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px;
   padding: 7px 8px; background: transparent; border: 0; border-radius: 9px;
   color: inherit; font: inherit; text-align: left; cursor: pointer;
 }
+.account-menu-main:disabled { cursor: default; }
+.account-menu-row:not(.is-busy) .account-menu-main:disabled { opacity: .55; }
+.account-menu-main .loading-spinner { width: 13px; height: 13px; border-width: 1.5px; }
 .account-menu-avatar {
   width: 28px; height: 28px; flex: 0 0 28px; border-radius: 50%;
   display: grid; place-items: center; overflow: hidden;
@@ -3059,12 +3097,12 @@ body.is-resizing-y, body.is-resizing-y * { cursor: ns-resize !important; }
 }
 .account-menu-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .account-menu-avatar.is-expired { background: #2f6fb2; color: #fff; font-size: 14px; }
-.account-menu-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0; }
+.account-menu-avatar.is-anonymous { background: #34342f; color: #9a9b92; }
+.account-menu-avatar.is-anonymous .icon { width: 16px; height: 16px; }
+.account-menu-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .account-menu-email { font-size: 12px; font-weight: 600; color: #eceee6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-menu-sub { font-size: 10.5px; color: #9a9b92; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.account-current-label { color: #57b06d; font-size: 8.5px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; flex: 0 0 auto; }
-.account-menu-chev { color: #8b8c84; display: grid; place-items: center; flex: 0 0 auto; }
-.account-menu-chev .icon { width: 13px; height: 13px; }
+.account-menu-sub.is-warn, .account-menu-row.is-expired .account-menu-sub { color: #a9c6e8; }
 .account-menu-remove {
   width: 24px; height: 24px; flex: 0 0 24px; margin-right: 4px;
   display: grid; place-items: center; background: transparent; border: 0; border-radius: 6px;
@@ -3073,25 +3111,37 @@ body.is-resizing-y, body.is-resizing-y * { cursor: ns-resize !important; }
 .account-menu-row:hover .account-menu-remove, .account-menu-remove:focus-visible { opacity: 1; }
 .account-menu-remove:hover { color: var(--red, #f0a19b); background: rgba(240,161,155,.1); }
 .account-menu-remove .icon { width: 12px; height: 12px; }
-.account-expired-card {
-  display: flex; align-items: center; gap: 9px; width: 100%;
-  padding: 8px; margin: 2px 0; text-align: left; cursor: pointer;
-  background: #232c3a; border: 1px solid #33517a; border-radius: 10px; color: inherit; font: inherit;
-}
-.account-expired-card:hover { background: #273448; }
-.account-expired-card .account-menu-sub { color: #a9c6e8; }
 .account-menu-divider { height: 1px; background: #34342f; margin: 5px 4px; }
 .account-menu-action {
   display: flex; align-items: center; gap: 8px; width: 100%;
   padding: 7px 8px; background: transparent; border: 0; border-radius: 8px;
   color: #e2e3da; font: inherit; font-size: 12px; text-align: left; cursor: pointer;
 }
-.account-menu-action:hover { background: #2c2c2a; }
+.account-menu-action:hover:not(:disabled) { background: #2c2c2a; }
+.account-menu-action:disabled { opacity: .5; cursor: default; }
 .account-menu-action .icon { width: 14px; height: 14px; color: #b9bab0; }
 .account-menu-action.is-danger { color: #f08a80; }
 .account-menu-action.is-danger .icon { color: #f08a80; }
 .account-menu-methods { display: flex; flex-direction: column; gap: 2px; padding-left: 14px; }
 .account-menu-methods[hidden] { display: none; }
+.account-menu-main:active:not(:disabled), .account-menu-action:active:not(:disabled) { transform: scale(.98); }
+
+/* The step an account action is on (menu, settings): a spinner, a check, or the error. */
+.account-task {
+  display: flex; align-items: center; gap: 8px; margin: 2px 4px 4px; padding: 7px 9px;
+  border-radius: 8px; background: #23231f; color: #c9cac1; font-size: 11.5px; line-height: 1.4;
+}
+.account-task[hidden] { display: none; }
+.account-task .loading-spinner { width: 12px; height: 12px; border-width: 1.5px; }
+.account-task .icon { width: 13px; height: 13px; flex: 0 0 auto; }
+.account-task.is-done { color: #9fd3a9; }
+.account-task.is-error { background: rgba(240,138,128,.08); color: #f0a19b; }
+.modal .account-task { margin: 10px 0 0; }
+.account-button[aria-busy="true"] .account-dot { animation: soft-pulse 1s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .account-button[aria-busy="true"] .account-dot { animation: none; }
+  .account-menu-main:active, .account-menu-action:active { transform: none; }
+}
 
 
 /* --- v4.11: no capsule buttons anywhere — one rounded-rectangle shape.

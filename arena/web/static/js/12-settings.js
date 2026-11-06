@@ -105,6 +105,8 @@
         el('span', { class: 'status-dot ' + (state.authenticated ? 'is-online' : 'is-pending'), 'aria-hidden': 'true' })
       );
       wrap.appendChild(account);
+      const task = state.accountTask;
+      if (task && task.kind !== 'cookie') wrap.appendChild(accountTaskLine(task));
 
       const actions = el('div', { class: 'setting-actions' });
       if (!state.authenticated) {
@@ -115,7 +117,8 @@
           { variant: 'primary', disabled: state.loginPending || Boolean(state.serverError) || state.networkOffline }
         ));
       } else {
-        actions.appendChild(settingsActionButton('Log out', 'logout', async () => { await logoutAccount(); refreshPanel(); }));
+        actions.appendChild(settingsActionButton(accountTaskRunning('signout') ? 'Signing out…' : 'Log out', 'logout',
+          async () => { await logoutAccount(); refreshPanel(); }, { disabled: Boolean(state.accountBusy) }));
       }
       actions.appendChild(settingsActionButton('Open arena.ai window', 'external', async () => {
         if (state.engineOpen) await hideEngine(); else await showEngine();
@@ -128,13 +131,16 @@
         wrap.appendChild(el('p', { class: 'modal-copy', text: 'On arena.ai in your browser: DevTools → Application → Cookies → arena.ai. Copy the arena-auth-prod-v1 lines as name=value pairs and paste them here.' + (state.authenticated ? ' The new account becomes current; your saved accounts stay in the account menu.' : '') }));
         const cookieField = el('textarea', { class: 'input mono cookie-field', rows: '3', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
           'aria-label': 'Arena cookies', placeholder: 'arena-auth-prod-v1.0=…; arena-auth-prod-v1.1=…' });
-        const importButton = settingsActionButton(state.authenticated ? 'Add account with cookies' : 'Sign in with cookies', 'login', async () => {
+        const checking = accountTaskRunning('cookie');
+        const importButton = settingsActionButton(checking ? 'Checking cookies…' : state.authenticated ? 'Add account with cookies' : 'Sign in with cookies', 'login', async () => {
           const cookie = cookieField.value.trim();
           cookieField.value = '';
           if (!cookie) { toast('Paste the cookies first.', 'warning'); return; }
           await loginWithCookie(cookie);
-        }, { disabled: state.loginPending || Boolean(state.serverError) || state.networkOffline });
+        }, { disabled: state.loginPending || state.accountBusy || Boolean(state.serverError) || state.networkOffline });
+        if (checking) cookieField.disabled = true;
         wrap.append(cookieField, el('div', { class: 'setting-actions', style: { marginTop: '8px' } }, importButton));
+        if (task?.kind === 'cookie') wrap.appendChild(accountTaskLine(task));
         wrap.appendChild(el('p', { class: 'field-help', text: 'Cookies give full access to your account — never share them. They are stored only on this computer.' }));
       }
       if (state.serverError) {
@@ -896,27 +902,47 @@
 
       wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Quick diagnostics' }));
       const diagList = el('div', { class: 'diag-list' });
-      const testNames = ['Arena.ai connection', 'Account health', 'Encryption (DPAPI)', 'Workspace access', 'Update server (GitHub)'];
-      testNames.forEach(name => {
-        diagList.appendChild(el('div', { class: 'diag-row diag-pending' },
-          el('span', { class: 'diag-dot' }),
-          el('span', { class: 'diag-name', text: name }),
-          el('span', { class: 'diag-ms' })
-        ));
-      });
+      const testNames = ['Arena.ai connection', 'Arena.ai service status', 'Account health', 'Encryption (DPAPI)', 'Workspace access', 'Update server (GitHub)'];
+      // rows are matched by name, so a check added on the server cannot shift the others
+      const diagRow = (name) => {
+        let row = [...diagList.children].find((node) => node.dataset.name === name);
+        if (!row) {
+          row = el('div', { class: 'diag-row diag-pending', dataset: { name } },
+            el('span', { class: 'diag-dot' }),
+            el('span', { class: 'diag-text' },
+              el('span', { class: 'diag-name', text: name }),
+              el('span', { class: 'diag-detail' })),
+            el('span', { class: 'diag-ms' })
+          );
+          diagList.appendChild(row);
+        }
+        return row;
+      };
+      testNames.forEach(diagRow);
       const runBtn = settingsActionButton('Run all tests', 'play', async () => {
         runBtn.disabled = true;
-        diagList.querySelectorAll('.diag-row').forEach(r => { r.className = 'diag-row diag-running'; r.querySelector('.diag-ms').textContent = ''; });
+        diagList.querySelectorAll('.diag-row').forEach(r => {
+          r.className = 'diag-row diag-running';
+          r.querySelector('.diag-ms').textContent = '';
+          r.querySelector('.diag-detail').textContent = '';
+          r.title = '';
+        });
         try {
           const data = await API.diagnosticsRun();
-          const rows = diagList.querySelectorAll('.diag-row');
-          (data?.results || []).forEach((r, i) => {
-            if (!rows[i]) return;
-            rows[i].className = 'diag-row ' + (r.ok === true ? 'diag-pass' : r.ok === false ? 'diag-fail' : 'diag-skip');
-            rows[i].querySelector('.diag-ms').textContent = r.ok === null ? (r.detail || '—') : r.ms + 'ms';
-            if (r.detail && r.ok === false) rows[i].title = r.detail;
+          (data?.results || []).forEach((r) => {
+            if (!r || !r.name) return;
+            const row = diagRow(r.name);
+            row.className = 'diag-row ' + (r.ok === true ? 'diag-pass' : r.ok === false ? 'diag-fail' : 'diag-skip');
+            row.querySelector('.diag-ms').textContent = r.ok === null || r.ok === undefined ? '—' : r.ms + 'ms';
+            row.querySelector('.diag-detail').textContent = r.detail || '';
+            row.title = r.detail || '';
           });
-        } catch { diagList.querySelectorAll('.diag-row').forEach(r => { r.className = 'diag-row diag-fail'; }); }
+        } catch (err) {
+          diagList.querySelectorAll('.diag-row').forEach(r => {
+            r.className = 'diag-row diag-fail';
+            r.querySelector('.diag-detail').textContent = 'The checks did not run. Try again.';
+          });
+        }
         runBtn.disabled = false;
       });
       const diagActions = el('div', { class: 'setting-actions' });

@@ -9,6 +9,7 @@ are mirrored here; all network access stays in the authenticated app engine.
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _WIRE_TO_UI_MODE = {
@@ -51,6 +52,41 @@ def clean_title(title: Any, fallback: str = "Arena chat") -> str:
     if is_injected_title(text):
         return "Arena Desktop chat"
     return text or fallback
+
+
+def _iso_utc(value: Any) -> Optional[str]:
+    """An Arena timestamp (ISO 8601 text or epoch milliseconds) in the form
+    the app stores, so chat lists sort it with local times."""
+    try:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            stamp = datetime.fromtimestamp(value / 1000 if value > 1e11 else value, timezone.utc)
+        elif isinstance(value, str) and value.strip():
+            stamp = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        else:
+            return None
+    except (ValueError, OverflowError, OSError):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def last_activity(session: Any) -> Optional[str]:
+    """When an Arena conversation last changed: the latest time on the
+    session or its messages. Imported and refreshed chats keep this time,
+    so opening an old chat does not move it to the top of the list."""
+    if not isinstance(session, dict):
+        return None
+    container = _agentic_container(session)
+    values: List[Any] = []
+    for source in (session, container):
+        values += [source.get(key) for key in ("updatedAt", "updated_at", "createdAt", "created_at")]
+    messages = container.get("messages") if isinstance(container.get("messages"), list) else []
+    for message in messages:
+        if isinstance(message, dict):
+            values += [message.get("updatedAt"), message.get("createdAt")]
+    stamps = [stamp for stamp in map(_iso_utc, values) if stamp]
+    return max(stamps) if stamps else None
 
 
 def entry_summary(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -96,11 +132,39 @@ def _part_text(part: Any) -> str:
     return ""
 
 
+def _join_parts(parts: List[Any]) -> str:
+    """Text of a message's parts.  Text separated by tool or step parts
+    (a Code-mode agent narrating between sandbox calls) becomes separate
+    paragraphs instead of one run-on line ("...setup.I will now read")."""
+    pieces: List[str] = []
+    gap = False
+    for part in parts:
+        text = _part_text(part)
+        if text:
+            if gap and pieces and not pieces[-1].endswith("\n\n"):
+                text = ("\n" if pieces[-1].endswith("\n") else "\n\n") + text.lstrip(" ")
+            pieces.append(text)
+            gap = False
+        elif isinstance(part, dict) and str(part.get("type") or "") not in ("reasoning", "thinking", ""):
+            gap = True
+    return "".join(pieces)
+
+
+def message_text(raw: Any) -> str:
+    """Plain text of one raw Arena message (parts or content)."""
+    if not isinstance(raw, dict):
+        return ""
+    parts = raw.get("parts")
+    if isinstance(parts, list):
+        return _join_parts(parts).strip()
+    return (_content_text(raw.get("content")) or "").strip()
+
+
 def _content_text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "".join(_part_text(part) for part in content)
+        return _join_parts(content)
     if isinstance(content, dict):
         return _part_text(content) or str(content.get("text") or content.get("content") or "")
     return ""
@@ -201,7 +265,7 @@ def agentic_messages(session: Any) -> List[Dict[str, Any]]:
             continue
         parts = raw.get("parts")
         if isinstance(parts, list):
-            text = "".join(_part_text(part) for part in parts)
+            text = _join_parts(parts)
         else:
             text = _content_text(raw.get("content"))
         text = (text or "").strip()
@@ -361,8 +425,22 @@ def merge_messages(local_messages: Any, remote_messages: Any) -> Tuple[List[Dict
     remote = _unwrap_injected(remote, local)
     if not remote:
         return local, 0
-    local_sigs = [_message_signature(item) for item in local]
     remote_sigs = [_message_signature(item) for item in remote]
+    # Repair (v1.5.1): an older merge appended Arena's copies of replies the
+    # chat already had, right after the local reply.  Drop such appended
+    # copies so the turn-by-turn merge below can put each one in its place.
+    remote_sig_set = set(remote_sigs)
+    cleaned: List[Dict[str, Any]] = []
+    for item in local:
+        if (item.get("role") == "assistant" and cleaned and cleaned[-1].get("role") == "assistant"
+                and _message_signature(item) in remote_sig_set):
+            continue
+        cleaned.append(item)
+    local = cleaned
+    local_sigs = [_message_signature(item) for item in local]
+    aligned = _merge_aligned(local, remote)
+    if aligned is not None:
+        return aligned
     # Empty placeholder turns are not useful identity anchors.  They are
     # rare, but avoiding them prevents a blank assistant slot from being
     # treated as a real shared turn.
@@ -385,11 +463,64 @@ def merge_messages(local_messages: Any, remote_messages: Any) -> Tuple[List[Dict
     seen = Counter(local_sigs)
     merged = local
     added = 0
+    # Append only turns the chat does not have yet.  A remote reply to a
+    # prompt that is already here is never appended on its own: that glued
+    # several replies together under one prompt.
+    new_turn = False
     for message, signature in zip(remote, remote_sigs):
+        if message.get("role") == "user":
+            new_turn = seen[signature] <= 0
+            if not new_turn:
+                seen[signature] -= 1
+                continue
+        elif not new_turn:
+            continue
         if seen[signature] > 0:
             seen[signature] -= 1
             continue
         merged.append(message)
-        seen[signature] += 1
         added += 1
     return merged, added
+
+
+def _norm_text(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _merge_aligned(local: List[Dict[str, Any]], remote: List[Dict[str, Any]]):
+    """Turn-by-turn merge when both transcripts have the same prompts in the
+    same order.  A local reply that is empty or cut off (a dropped stream)
+    takes Arena's finished text; desktop-only details (tool rows, votes,
+    media) stay.  Returns (merged, added) or None when the shapes differ."""
+    if not local or len(remote) < len(local):
+        return None
+    for mine, theirs in zip(local, remote):
+        if mine.get("role") != theirs.get("role"):
+            return None
+        if mine.get("role") == "user" and _norm_text(mine.get("text")) != _norm_text(theirs.get("text")):
+            return None
+    merged: List[Dict[str, Any]] = []
+    for mine, theirs in zip(local, remote):
+        item = dict(mine)
+        if mine.get("role") == "assistant":
+            for field in ("text", "text_b"):
+                have, got = _norm_text(mine.get(field)), _norm_text(theirs.get(field))
+                # Only ever grow a reply: a longer local text (e.g. kept
+                # after a continuation) is never cut back to Arena's copy.
+                if got and got != have and (not have or len(got) >= len(have)
+                                            and (got.startswith(have[:200]) or have[:120] in got)):
+                    item[field] = theirs.get(field)
+                    if field == "text":
+                        item.pop("error", None)
+        for key, value in theirs.items():
+            if key == "names" and isinstance(value, dict) and isinstance(item.get("names"), dict):
+                names = dict(item["names"])
+                for lane, name in value.items():
+                    if name and not names.get(lane):
+                        names[lane] = name
+                item["names"] = names
+            elif item.get(key) in (None, "", [], {}):
+                item[key] = value
+        merged.append(item)
+    merged.extend(remote[len(local):])
+    return merged, len(remote) - len(local)
