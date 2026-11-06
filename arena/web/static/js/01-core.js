@@ -1,4 +1,8 @@
   const DEMO = new URLSearchParams(window.location.search).get('demo') === '1';
+  // The right-hand Workspace/Connectors column is retired for the 1.6 rework:
+  // its jobs (folder, files) live in the composer chip and Settings. Flip this
+  // back to true to bring the column and its buttons back.
+  const WORKSPACE_PANEL_ENABLED = false;
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

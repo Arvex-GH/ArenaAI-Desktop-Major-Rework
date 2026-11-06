@@ -12,8 +12,10 @@ a = Analysis(
     binaries=[],
     datas=[
         ('arena/web/static', 'arena/web/static'),
+        ('arena/setup/web', 'arena/setup/web'),
         ('assets/logo.svg', 'assets'),
         ('assets/logo.png', 'assets'),
+        ('assets/arena-cli.ico', 'assets'),
     ],
     hiddenimports=[
         'arena',
@@ -30,6 +32,11 @@ a = Analysis(
         'arena.contracts',
         'arena.connectors',
         'arena.history_sync',
+        'arena.version',
+        'arena.updater',
+        'arena.setup',
+        'arena.setup.core',
+        'arena.setup.ui',
         'arena.permissions',
         'arena.crypto',
         'arena.agent',

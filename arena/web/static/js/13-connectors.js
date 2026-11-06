@@ -56,6 +56,11 @@
   }
 
   function setWorkspacePanelOpen(open, { focusConnectors = false, persist = true, load = true } = {}) {
+    if (!WORKSPACE_PANEL_ENABLED) {
+      state.workspacePanelOpen = false;
+      syncWorkspacePanelVisibility();
+      return;
+    }
     state.workspacePanelOpen = Boolean(open);
     syncWorkspacePanelVisibility();
     if (persist) {
@@ -74,6 +79,10 @@
   }
 
   function restoreWorkspacePanelPreference() {
+    if (!WORKSPACE_PANEL_ENABLED) {
+      setWorkspacePanelOpen(false, { persist: false, load: false });
+      return;
+    }
     let open = window.innerWidth >= 1180;
     try {
       const stored = localStorage.getItem('arenaPersonal.workspacePanelOpen.v4');
