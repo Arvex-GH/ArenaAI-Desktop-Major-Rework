@@ -26,7 +26,7 @@
     const id = activity.id;
     const existing = lane.activities.find((item) => String(item.id) === String(id));
     if (existing) {
-      Object.assign(existing, { status: activity.status, detail: activity.detail || existing.detail, command: activity.command || existing.command, path: activity.path || existing.path, url: activity.url || existing.url });
+      Object.assign(existing, { status: activity.status, detail: activity.detail || existing.detail, command: activity.command || existing.command, path: activity.path || existing.path, url: activity.url || existing.url, output: activity.output || existing.output });
       return existing;
     }
     lane.activities.push(activity);
@@ -104,9 +104,20 @@
     const key = eventLaneKey(event);
     const lane = turnLane(turn, key, event);
 
+    if (type === 'text_replace') {
+      // The stream broke and the server read the finished reply from
+      // arena.ai's copy of the chat: it replaces what had streamed so far.
+      lane.text = textValue(event.text ?? '');
+      clearRetryNote(lane);
+      scheduleChatRender();
+      return;
+    }
     if (type === 'text' || type === 'message') {
       const delta = textValue(event.text ?? event.delta ?? event.content ?? '');
-      if (delta) lane.text += delta;
+      if (delta) {
+        lane.text += delta;
+        clearRetryNote(lane);
+      }
       if (event.model_id && !lane.modelId) {
         const model = normalizeModel(event.model_id);
         if (model) {
@@ -294,8 +305,10 @@
       const decision = String(event.decision ?? event.status ?? 'done');
       state.pendingPermissions = state.pendingPermissions.filter((item) => String(item.id) !== String(id));
       state.permissionCount = state.pendingPermissions.length;
-      state.messages.forEach((messageTurn) => {
-        Object.values(messageTurn.lanes || {}).forEach((messageLane) => {
+      // The reply's own turn too: it is not in state.messages while another
+      // chat is open.
+      [...state.messages, turn].forEach((messageTurn) => {
+        Object.values(messageTurn?.lanes || {}).forEach((messageLane) => {
           (messageLane.permissions || []).forEach((permission) => {
             if (id && String(permission.id) === String(id)) permission.status = decision;
           });
@@ -433,8 +446,12 @@
           if (lobj.text) lobj.text = lobj.text.slice(0, Math.max(0, lobj.text.length - n));
         }
       });
-      const msg = `The reply was interrupted — auto-continuing (${event.attempt || 1}/${event.max || 2})…`;
-      if (!lane.notices.includes(msg)) lane.notices.push(msg);
+      // Shown only while the retry runs: new text, done or Stop removes it,
+      // so a stopped chat never claims it will continue.
+      clearRetryNote(lane);
+      const msg = `The reply was interrupted — retrying (${event.attempt || 1}/${event.max || 2})…`;
+      lane.notices.push(msg);
+      lane.retryNote = msg;
       scheduleChatRender();
       return;
     }
@@ -566,6 +583,12 @@
     };
   }
 
+  function clearRetryNote(lane) {
+    if (!lane || !lane.retryNote) return;
+    lane.notices = (lane.notices || []).filter((note) => note !== lane.retryNote);
+    lane.retryNote = null;
+  }
+
   function markGenerationError(generation, message) {
     if (!generation || generation.finished) return;
     generation.hadError = true;
@@ -612,6 +635,20 @@
       if (lane && !lane.text) lane.notices.push("Generation stopped before text was received.");
     }
     const genChatId = generation.chatId ? String(generation.chatId) : null;
+    // A finished or stopped reply asks nothing any more: the server denied
+    // whatever was still waiting, so its approval cards must not linger
+    // (or show up in another chat).
+    Object.values(generation.turn.lanes || {}).forEach((laneItem) => {
+      clearRetryNote(laneItem);
+      (laneItem.permissions || []).forEach((permission) => {
+        if (!permission.status || permission.status === 'pending') permission.status = wasStopped ? 'stopped' : 'expired';
+      });
+    });
+    if (genChatId) {
+      state.pendingPermissions = state.pendingPermissions.filter((item) => String(item.chatId || '') !== genChatId);
+      state.permissionCount = state.pendingPermissions.length;
+      updatePendingPermissionsBadge();
+    }
     if (genChatId) state.generations.delete(genChatId);
     if (genChatId && generation.done && !wasStopped) {
       // The backend swaps a new chat's provisional title for the summary

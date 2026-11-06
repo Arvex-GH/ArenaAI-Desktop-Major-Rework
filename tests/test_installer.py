@@ -196,9 +196,10 @@ def _release(tag="v1.6.1", assets=None, prerelease=False):
     }
 
 
-def test_feed_defaults_to_the_official_repo(monkeypatch):
+def test_feed_defaults_to_our_repo(monkeypatch):
+    # Builds update from our own releases, not from the fork's upstream source.
     monkeypatch.delenv("ARENA_UPDATE_REPO", raising=False)
-    assert updater.feed_repo() == "PlayzAe/arena.ai-desktop"
+    assert updater.feed_repo() == "Arvex-GH/ArenaAI-Desktop-Major-Rework"
 
 
 def test_version_comparison():

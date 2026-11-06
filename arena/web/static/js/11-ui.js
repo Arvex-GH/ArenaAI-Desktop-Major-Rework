@@ -669,6 +669,78 @@
     return state.workspace;
   }
 
+  /* ---------------------------------------------------------------------- */
+  /* Run on this PC                                                         */
+  /* ---------------------------------------------------------------------- */
+  // Code mode runs projects in arena.ai's cloud sandbox; only the files come
+  // here. This installs and starts the local copy and shows where it serves.
+  const runLocal = { id: null, timer: null };
+
+  function renderRunLocal(data) {
+    const box = els.workspaceRunStatus;
+    if (!box) return;
+    clear(box);
+    box.hidden = !data;
+    if (!data) return;
+    const url = (data.urls || [])[0] || '';
+    const log = String(data.log || '').trim().split('\n').filter((line) => line.trim());
+    const title = data.running
+      ? (url ? `Running at ${url}` : 'Installing packages and starting…')
+      : (url || data.stoppedByUser ? 'Stopped' : 'Stopped before it started serving');
+    box.append(el('p', { class: 'workspace-run-title', text: title }));
+    if (!url && log.length) box.append(el('pre', { class: 'workspace-run-log', text: log.slice(data.running ? -2 : -8).join('\n') }));
+    const actions = el('div', { class: 'workspace-run-actions' });
+    const add = (label, run) => {
+      const b = el('button', { type: 'button', class: 'button button-quiet', text: label });
+      b.addEventListener('click', run);
+      actions.append(b);
+    };
+    if (data.running && url) add('Open', () => openPreview(url, 'Dev server'));
+    if (data.running) add('Stop', () => { void stopRunLocal(); });
+    else add('Close', () => renderRunLocal(null));
+    box.append(actions);
+  }
+
+  async function pollRunLocal() {
+    window.clearTimeout(runLocal.timer);
+    if (!runLocal.id) return;
+    try {
+      const data = await API.runLocalState(runLocal.id);
+      renderRunLocal(data);
+      if (data.running) runLocal.timer = window.setTimeout(pollRunLocal, (data.urls || []).length ? 8000 : 1500);
+      else runLocal.id = null;
+    } catch {
+      runLocal.id = null;
+      renderRunLocal(null);
+    }
+  }
+
+  async function startRunLocal() {
+    const folder = state.workspacePanelRoot || state.workspace;
+    if (!folder) { toast('Choose the project folder first.', 'warning', 'Run on this PC'); return; }
+    if (runLocal.id) await stopRunLocal();
+    els.workspaceRunButton?.setAttribute('aria-busy', 'true');
+    try {
+      const data = await API.runLocal(folder);
+      runLocal.id = data.id;
+      renderRunLocal(data);
+      toast(`${data.cmd} in ${data.folder}`, 'info', 'Running on this PC');
+      runLocal.timer = window.setTimeout(pollRunLocal, 1500);
+    } catch (error) {
+      toast(errorMessage(error), 'error', 'Could not run the project');
+    } finally {
+      els.workspaceRunButton?.removeAttribute('aria-busy');
+    }
+  }
+
+  async function stopRunLocal() {
+    const id = runLocal.id;
+    if (!id) return;
+    window.clearTimeout(runLocal.timer);
+    runLocal.id = null;
+    try { renderRunLocal({ ...(await API.stopRunLocal(id)), stoppedByUser: true }); } catch { renderRunLocal(null); }
+  }
+
   async function chooseNativeFolder() {
     if (!state.nativeReady) {
       openSettings('workspace');
@@ -825,24 +897,69 @@
     }
   }
 
-  async function loginWithCookie(cookie) {
-    if (state.demo || state.loginPending || !cookie.trim()) return;
-    state.loginPending = true;
-    updateConnectionUI();
+  // One account action at a time (switch, sign-out, cookie import). Its
+  // current step shows in the account menu, the settings panel and the
+  // sidebar, so the user sees the work instead of a button that does nothing.
+  function setAccountTask(task) {
+    state.accountTask = task;
+    if (task) announce(task.error || task.step || '');
     updateAccountUI();
+    activePopover?.node?.querySelector('.account-menu')?._rerender?.();
+    state.settingsRerender?.();
+  }
+
+  function finishAccountTask(task, ms = 5000) {
+    setAccountTask(task);
+    window.setTimeout(() => { if (state.accountTask === task) setAccountTask(null); }, ms);
+  }
+
+  function accountTaskVisible() {
+    return Boolean(activePopover?.node?.querySelector('.account-menu') || state.settingsRerender);
+  }
+
+  // Errors show next to the action when the menu or settings are open, else as a toast.
+  function failAccountTask(kind, message, title, extra = {}) {
+    if (accountTaskVisible()) finishAccountTask({ kind, error: message, ...extra }, 12000);
+    else { setAccountTask(null); toast(message, 'error', title); }
+  }
+
+  function accountTaskLine(task) {
+    const line = el('div', { class: `account-task${task?.error ? ' is-error' : task?.done ? ' is-done' : ''}`, role: task?.error ? 'alert' : 'status' });
+    if (!task) { line.hidden = true; return line; }
+    line.append(
+      task.error ? iconEl('alert') : task.done ? iconEl('check') : el('span', { class: 'loading-spinner', 'aria-hidden': 'true' }),
+      el('span', { text: task.error || task.step || '' }));
+    return line;
+  }
+
+  function accountTaskRunning(kind = null) {
+    const task = state.accountTask;
+    return Boolean(task && !task.error && !task.done && (!kind || task.kind === kind));
+  }
+
+  async function loginWithCookie(cookie) {
+    if (state.demo || state.loginPending || state.accountBusy || !cookie.trim()) return;
+    state.loginPending = true;
+    state.accountBusy = true;
+    updateConnectionUI();
     updateComposerState();
+    const step = (text) => setAccountTask({ kind: 'cookie', step: text });
     try {
+      step('Checking the cookies with arena.ai…');
       const result = await API.loginCookie(cookie);
       if (!result?.ok) throw new ApiError(extractError(result, 0));
+      step('Loading your account…');
       await loadStatus({ quiet: true });
       if (!state.authenticated) throw new ApiError("Session imported, but the server has not confirmed the account. Check cookies and connection.");
-      toast(state.email || "Login completed.", 'success', "Arena connected");
+      step('Loading chats and models…');
       await Promise.allSettled([loadChats({ silent: true }), loadModels(state.modality), loadPermissions({ quiet: true }), refreshWorkspacePanel({ force: true })]);
-      announce("Login completed.");
+      finishAccountTask({ kind: 'cookie', done: true, step: `Signed in as ${state.email || 'your arena.ai account'}` });
+      if (!accountTaskVisible()) toast(state.email || "Login completed.", 'success', "Arena connected");
     } catch (error) {
-      toast(errorMessage(error), 'error', "Login via cookies not performed");
+      failAccountTask('cookie', errorMessage(error), "Login via cookies not performed");
     } finally {
       state.loginPending = false;
+      state.accountBusy = false;
       updateConnectionUI();
       updateAccountUI();
       updateComposerState();
@@ -886,28 +1003,34 @@
   }
 
   async function switchToAccount(account) {
-    if (!account || state.accountBusy) return;
+    if (!account || state.accountBusy || state.loginPending) return false;
+    const label = account.email || account.name || 'the account';
     if (anyGenerationRunning() || state.remoteBusy) {
-      toast('Finish or stop the running generations before switching accounts.', 'warning', 'Account not switched');
-      return;
+      failAccountTask('switch', 'Finish or stop the running generations before switching accounts.', 'Account not switched', { accountId: account.id });
+      return false;
     }
     state.accountBusy = true;
+    const step = (text) => setAccountTask({ kind: 'switch', accountId: account.id, step: text });
     try {
+      step(`Switching to ${label}…`);
       const result = await API.switchAccount(account.id);
       if (Array.isArray(result?.accounts)) state.accounts = result.accounts;
-      closePopover(false);
+      step('Loading chats and models…');
       resetForAccountChange();
       await loadStatus({ quiet: true });
       await Promise.allSettled([loadChats({ silent: true }), loadArenaChats({ silent: true }), loadModels(state.modality, { quiet: true })]);
-      toast(account.email || account.name || 'Account switched.', 'success', 'Account switched');
-      state.settingsRerender?.();
+      setAccountTask(null);
+      toast(label, 'success', 'Account switched');
+      return true;
     } catch (error) {
       const payload = error?.payload;
       if (Array.isArray(payload?.accounts)) state.accounts = payload.accounts;
-      toast(errorMessage(error), 'error', payload?.expired ? 'Session expired — sign in again' : 'Account not switched');
       await loadStatus({ quiet: true }).catch(() => undefined);
+      failAccountTask('switch', errorMessage(error), payload?.expired ? 'Session expired — sign in again' : 'Account not switched', { accountId: account.id });
+      return false;
     } finally {
       state.accountBusy = false;
+      updateAccountUI();
     }
   }
 
@@ -927,102 +1050,95 @@
 
   function buildAccountMenu() {
     const content = el('div', { class: 'account-menu' });
+    let addOpen = false;
     const render = () => {
+      const hadFocus = content.contains(document.activeElement);
       clear(content);
-      content.appendChild(el('p', { class: 'account-menu-head', text: 'Accounts' }));
       const accounts = Array.isArray(state.accounts) ? state.accounts : [];
-      if (!accounts.length) {
-        content.appendChild(el('p', { class: 'account-menu-note', text: state.authenticated
-          ? 'Signed in. Accounts you add will appear here for quick switching.'
-          : 'Not signed in yet. Sign in, then add more accounts here to switch between them.' }));
+      const task = state.accountTask;
+      const busy = Boolean(state.accountBusy || state.loginPending || accountTaskRunning());
+      const current = accounts.find((a) => a.current)
+        || (state.authenticated ? { email: state.email, name: state.fullName, avatar_url: state.avatarUrl } : null);
+      const action = (id, icon, label, run, { danger = false, expanded = null } = {}) => el('button', {
+        class: `account-menu-action${danger ? ' is-danger' : ''}`, type: 'button', 'data-popover-action': id,
+        disabled: busy, 'aria-expanded': expanded === null ? null : String(expanded), onclick: run
+      }, iconEl(icon), el('span', { text: label }));
+
+      // Who is signed in now: the one thing this menu must answer at a glance.
+      const named = Boolean(current?.name && current.name !== current.email);
+      content.appendChild(el('div', { class: 'account-menu-current' },
+        current ? accountAvatarEl(current)
+          : el('span', { class: 'avatar account-menu-avatar is-anonymous', 'aria-hidden': 'true' }, iconEl('user')),
+        el('span', { class: 'account-menu-copy' },
+          el('span', { class: 'account-menu-email', text: current ? (named ? current.name : (current.email || 'arena.ai account')) : 'Not signed in' }),
+          el('span', { class: `account-menu-sub${current?.expired ? ' is-warn' : ''}`, text: !current ? 'Sign in to chat on arena.ai'
+            : current.expired ? 'Session expired' : (named ? current.email : 'Signed in') }))));
+      if (task && task.kind !== 'cookie') content.appendChild(accountTaskLine(task));
+      if (current?.expired) {
+        content.appendChild(action('account-reauth', 'login', 'Sign in again', () => { closePopover(false); void startLogin(); }));
       }
-      accounts.forEach((account) => {
-        if (account.expired) {
-          const card = el('button', {
-            class: 'account-expired-card', type: 'button', 'data-popover-action': 'account-expired',
-            onclick: () => { closePopover(false); void startLogin({ addAccount: !account.current }); }
-          },
-            accountAvatarEl(account),
-            el('span', { class: 'account-menu-copy' },
-              el('span', { class: 'account-menu-email', text: account.email || account.name || 'Arena account' }),
-              el('span', { class: 'account-menu-sub', text: 'Session expired: sign in' }))
-          );
-          content.appendChild(card);
-          return;
-        }
-        const row = el('div', { class: `account-menu-row${account.current ? ' is-current' : ''}` });
-        const main = el('button', {
-          class: 'account-menu-main', type: 'button', 'data-popover-action': 'account-switch',
-          'data-account-id': account.id || '',
-          'aria-label': account.current ? `Current account: ${account.email || account.name}` : `Switch to ${account.email || account.name}`,
-          onclick: () => { if (!account.current) void switchToAccount(account); }
-        },
-          accountAvatarEl(account),
-          el('span', { class: 'account-menu-copy' },
-            el('span', { class: 'account-menu-email', text: account.email || account.name || 'Arena account' }),
-            el('span', { class: 'account-menu-sub', text: account.name && account.name !== account.email ? account.name : 'Arena account' })),
-          account.current
-            ? el('span', { class: 'account-current-label', text: 'Current' })
-            : el('span', { class: 'account-menu-chev', 'aria-hidden': 'true' }, iconEl('chevron-right'))
-        );
-        row.appendChild(main);
-        if (!account.current) {
-          row.appendChild(el('button', {
-            class: 'account-menu-remove', type: 'button', 'aria-label': `Remove saved account ${account.email || account.name}`,
-            title: 'Forget this account on this device',
-            onclick: (event) => { event.stopPropagation(); void removeSavedAccount(account).then(render); }
-          }, iconEl('x')));
-        }
-        content.appendChild(row);
-      });
+
+      const others = accounts.filter((a) => !a.current);
+      if (others.length) {
+        content.appendChild(el('p', { class: 'account-menu-label', text: 'Switch to' }));
+        others.forEach((account) => {
+          const label = account.email || account.name || 'arena.ai account';
+          const switching = task?.kind === 'switch' && task.accountId === account.id && accountTaskRunning();
+          const row = el('div', { class: `account-menu-row${account.expired ? ' is-expired' : ''}${switching ? ' is-busy' : ''}` },
+            el('button', {
+              class: 'account-menu-main', type: 'button', disabled: busy,
+              'data-popover-action': account.expired ? 'account-expired' : 'account-switch', 'data-account-id': account.id || '',
+              'aria-label': account.expired ? `Sign in again to ${label}` : `Switch to ${label}`,
+              onclick: () => {
+                if (account.expired) { closePopover(false); void startLogin({ addAccount: true }); return; }
+                void switchToAccount(account).then((ok) => { if (ok) closePopover(false); });
+              }
+            },
+              accountAvatarEl(account),
+              el('span', { class: 'account-menu-copy' },
+                el('span', { class: 'account-menu-email', text: label }),
+                el('span', { class: 'account-menu-sub', text: switching ? 'Switching…'
+                  : account.expired ? 'Session expired · sign in again'
+                    : (account.name && account.name !== account.email ? account.name : 'Saved on this computer') })),
+              switching ? el('span', { class: 'loading-spinner', 'aria-hidden': 'true' }) : null));
+          if (!busy) {
+            row.appendChild(el('button', {
+              class: 'account-menu-remove', type: 'button', 'aria-label': `Forget ${label} on this computer`,
+              title: 'Forget this account on this computer',
+              onclick: (event) => { event.stopPropagation(); void removeSavedAccount(account).then(render); }
+            }, iconEl('x')));
+          }
+          content.appendChild(row);
+        });
+      }
+
       content.appendChild(el('div', { class: 'account-menu-divider', role: 'separator' }));
-      const methods = el('div', { class: 'account-menu-methods', hidden: true },
-        el('button', {
-          class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-add-window',
-          onclick: () => { closePopover(false); void startLogin({ addAccount: accounts.length > 0 }); }
-        }, iconEl('login'), el('span', { text: 'Sign-in window' })),
-        el('button', {
-          class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-add-cookies',
-          onclick: () => {
-            closePopover(false);
-            openSettings('connection');
-            window.setTimeout(() => {
-              const field = document.querySelector('.cookie-field');
-              if (field) { field.focus(); field.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
-            }, 80);
-          }
-        }, iconEl('login'), el('span', { text: 'Use cookies' }))
-      );
-      content.appendChild(el('button', {
-        class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-add',
-        'aria-expanded': 'false',
-        onclick: (event) => {
-          methods.hidden = !methods.hidden;
-          event.currentTarget.setAttribute('aria-expanded', String(!methods.hidden));
-        }
-      }, iconEl('plus'), el('span', { text: accounts.length ? 'Add account' : 'Sign in' })));
+      const methods = el('div', { class: 'account-menu-methods', hidden: !addOpen },
+        action('account-add-window', 'login', 'Sign-in window', () => { closePopover(false); void startLogin({ addAccount: accounts.length > 0 }); }),
+        action('account-add-cookies', 'copy', 'Paste cookies', () => {
+          closePopover(false);
+          openSettings('connection');
+          window.setTimeout(() => {
+            const field = document.querySelector('.cookie-field');
+            if (field) { field.focus(); field.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+          }, 80);
+        }));
+      content.appendChild(action('account-add', current ? 'plus' : 'login', current ? 'Add another account' : 'Sign in', (event) => {
+        addOpen = !addOpen;
+        methods.hidden = !addOpen;
+        event.currentTarget.setAttribute('aria-expanded', String(addOpen));
+      }, { expanded: addOpen }));
       content.appendChild(methods);
-      content.appendChild(el('button', {
-        class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-settings',
-        onclick: () => { closePopover(false); openSettings('connection'); }
-      }, iconEl('settings'), el('span', { text: 'Settings' })));
-      content.appendChild(el('button', {
-        class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-help',
-        onclick: () => { closePopover(false); document.querySelector('[data-action="help"]')?.click(); }
-      }, iconEl('help'), el('span', { text: 'Help & shortcuts (F1)' })));
-      if (state.authenticated || accounts.some((a) => a.current)) {
-        content.appendChild(el('div', { class: 'account-menu-divider', role: 'separator' }));
-        content.appendChild(el('button', {
-          class: 'account-menu-action is-danger', type: 'button', 'data-popover-action': 'account-signout',
-          onclick: () => {
-            if (anyGenerationRunning() || state.remoteBusy) {
-              toast('Finish or stop the running generations before signing out.', 'warning');
-              return;
-            }
-            closePopover(false);
-            void logoutAccount();
-          }
-        }, iconEl('logout'), el('span', { text: 'Sign out' })));
+      content.appendChild(el('div', { class: 'account-menu-divider', role: 'separator' }));
+      content.appendChild(action('account-settings', 'settings', 'Settings', () => { closePopover(false); openSettings('connection'); }));
+      content.appendChild(action('account-help', 'help', 'Help & shortcuts (F1)', () => { closePopover(false); document.querySelector('[data-action="help"]')?.click(); }));
+      if (current) {
+        content.appendChild(action('account-signout', 'logout', accountTaskRunning('signout') ? 'Signing out…' : 'Sign out', () => {
+          void logoutAccount().then((ok) => { if (ok) closePopover(false); });
+        }, { danger: true }));
+      }
+      if (hadFocus && !content.contains(document.activeElement)) {
+        content.querySelector('[data-popover-action]:not([disabled])')?.focus();
       }
     };
     render();
@@ -1033,6 +1149,8 @@
   function openAccountMenu() {
     if (!els.accountButton) return;
     if (activePopover && activePopover.trigger === els.accountButton) { closePopover(); return; }
+    // A finished step or old error is not news the next time the menu opens.
+    if (state.accountTask && !accountTaskRunning()) state.accountTask = null;
     const content = buildAccountMenu();
     openPopover(els.accountButton, { title: 'Accounts', content, menu: true, role: 'menu' });
     void API.getAccounts?.().then((result) => {
@@ -1045,9 +1163,17 @@
   }
 
   async function logoutAccount() {
-    if (state.loginPending) return;
+    if (state.loginPending || state.accountBusy) return false;
+    if (anyGenerationRunning() || state.remoteBusy) {
+      failAccountTask('signout', 'Finish or stop the running generations before signing out.', 'Not signed out');
+      return false;
+    }
+    state.accountBusy = true;
+    const step = (text) => setAccountTask({ kind: 'signout', step: text });
     try {
+      step('Signing out of arena.ai…');
       await API.logout();
+      step("Clearing this computer's session…");
       state.authenticated = false;
       state.email = '';
       state.fullName = '';
@@ -1067,10 +1193,16 @@
       renderWelcomeState();
       updateAllUI();
       await loadStatus({ quiet: true });
-      state.settingsRerender?.();
-      toast("Logout completed; local saved cookies file deleted.", 'success');
+      setAccountTask(null);
+      toast('The saved session on this computer was deleted.', 'success', 'Signed out');
+      return true;
     } catch (error) {
-      toast(errorMessage(error), 'error', "Logout not performed");
+      failAccountTask('signout', errorMessage(error), 'Logout not performed');
+      return false;
+    } finally {
+      state.accountBusy = false;
+      updateAccountUI();
+      state.settingsRerender?.();
     }
   }
 

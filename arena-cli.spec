@@ -6,6 +6,8 @@ Bundles static assets (HTML/CSS/JS) and the full arena package into a single .ex
 
 import os
 
+from PyInstaller.utils.hooks import collect_submodules
+
 a = Analysis(
     ['arena-cli.py'],
     pathex=['.'],
@@ -29,6 +31,13 @@ a = Analysis(
         'arena.desktop',
         'arena.web',
         'arena.web.app',
+        # arena/web/app.py runs these parts in its own namespace (no import
+        # statement names them, so PyInstaller must be told to bundle them).
+        # collect_submodules() walks the folder, so a part added or split in
+        # arena/web/server/ ships without anyone remembering to edit this list.
+        'arena.web.server',
+        *collect_submodules('arena.web.server'),
+        'arena.engine_js',
         'arena.contracts',
         'arena.connectors',
         'arena.history_sync',

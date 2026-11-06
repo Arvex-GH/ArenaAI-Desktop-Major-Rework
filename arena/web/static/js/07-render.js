@@ -734,7 +734,7 @@
       content.appendChild(el('div', { class: 'tool-summary is-wait', text: 'Waiting for your approval…' }));
     } else if (!out && !diff) {
       if (running) content.appendChild(el('div', { class: 'tool-summary is-muted' }, el('span', { class: 'tool-spinner', 'aria-hidden': 'true' }), el('span', { text: label === 'Bash' ? 'Running…' : 'Working…' })));
-      else if (stateCls === 'is-err') content.appendChild(el('div', { class: 'tool-summary is-err', text: String(raw.status && raw.status !== 'error' ? raw.status : activity.status || 'Failed') }));
+      else if (stateCls === 'is-err') content.appendChild(el('div', { class: 'tool-summary is-err', text: String(raw.status && raw.status !== 'error' ? raw.status : (activity.status && activity.status !== 'error' ? activity.status : 'Failed')) }));
       else return finishRow(row, activity);
     }
 
@@ -925,9 +925,10 @@
 
     if (isDone) {
       const allowed = permission.status === 'allow' || permission.status === 'always' || permission.status === 'allowed';
+      const unanswered = { stopped: "Not run: the reply was stopped", expired: "Not run: no answer in time" }[permission.status];
       card.append(head, body, el('div', { class: `permission-result${allowed ? '' : ' is-deny'}` },
         iconEl(allowed ? 'check' : 'x'),
-        el('span', { text: allowed ? "Allowed by user" : "Declined by user" })
+        el('span', { text: allowed ? "Allowed by user" : (unanswered || "Declined by user") })
       ));
       return card;
     }
