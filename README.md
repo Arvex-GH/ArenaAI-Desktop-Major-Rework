@@ -24,6 +24,7 @@
 
 > [!IMPORTANT]
 > Arena Desktop is an **unofficial, community-built client**. It is not affiliated with or endorsed by Arena AI Inc.
+> This is for **educational Purposes ONLY**. 
 > You sign in with your own arena.ai account and are responsible for following arena.ai's terms.
 > The app never solves human checks for you — when arena.ai asks for one, you complete it yourself.
 
