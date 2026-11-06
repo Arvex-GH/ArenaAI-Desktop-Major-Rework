@@ -281,6 +281,29 @@ class JsBridge:
         result = self._window.create_file_dialog(_dialog("FOLDER"))
         return (result[0] if result else None) if isinstance(result, (list, tuple)) else result
 
+    def open_preview(self, url, title="Preview"):
+        """Show a site preview in its own WebView2 window, like arena.ai's
+        preview pane. A top-level window also loads *.arena.site pages, which
+        refuse to be framed (X-Frame-Options: SAMEORIGIN). One window, reused."""
+        url = str(url or "")
+        if not url.startswith(("https://", "http://127.0.0.1:", "http://localhost:")):
+            return False
+        label = f"{str(title or 'Preview')[:60]} - Arena Desktop"
+        win = getattr(self, "_preview", None)
+        if win is not None:
+            try:
+                win.load_url(url)
+                win.set_title(label)
+                win.show()
+                win.restore()
+                return True
+            except Exception:
+                self._preview = None
+        win = webview.create_window(label, url, width=1180, height=800, background_color="#242422")
+        win.events.closed += lambda *a: setattr(self, "_preview", None)
+        self._preview = win
+        return True
+
 
 def _user32():
     import ctypes

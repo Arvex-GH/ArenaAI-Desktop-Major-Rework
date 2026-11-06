@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/PlayzAe/arena.ai-desktop/stargazers"><img src="https://img.shields.io/github/stars/PlayzAe/arena.ai-desktop?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/PlayzAe/arena.ai-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/PlayzAe/arena.ai-desktop?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.4.0-brightgreen?style=flat-square" alt="v1.4.0" />
+  <img src="https://img.shields.io/badge/version-1.5.0-brightgreen?style=flat-square" alt="v1.5.0" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -32,7 +32,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.4.0](#whats-new-in-v140)
+- [What's new in v1.5.0](#whats-new-in-v150)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -43,27 +43,62 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.4.0
+## What's new in v1.5.0
 
-### Bash and MCP fully working
+### Arena Agent files land on your computer
 
-Shell builtins (`echo`, `dir`, `ver`) now work in the terminal. 8 security findings patched from a full code audit. 46 feature tests + 22 security verification tests all pass.
+With Workspace Sync on, every file the Arena Agent writes, edits or deletes in arena.ai's cloud workspace is copied into your chosen folder as it happens. This covers its file tools and `cat > file << 'EOF'` heredocs in shell commands. It asks once per chat, follows the permission mode, and never overwrites or deletes a file you changed on this computer. Dependency folders (`node_modules`, `.git`) are skipped. An HTML file it saves gets a live local preview.
 
-### Security (v1.3.0 → v1.4.0) — 8 findings patched
+### Site previews
 
-- **CRITICAL: Settings import filtered** — crafted settings files can no longer inject `permission_mode` or `gateway_auto` via `/api/settings/import`
-- **HIGH: Upload blocks sensitive dirs** — writes to `.git/`, `.ssh/`, `.env/` blocked on upload endpoint
-- **HIGH: Workspace panel blocks sensitive dirs** — reads from `.git/`, `.ssh/`, `.env/` blocked on tree/file/preview
-- **MEDIUM: SSRF hardened** — private IP blocking now covers `172.16/12`, `::1`, `fc00::/7`, `0.0.0.0` via `ipaddress` module
-- **MEDIUM: Terminal scoped to workspace** — commands run in user's chosen workspace, not ArenaProjects
-- **MEDIUM: Dead symlink check removed** — was always False after `.resolve()`, removed dead code
-- **MEDIUM: Agent symlink check** — agent tool loop now verifies symlink targets stay inside workspace
-- **LOW: Error messages sanitized** — terminal no longer exposes internal paths in error responses
+Preview links are now `/preview/<key>/index.html`, using a read-only key separate from the API token. Linked CSS, JS and images load too, and "Open preview" no longer ends in `Missing or invalid API token`. arena.site links from Arena (Code mode and Agent) show as a "Live site" card with Preview, Copy link and Browser. In the desktop app, Preview opens its own WebView2 window: arena.site pages refuse to load inside frames, so an in-page iframe cannot show them.
 
-### Also fixed
+### Smaller fixes
 
-- Shell builtins (`echo`, `dir`, `ver`) routed through `cmd.exe /c` after security checks
-- `.git` added to REST API `_SENSITIVE_DIRS` blocklist
+- Opening a chat no longer pulls Arena's copy of your injected memory, tool guide and tool results into it. Those used to show up as extra turns, so chats looked mixed together. Opening a chat no longer moves it to the top of the list.
+- Cold start shows "Connecting to arena.ai…" with your saved account, then loads history and models by itself. You no longer need to refresh.
+- Chat titles Arena copied from the injected guide ("[Arena Desktop] The user is…", "[System] You are Arena CLI…") are replaced by a summary of your first message.
+- The first-run setup checks your account against the Direct model list. Battle mode has no model list, so the old check was wrong.
+- Connectors: Arena connectors and local MCP servers are separate groups, and `mcp.json` sits next to the local group.
+- The message jump control stays inside the chat column and no longer duplicates "back to bottom".
+- Tests run against a temporary config folder (`ARENA_CONFIG_DIR`). They used to add fake accounts to the real `~/.arena-personal`.
+
+### Claude Code–style tool rows
+
+Agent tool calls render as compact terminal rows instead of boxed cards: `● Bash(npm install && npm run build)` with the result underneath (`⎿ added 214 packages…`). Green dot = done, red = failed (with the exit code), amber = waiting for your approval, blinking = running. Long output folds to 4 lines with "+N lines (click to expand)"; reads, listings and searches show a one-line summary ("Read 120 lines", "Found 8 matches"); edits show a coloured diff. Arena Agent's JSON tool input/output (`{"command": …}`, `{stdout, exitCode}`) is unwrapped into the same format. The header status reads `✻ Running command… 12s` / `✻ Thinking… 3s`, and the tool input and output are now saved in chat history, so reopened chats keep them.
+
+### Run npm / cmd commands on your computer
+
+In Agent mode with a local folder, `run_cmd` now supports full shell syntax through `cmd.exe` (or `/bin/sh`): `npm install && npm run build`, pipes, redirects and `%VAR%`. Output streams live into the tool row while the command runs, and Stop kills the whole process tree. Dev servers and watchers can run in the background (`<background>true</background>`): the agent gets the first output and the local URL, the process keeps running, and `stop_cmd` (or closing the app) ends it. Package managers and builds get a 180 s silence limit instead of 30 s.
+
+Safety: a command that uses shell syntax or inline code (`-c`, `-e`, `--eval`) is never auto-approved. You confirm each one, even after "Allow such actions in this session" and in every permission mode. Catastrophic commands stay blocked.
+
+### Usage bar
+
+Live usage indicator above the composer shows how much of your daily arena.ai limit is used. Piggybacks on ratelimit headers — zero extra API calls. Three color states: blue (normal), amber (70%+), red (90%+). Reset countdown shows when limits refresh.
+
+### Typewriter loading phrases
+
+The typewriter animation ("asking Terry", "beam searching", etc.) now reliably shows during the loading window before text arrives, with a minimum 1.8s display window to prevent flicker. The animation used to stop before typing a single letter (it checked that it was on the page before it had been attached); it now survives the chat re-rendering on every stream event.
+
+### Modular JS codebase
+
+`app.js` split from one 11,316-line file into 14 source modules in `js/`, each under 1,500 lines. Concatenated into `app.js` by `python scripts/build-js.py`. Same IIFE, zero runtime change.
+
+### Previous: v1.4.0
+
+<details>
+<summary>What was new in v1.4.0</summary>
+
+- Shell builtins (`echo`, `dir`, `ver`) now work in the terminal
+- 8 security findings patched from a full code audit
+- 46 feature tests + 22 security verification tests all pass
+- **CRITICAL:** Settings import filtered — crafted settings files can no longer inject `permission_mode` or `gateway_auto`
+- **HIGH:** Upload and workspace panel block sensitive dirs (`.git/`, `.ssh/`, `.env/`)
+- **MEDIUM:** SSRF hardened, terminal scoped to workspace, agent symlink check added
+- **LOW:** Error messages sanitized
+
+</details>
 
 ### Previous: v1.3.0
 
@@ -147,7 +182,9 @@ If Windows SmartScreen warns: click **More info → Run anyway** (the EXE is not
 | --- | --- |
 | `arena/desktop.py` | Native window shell (pywebview + WebView2) |
 | `arena/web/app.py` | Flask API, SSE streaming, chat orchestration, accounts |
-| `arena/web/static/` | The whole UI (HTML/CSS/JS, no build step) |
+| `arena/web/static/` | The whole UI (HTML/CSS/JS) |
+| `arena/web/static/js/` | JS source modules (14 files, each <1500 lines) |
+| `scripts/build-js.py` | Concatenates js/ parts into app.js |
 | `arena/engine.py` | Hidden arena.ai window for signed-in requests |
 | `arena/native_agent.py` | Native Arena Agent protocol |
 | `arena/agent.py` | Local tool loop: parsing, execution, permissions |

@@ -13,7 +13,11 @@ from typing import Dict, Any, Optional
 def _config_dir() -> Path:
     """Portable mode: a portable.txt next to the EXE (or the repo root when
     running from source) keeps all data in ./data beside it; otherwise the
-    per-user folder is used, as always."""
+    per-user folder is used, as always. ARENA_CONFIG_DIR overrides both
+    (the test suite uses it so it never touches real accounts or chats)."""
+    override = os.environ.get("ARENA_CONFIG_DIR", "").strip()
+    if override:
+        return Path(override)
     roots = []
     if getattr(sys, "frozen", False):
         roots.append(Path(sys.executable).resolve().parent)

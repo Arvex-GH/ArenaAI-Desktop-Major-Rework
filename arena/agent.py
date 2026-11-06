@@ -55,6 +55,9 @@ FULL FILE CONTENT
 <tool name="mkdir"><path>assets/img</path></tool>
 <tool name="delete"><path>old_notes.txt</path></tool>
 <tool name="run_cmd"><cmd>python -m pytest -q</cmd></tool>
+<tool name="run_cmd"><cmd>npm install && npm run build</cmd></tool> (commands run on this computer in the folder: {shell_name}; &&, | and > work but each such command needs the user's OK)
+<tool name="run_cmd"><cmd>npm run dev</cmd><background>true</background></tool> (servers and watchers: starts it, returns its first output and URL, keeps it running)
+<tool name="stop_cmd"><id>bg1</id></tool> (stop a background command)
 <tool name="ask_user"><question>Which database should I use?</question><option1>SQLite</option1><option2>PostgreSQL</option2></tool>
 <tool name="propose_plan"><plan>1. Inspect the project layout
 2. Refactor the parser
@@ -120,6 +123,7 @@ def guide(root, mode_label: str, mode_note: str, dual: bool = False, extra_tools
           delegate: str = "") -> str:
     """The tool guide that goes in front of the first message of a conversation."""
     return GUIDE.format(root=root, mode_label=mode_label, mode_note=mode_note,
+                        shell_name="Windows cmd.exe" if os_name_is_windows() else "/bin/sh",
                         lane_note=LANE_NOTE if dual else "", extra_tools=extra_tools or "",
                         delegate=delegate or "")
 
@@ -293,7 +297,13 @@ def _offload(output: str, call, artifact_dir, artifact_rel: str) -> str:
 
 
 SHELL_IDLE_LIMIT = 30     # seconds without output -> kill (waiting on input, pager, hang)
+SHELL_IDLE_LIMIT_LONG = 180  # package managers and builds can stay silent for minutes
 SHELL_TOTAL_LIMIT = 600   # hard cap for a single command
+BACKGROUND_WARMUP = 8     # seconds of output a background command reports before returning
+_LONG_RUNNERS = re.compile(
+    r"(^|[\s&|;(])(npm|npx|pnpm|yarn|bun|pip|pip3|uv|poetry|cargo|go|dotnet|mvn|gradle|"
+    r"gradlew|composer|bundle|docker|flutter|tsc|vite|next|webpack)(\.cmd|\.exe)?(\s|$)", re.I)
+_URL_RE = re.compile(r"https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?[^\s\"'<>]*", re.I)
 
 _INTERACTIVE_FIRST = {
     "vim", "vi", "nvim", "nano", "emacs", "less", "more", "most", "top",
@@ -302,6 +312,17 @@ _INTERACTIVE_FIRST = {
 }
 _BARE_SHELLS = {"cmd", "powershell", "pwsh", "bash", "sh", "zsh", "fish"}
 _BARE_INTERPRETERS = {"python", "python3", "py", "node", "irb", "ruby", "php", "lua", "perl"}
+_DANGEROUS_FLAGS = re.compile(r"^-[cer]$|^--eval$|^--exec$|^-enc$|^-encodedcommand$|^/c$", re.I)
+_DANGEROUS_CMDS = frozenset({"mshta", "wscript", "cscript", "rundll32"})
+_SAFE_BUILTINS = frozenset({"echo", "dir", "type", "ver", "cls", "set", "cd", "date", "time"})
+
+
+def _program_name(token: str) -> str:
+    name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    for suffix in (".exe", ".cmd", ".bat"):
+        if name.endswith(suffix):
+            return name[:-len(suffix)]
+    return name
 
 
 def _interactive_refusal(cmd: str) -> str:
@@ -310,9 +331,7 @@ def _interactive_refusal(cmd: str) -> str:
     tokens = [t for t in tokens if t and "=" not in t.split("/")[-1].split("\\")[-1]]
     if not tokens:
         return ""
-    first = tokens[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if first.endswith(".exe"):
-        first = first[:-4]
+    first = _program_name(tokens[0])
     rest = [t.lower() for t in tokens[1:]]
     why = ""
     if first in _INTERACTIVE_FIRST:
@@ -327,53 +346,248 @@ def _interactive_refusal(cmd: str) -> str:
         return ""
     return (f"Error: not run: {why}. run_cmd is non-interactive (stdin is closed, and a "
             "command with no output for 30 seconds is killed). Use a one-shot form instead, "
-            "e.g. a script file, 'python script.py', 'git log -5', or redirect input from a file.")
+            "e.g. a script file, 'python script.py', 'git log -5', or redirect input from a file. "
+            "For a dev server or watcher add <background>true</background>.")
 
 
-def run_shell_command(cmd: str, cwd) -> str:
+def _shell_env() -> Dict[str, str]:
+    """Environment for agent commands: no colours, pagers or prompts."""
+    import os as _os
+    env = dict(_os.environ)
+    env.update({
+        "NO_COLOR": "1", "FORCE_COLOR": "0", "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
+        "GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat", "PAGER": "cat",
+        "npm_config_yes": "true", "npm_config_fund": "false", "npm_config_audit": "false",
+        "npm_config_update_notifier": "false",
+    })
+    return env
+
+
+def _prepare(cmd: str):
+    """Validate one command; return (popen_args, use_shell) or an error string.
+
+    Plain commands run without a shell (argv list). Commands that use shell
+    syntax (&&, |, >, $VAR ...) run through the system shell - cmd.exe on
+    Windows, /bin/sh elsewhere. The permission layer never auto-approves
+    those (permissions.needs_explicit_approval), so the user confirmed each
+    one before it gets here.
+    """
+    from arena import permissions as _perm
+    import shlex
+    if _perm.CATASTROPHIC.search(cmd):
+        return "Error: this command is never allowed."
+    if _perm.needs_shell(cmd):
+        return cmd, True
+    try:
+        argv = shlex.split(cmd)
+    except ValueError as e:
+        return f"Error: could not parse the command: {e}"
+    if not argv:
+        return "Error: cmd is empty"
+    if _program_name(argv[0]) in _DANGEROUS_CMDS:
+        return f"Error: {argv[0]} is blocked for safety."
+    if any(_DANGEROUS_FLAGS.match(a) for a in argv[1:]):
+        return ("Error: inline code execution flags (-c, -e, -r, --eval, -enc, /c) are blocked for safety; "
+                "write a script file and run it instead.")
+    if argv[0].lower() in _SAFE_BUILTINS and not shutil.which(argv[0]):
+        return ["cmd.exe", "/d", "/c"] + argv, False
+    resolved = shutil.which(argv[0])
+    if resolved:
+        argv[0] = resolved
+    return argv, False
+
+
+def _kill_tree(proc) -> None:
+    try:
+        if os_name_is_windows():
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=10)
+        else:
+            proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _spawn(args, use_shell: bool, cwd, stdout, stderr):
+    kwargs = {}
+    if os_name_is_windows():
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return subprocess.Popen(args, shell=use_shell, cwd=str(cwd), stdin=subprocess.DEVNULL,
+                            stdout=stdout, stderr=stderr, env=_shell_env(), **kwargs)
+
+
+def _decode(data: bytes) -> str:
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        import locale
+        return data.decode(locale.getpreferredencoding(False) or "utf-8", "replace")
+
+
+class _Background:
+    """Commands the agent left running (dev servers, watchers)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._procs: Dict[str, dict] = {}
+        self._n = 0
+
+    def start(self, cmd: str, cwd) -> str:
+        prepared = _prepare(cmd)
+        if isinstance(prepared, str):
+            return prepared
+        args, use_shell = prepared
+        cwd = Path(cwd)
+        log_dir = cwd / ARTIFACTS_DIR
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            self._n += 1
+            bid = f"bg{self._n}"
+        log_path = log_dir / f"{bid}.log"
+        log = open(log_path, "wb")
+        try:
+            proc = _spawn(args, use_shell, cwd, log, subprocess.STDOUT)
+        except OSError as e:
+            log.close()
+            return f"Error: could not start: {e}"
+        with self._lock:
+            self._procs[bid] = {"proc": proc, "cmd": cmd, "log": log_path, "fh": log,
+                                "started": time.time()}
+        deadline = time.time() + BACKGROUND_WARMUP
+        while time.time() < deadline and proc.poll() is None:
+            time.sleep(0.25)
+            if _URL_RE.search(self._tail(log_path)):
+                time.sleep(0.5)
+                break
+        text = self._tail(log_path)
+        rel = f"{ARTIFACTS_DIR}/{bid}.log"
+        if proc.poll() is not None:
+            self._forget(bid)
+            return (f"exit code {proc.returncode} (the background command already finished)\n"
+                    + (text[-OUTPUT_LIMIT:] or "(no output)"))
+        urls = sorted(set(_URL_RE.findall(text)))
+        head = [f"Started in the background: id {bid}, pid {proc.pid}. It keeps running after this reply.",
+                f"Full log: {rel} (read_file it to check progress). Stop it with "
+                f'<tool name="stop_cmd"><id>{bid}</id></tool>.']
+        if urls:
+            head.append("Serving at: " + ", ".join(urls[:3]))
+        return "\n".join(head) + ("\nOutput so far:\n" + text[-2000:] if text else "\n(no output yet)")
+
+    @staticmethod
+    def _tail(path: Path, size: int = 8000) -> str:
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(0, 2)
+                end = fh.tell()
+                fh.seek(max(0, end - size))
+                return _ANSI_RE.sub("", _decode(fh.read())).strip()
+        except OSError:
+            return ""
+
+    def _forget(self, bid: str):
+        with self._lock:
+            item = self._procs.pop(bid, None)
+        if item:
+            try:
+                item["fh"].close()
+            except Exception:
+                pass
+        return item
+
+    def stop(self, bid: str) -> str:
+        bid = (bid or "").strip()
+        with self._lock:
+            item = self._procs.get(bid)
+        if not item:
+            running = ", ".join(self.ids()) or "none"
+            return f"No background command with id '{bid}'. Running: {running}."
+        _kill_tree(item["proc"])
+        try:
+            item["proc"].wait(timeout=10)
+        except Exception:
+            pass
+        self._forget(bid)
+        return f"Stopped {bid} ({item['cmd']})."
+
+    def ids(self) -> List[str]:
+        with self._lock:
+            done = [b for b, it in self._procs.items() if it["proc"].poll() is not None]
+        for b in done:
+            self._forget(b)
+        with self._lock:
+            return list(self._procs)
+
+    def list(self) -> List[dict]:
+        self.ids()
+        with self._lock:
+            return [{"id": b, "cmd": it["cmd"], "pid": it["proc"].pid,
+                     "log": str(it["log"]), "started": it["started"]} for b, it in self._procs.items()]
+
+    def stop_all(self) -> int:
+        ids = self.ids()
+        for b in ids:
+            self.stop(b)
+        return len(ids)
+
+
+BACKGROUND = _Background()
+try:
+    import atexit as _atexit
+    _atexit.register(BACKGROUND.stop_all)
+except Exception:
+    pass
+
+
+def run_shell_command(cmd: str, cwd, on_output=None, should_stop=None, background: bool = False) -> str:
     """Run one shell command with an idle watchdog; returns formatted output.
 
-    Output streams through pump threads purely so silence can be detected:
-    a command that produces nothing for SHELL_IDLE_LIMIT seconds is killed
-    (it is almost certainly waiting for input or hung), which previously
-    blocked the whole agent loop until the user pressed Stop.
+    Output streams through pump threads so silence can be detected: a
+    command that produces nothing for the idle limit is killed (it is almost
+    certainly waiting for input or hung), which previously blocked the whole
+    agent loop until the user pressed Stop. ``on_output`` receives each new
+    chunk of text as it arrives (live display); ``should_stop`` is polled
+    and kills the command when it returns True. ``background`` starts the
+    command, reports its first seconds of output and leaves it running.
     """
     cmd = (cmd or "").strip()
     if not cmd:
         raise ValueError("cmd is empty")
+    if background:
+        return BACKGROUND.start(cmd, cwd)
     refusal = _interactive_refusal(cmd)
     if refusal:
         return refusal
-    import shlex, shutil
-    _DANGEROUS_FLAGS = re.compile(r"^-[cer]$|^--eval$|^--exec$|^-enc$|^-encodedcommand$|^/c$", re.I)
-    _DANGEROUS_CMDS = frozenset({"mshta", "wscript", "cscript", "rundll32"})
-    argv = shlex.split(cmd)
-    if argv[0].lower().rstrip(".exe") in _DANGEROUS_CMDS:
-        return f"Error: {argv[0]} is blocked for safety."
-    if any(_DANGEROUS_FLAGS.match(a) for a in argv[1:]):
-        return "Error: inline code execution flags (-c, -e, -r, --eval, -enc, /c) are blocked for safety."
-    _SAFE_BUILTINS = frozenset({"echo", "dir", "type", "ver", "cls", "set", "cd", "date", "time"})
-    if argv[0].lower() in _SAFE_BUILTINS and not shutil.which(argv[0]):
-        argv = ["cmd.exe", "/c"] + argv
-    else:
-        resolved = shutil.which(argv[0])
-        if resolved:
-            argv[0] = resolved
-    proc = subprocess.Popen(argv, shell=False, cwd=str(cwd), stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding="utf-8", errors="replace")
+    prepared = _prepare(cmd)
+    if isinstance(prepared, str):
+        return prepared
+    args, use_shell = prepared
+    idle_limit = SHELL_IDLE_LIMIT_LONG if _LONG_RUNNERS.search(cmd) else SHELL_IDLE_LIMIT
+    try:
+        proc = _spawn(args, use_shell, cwd, subprocess.PIPE, subprocess.PIPE)
+    except OSError as e:
+        return f"Error: could not start the command: {e}"
     out_chunks: List[str] = []
     err_chunks: List[str] = []
     state = {"last": time.time()}
 
     def pump(stream, sink):
         try:
+            reader = getattr(stream, "read1", stream.read)
             while True:
-                data = stream.read(1024)
+                data = reader(4096)
                 if not data:
                     break
-                sink.append(data)
+                text = _decode(data)
+                sink.append(text)
                 state["last"] = time.time()
+                if on_output is not None:
+                    try:
+                        on_output(_ANSI_RE.sub("", text))
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -385,33 +599,27 @@ def run_shell_command(cmd: str, cwd) -> str:
     killed = ""
     while proc.poll() is None:
         now = time.time()
-        if now - state["last"] > SHELL_IDLE_LIMIT:
-            killed = f"killed after {SHELL_IDLE_LIMIT}s without output (waiting for input or hung)"
+        if should_stop is not None and should_stop():
+            killed = "stopped by the user"
+            break
+        if now - state["last"] > idle_limit:
+            killed = f"killed after {idle_limit}s without output (waiting for input or hung)"
             break
         if now - started > SHELL_TOTAL_LIMIT:
-            killed = f"killed after the {SHELL_TOTAL_LIMIT}s limit"
+            killed = (f"killed after the {SHELL_TOTAL_LIMIT}s limit (for a server or watcher "
+                      "add <background>true</background>)")
             break
         time.sleep(0.15)
     if killed:
-        try:
-            if os_name_is_windows():
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                               capture_output=True, timeout=10)
-            else:
-                proc.kill()
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+        _kill_tree(proc)
     try:
         proc.wait(timeout=10)
     except Exception:
         pass
     for t in threads:
         t.join(timeout=2)
-    stdout = "".join(out_chunks).strip()
-    stderr = "".join(err_chunks).strip()
+    stdout = _ANSI_RE.sub("", "".join(out_chunks)).replace("\r\n", "\n").strip()
+    stderr = _ANSI_RE.sub("", "".join(err_chunks)).replace("\r\n", "\n").strip()
     if killed:
         merged = (stdout + ("\n" if stdout and stderr else "") + stderr)[-OUTPUT_LIMIT:]
         return (f"{killed}\n{merged}").strip() or killed
@@ -425,6 +633,36 @@ def run_shell_command(cmd: str, cwd) -> str:
     elif not stdout and not stderr:
         parts.append("(command finished with no output)")
     return "\n".join(parts)
+
+
+_COMPONENT_OF = {"node": "node", "npm": "node", "npx": "node", "pnpm": "node", "yarn": "node",
+                 "python": "python", "python3": "python", "py": "python", "pip": "python", "pip3": "python"}
+_NOT_FOUND = re.compile(r"is not recognized as an internal or external command|command not found|"
+                        r"could not start the command|No such file or directory|cannot find the file", re.I)
+
+
+def missing_component(cmd: str, output: str):
+    """The app component (node/python) a failed command was missing, if any."""
+    if not _NOT_FOUND.search(output or ""):
+        return None
+    for token in re.split(r"[\s&|;()]+", cmd or ""):
+        comp = _COMPONENT_OF.get(_program_name(token)) if token else None
+        if comp and not shutil.which(token):
+            return comp
+    return None
+
+
+def _truthy(value) -> bool:
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _command_failed(output: str) -> bool:
+    """A run_cmd result that the UI should mark as failed."""
+    head = (output or "").lstrip()[:200]
+    if head.startswith(("Error:", "killed after", "stopped by the user")):
+        return True
+    m = re.match(r"exit code (-?\d+)", head)
+    return bool(m and m.group(1) != "0")
 
 
 def os_name_is_windows() -> bool:
@@ -529,8 +767,14 @@ class LocalTools:
         name, prm = call["name"], call["params"]
         if name == "run_cmd":
             cmd = (prm.get("cmd") or "").strip()
+            background = _truthy(prm.get("background"))
             return {"tool": name, "path": str(self.out or self.root), "rel": ".", "inside": True, "command": cmd,
-                    "summary": f"Run: {cmd}"}
+                    "background": background,
+                    "summary": f"{'Start in background' if background else 'Run'}: {cmd}"}
+        if name == "stop_cmd":
+            bid = (prm.get("id") or "").strip()
+            return {"tool": name, "path": str(self.out or self.root), "rel": ".", "inside": True,
+                    "command": bid, "summary": f"Stop background command {bid}"}
         target, inside = self.resolve(prm.get("path", "."), write=name in _WRITES)
         src, _ = self.resolve(prm.get("path", "."))
         rel = self._rel(target)
@@ -560,12 +804,15 @@ class LocalTools:
             pass
         return info
 
-    def run(self, call: Dict[str, Any]) -> Tuple[bool, str]:
+    def run(self, call: Dict[str, Any], on_output=None, should_stop=None) -> Tuple[bool, str]:
         fn = getattr(self, "_t_" + call["name"], None)
         if fn is None:
             return False, (f"Unknown tool '{call['name']}'. Available: ls, read_file, search, write_file, "
-                           "edit_file, mkdir, delete, run_cmd.")
+                           "edit_file, mkdir, delete, run_cmd, stop_cmd.")
         try:
+            if call["name"] == "run_cmd":
+                out = fn(call["params"], on_output=on_output, should_stop=should_stop)
+                return not _command_failed(out), out
             return True, fn(call["params"])
         except Exception as e:
             return False, f"{type(e).__name__}: {e}"
@@ -690,7 +937,11 @@ class LocalTools:
             return f"Deleted {self._rel(target)}"
         raise FileNotFoundError(f"{self._rel(target)} does not exist")
 
-    def _t_run_cmd(self, prm) -> str:
+    def _t_run_cmd(self, prm, on_output=None, should_stop=None) -> str:
         cwd = self.out or self.root
         cwd.mkdir(parents=True, exist_ok=True)
-        return run_shell_command(prm.get("cmd") or "", cwd)
+        return run_shell_command(prm.get("cmd") or "", cwd, on_output=on_output,
+                                 should_stop=should_stop, background=_truthy(prm.get("background")))
+
+    def _t_stop_cmd(self, prm) -> str:
+        return BACKGROUND.stop(prm.get("id") or "")

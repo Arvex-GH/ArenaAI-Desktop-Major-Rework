@@ -82,9 +82,18 @@ def test_evaluation_rejects_agent_only_types(uploads):
     assert "PNG, JPEG, WebP and PDF" in resp.get_json()["error"]
 
 
-def test_agent_rejects_python_files(uploads):
-    client, _ = uploads
+def test_agent_sends_python_files_as_text(uploads):
+    # v1.5.0 upload middleman: code files Arena refuses go up as text/plain.
+    client, calls = uploads
     resp = _post(client, "script.py", b"print(1)", kind="agent")
+    assert resp.status_code == 200
+    out = resp.get_json()
+    assert out["mediaType"] == "text/plain" and out["filename"] == "script.py.txt"
+
+
+def test_agent_rejects_binary_files(uploads):
+    client, _ = uploads
+    resp = _post(client, "tool.exe", b"MZ\x00\x00binary", kind="agent")
     assert resp.status_code == 400
     assert "Agent Mode accepts" in resp.get_json()["error"]
 

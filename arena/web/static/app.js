@@ -1,6 +1,9 @@
 /* Arena Desktop — local interface controller
  * Unofficial client shell. No direct requests to arena.ai.
  * The only optional simulated data lives behind ?demo=1.
+ *
+ * AUTO-GENERATED — edit source files in js/ instead.
+ * Rebuild: python scripts/build-js.py
  */
 (() => {
   'use strict';
@@ -8,10 +11,12 @@
   if (window.__arenaDesktopApp) return;
   window.__arenaDesktopApp = true;
 
+  // ═══ 01-core.js ═══
   const DEMO = new URLSearchParams(window.location.search).get('demo') === '1';
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
   /* ---------------------------------------------------------------------- */
@@ -139,8 +144,21 @@
       return phrase;
     };
 
+    // The element is created before it is attached, and chat re-renders move
+    // it between containers, so a short detach must not end the animation.
+    // Only a long absence (the lane finished, chat switched) stops it.
+    let detachedSince = 0;
+    const attached = async () => {
+      while (alive && !wrap.isConnected) {
+        if (!detachedSince) detachedSince = Date.now();
+        if (Date.now() - detachedSince > 3000) { alive = false; wrap._dead = true; return false; }
+        await new Promise(r => setTimeout(r, 60));
+      }
+      detachedSince = 0;
+      return alive;
+    };
     const run = async () => {
-      while (alive && wrap.isConnected) {
+      while (alive && await attached()) {
         const phrase = pick();
         for (let i = 0; i <= phrase.length && alive; i++) {
           text.textContent = phrase.slice(0, i);
@@ -156,7 +174,7 @@
     };
 
     run();
-    wrap._destroy = () => { alive = false; };
+    wrap._destroy = () => { alive = false; wrap._dead = true; };
     return wrap;
   }
 
@@ -476,6 +494,7 @@
     window.setTimeout(() => URL.revokeObjectURL(url), 2500);
   }
 
+  // ═══ 02-api.js ═══
   /* ---------------------------------------------------------------------- */
   /* API layer: relative URLs only, no token, no arena.ai requests.         */
   /* ---------------------------------------------------------------------- */
@@ -510,6 +529,31 @@
   }
 
   let _apiToken = document.querySelector('meta[name="api-token"]')?.content || '';
+  const _previewToken = document.querySelector('meta[name="preview-token"]')?.content || '';
+
+  // Workspace file preview URL. The read-only key is part of the path, so the
+  // page's relative CSS/JS/images load too, in the app, an iframe or a browser.
+  function previewLink(path, { absolute = false } = {}) {
+    const rel = String(path || '').replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/');
+    const url = _previewToken
+      ? `/preview/${encodeURIComponent(_previewToken)}/${rel}`
+      : `/api/workspace/preview/${rel}?token=${encodeURIComponent(_apiToken)}`;
+    return absolute ? new URL(url, window.location.origin).href : url;
+  }
+
+  // Open a site preview: its own WebView2 window in the desktop app (arena.site
+  // pages refuse to load inside frames), a new browser tab otherwise.
+  function openPreview(url, title = 'Preview') {
+    const href = new URL(String(url || ''), window.location.origin).href;
+    const api = window.pywebview?.api;
+    if (api?.open_preview) {
+      Promise.resolve(api.open_preview(href, title)).then((ok) => {
+        if (!ok) window.open(href, '_blank', 'noopener');
+      }).catch(() => window.open(href, '_blank', 'noopener'));
+      return;
+    }
+    window.open(href, '_blank', 'noopener');
+  }
 
   const liveApi = {
     async request(path, { method = 'GET', body, signal } = {}) {
@@ -767,6 +811,7 @@
   }
 
   /* ---------------------------------------------------------------------- */
+  // ═══ 03-demo.js ═══
   /* Demo backend (only with ?demo=1). Every event here is simulated locally. */
   /* ---------------------------------------------------------------------- */
   function demoArtwork(title, hue = 145, subline = 'Arena Desktop · demo') {
@@ -1058,6 +1103,7 @@
     return demoConnectorSummary(server);
   }
 
+  // ═══ 04-demo-api.js ═══
   const demoApi = {
     async getSettings() { await sleep(40); return { ...demoStore.settings }; },
     async saveSettings(body) { Object.assign(demoStore.settings, body || {}); await sleep(40); return { ok: true }; },
@@ -1703,6 +1749,22 @@ You can start with a more structured option: one script, short captions, and a c
           await sleep(480);
           if (checkStop()) { stoppedNotice(); return; }
           emit({ type: 'tool_result', id: 'demo-tool-1', status: 'ok', output: "Demo: the contents of the file were not read or transmitted." });
+          emit({ type: 'tool_call', id: 'demo-tool-2', tool: 'run_cmd', model: 'a', command: 'npm install && npm run build', status: 'running' });
+          const demoLines = ['added 214 packages, and audited 215 packages in 3s', '', '> demo-site@1.0.0 build', '> vite build',
+            'vite v5.4.0 building for production...', 'transforming (12) src/main.js', '✓ 34 modules transformed.',
+            'dist/index.html                 0.46 kB', 'dist/assets/index-4f2a.css     2.10 kB', 'dist/assets/index-9c1b.js     48.31 kB',
+            '✓ built in 612ms'];
+          for (let i = 1; i <= demoLines.length; i += 3) {
+            await sleep(260);
+            if (checkStop()) { stoppedNotice(); return; }
+            emit({ type: 'tool_progress', id: 'demo-tool-2', output: demoLines.slice(0, i).join('\n') });
+          }
+          emit({ type: 'tool_result', id: 'demo-tool-2', status: 'ok', output: `exit code 0\n${demoLines.join('\n')}` });
+          emit({ type: 'tool_call', id: 'demo-tool-3', tool: 'edit_file', model: 'a', rel: 'src/main.js', status: 'running',
+            diff: "--- src/main.js\n+++ src/main.js\n@@ -1,3 +1,3 @@\n-const title = 'Hello';\n+const title = 'Engineering portfolio';\n render(title);" });
+          emit({ type: 'tool_result', id: 'demo-tool-3', status: 'ok', output: 'Edited src/main.js' });
+          emit({ type: 'tool_call', id: 'demo-tool-4', tool: 'run_cmd', model: 'a', command: 'npm test', status: 'running' });
+          emit({ type: 'tool_result', id: 'demo-tool-4', status: 'error', output: 'exit code 1\nFAIL src/main.test.js\n  expected "Hello" to be "Engineering portfolio"\n[Process exited with code 1]' });
           const permission = {
             id: `demo-permission-${Date.now()}`,
             kind: 'command',
@@ -1813,6 +1875,11 @@ You can start with a more structured option: one script, short captions, and a c
     agentKind: (() => { try { return window.localStorage.getItem('ap-agent-kind') === 'local' ? 'local' : 'native'; } catch { return 'native'; } })(),
     directTools: (() => { try { return window.localStorage.getItem('ap-direct-tools') !== '0'; } catch { return true; } })(),
     rateLimitUntil: 0,
+    usageRemaining: null,
+    usageReset: null,
+    usageModality: null,
+    usageSendsToday: 0,
+    usageRateLimitsToday: 0,
     historyChars: 0,
     memoryData: null,
     updateInfo: null,
@@ -1954,6 +2021,7 @@ You can start with a more structured option: one script, short captions, and a c
   }
 
   /* ---------------------------------------------------------------------- */
+  // ═══ 05-state.js ═══
   /* State normalizers and common UI state                                 */
   /* ---------------------------------------------------------------------- */
   function validMode(value) { return VALID_MODES.includes(value) ? value : null; }
@@ -2559,6 +2627,7 @@ You can start with a more structured option: one script, short captions, and a c
       command,
       path,
       detail,
+      output: String(raw.output ?? ''),
       status: String(raw.status ?? 'running'),
       url: safeUrl(raw.url ?? ''),
       raw
@@ -2617,6 +2686,7 @@ You can start with a more structured option: one script, short captions, and a c
 
   /* ---------------------------------------------------------------------- */
   /* API-driven loading                                                    */
+  // ═══ 06-data.js ═══
   /* ---------------------------------------------------------------------- */
   function setServerError(error) {
     state.serverError = errorMessage(error);
@@ -3189,7 +3259,9 @@ You can start with a more structured option: one script, short captions, and a c
     listNode.appendChild(chatGroupTitle('cloud', "Only on arena.ai"));
     if (!state.authenticated) {
       listNode.appendChild(el('div', { class: 'chat-group-note', text: "Log in to Arena to see the account chats from the website. Local dialogues above are available without logging in." }));
-    } else if (state.cloudChatsLoading) {
+    } else if (state.cloudChatsLoading || /still loading|waiting for a check/i.test(String(state.cloudChatsError || ''))) {
+      // The arena.ai session is still starting: a loading line, not an error.
+      // watchEngineUntilReady() reloads the list the moment it is ready.
       listNode.appendChild(el('div', { class: 'chat-group-note' },
         el('span', { class: 'mini-spinner', 'aria-hidden': 'true' }),
         el('span', { text: " Loading arena.ai history…" })));
@@ -3260,6 +3332,7 @@ You can start with a more structured option: one script, short captions, and a c
 
   /* ---------------------------------------------------------------------- */
   /* Chat rendering                                                        */
+  // ═══ 07-render.js ═══
   /* ---------------------------------------------------------------------- */
   function currentViewTitle() {
     if (state.view === 'chat') return state.activeChatTitle || "Conversation";
@@ -3301,7 +3374,7 @@ You can start with a more structured option: one script, short captions, and a c
     const meta = modeMeta(state.mode);
     const modality = modalityMeta(state.modality);
     els.chatTitle.textContent = state.activeChatTitle || "Conversation";
-    if (els.chatEyebrow) els.chatEyebrow.textContent = `Active dialogue · ${meta.label}`;
+    if (els.chatEyebrow) els.chatEyebrow.textContent = meta.label;
     clear(els.chatMeta);
     els.chatMeta.append(
       el('span', { class: 'meta-chip' }, iconEl('git-branch'), el('span', { text: meta.label })),
@@ -3475,24 +3548,42 @@ You can start with a more structured option: one script, short captions, and a c
   function maybePlayDoneSound(generation, { wasStopped = false } = {}) {
     if (!generation?.done || wasStopped || generation.hadError) return;
     if (state.appSettings?.notify_sound === false) return;
-    if (document.hasFocus() && !document.hidden) return; // only when the user is away
+    if (!doneAudio) primeDoneAudio();
     if (!doneAudio) return;
+    playChime(doneAudio);
+  }
+
+  // Soft three-note bell (C6 - E6 - G6): a sine fundamental plus a quiet
+  // inharmonic partial gives a glassy, marimba-like tone instead of a beep.
+  function playChime(ctx) {
     try {
-      const ctx = doneAudio;
       if (ctx.state === 'suspended') void ctx.resume();
-      const t = ctx.currentTime;
-      [[880, 0], [1174.66, 0.12]].forEach(([freq, offset]) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.value = freq;
-        gain.gain.setValueAtTime(0.0001, t + offset);
-        gain.gain.exponentialRampToValueAtTime(0.08, t + offset + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, t + offset + 0.22);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(t + offset);
-        osc.stop(t + offset + 0.25);
+      const volume = Math.min(1, Math.max(0, Number(state.appSettings?.notify_volume ?? 0.6)));
+      if (!volume) return;
+      const t = ctx.currentTime + 0.02;
+      const master = ctx.createGain();
+      master.gain.value = 0.42 * volume;
+      const tone = ctx.createBiquadFilter();
+      tone.type = 'lowpass';
+      tone.frequency.value = 5200;
+      master.connect(tone);
+      tone.connect(ctx.destination);
+      [[1046.5, 0], [1318.5, 0.09], [1568.0, 0.18]].forEach(([freq, offset], i) => {
+        [[1, 1, 'sine'], [2.76, 0.18, 'sine'], [1, 0.22, 'triangle']].forEach(([ratio, level, type]) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = type;
+          osc.frequency.value = freq * ratio;
+          const start = t + offset;
+          const tail = i === 2 ? 1.1 : 0.55;
+          gain.gain.setValueAtTime(0.0001, start);
+          gain.gain.exponentialRampToValueAtTime(level, start + 0.012);
+          gain.gain.exponentialRampToValueAtTime(0.0001, start + tail * (ratio > 1 ? 0.45 : 1));
+          osc.connect(gain);
+          gain.connect(master);
+          osc.start(start);
+          osc.stop(start + tail + 0.05);
+        });
       });
     } catch { /* audio unavailable */ }
   }
@@ -3681,7 +3772,8 @@ You can start with a more structured option: one script, short captions, and a c
   function activityStatus(status) {
     const value = String(status || '').toLowerCase();
     if (['ok', 'done', 'success', 'complete', 'completed', 'ready', 'idle'].includes(value)) return { label: "Done", cls: 'is-ok' };
-    if (['error', 'failed', 'denied', 'cancelled'].includes(value)) return { label: "Error", cls: 'is-err' };
+    if (['error', 'failed', 'denied', 'cancelled'].includes(value)
+      || /^(denied|blocked|cancel|error|fail|stopped)/.test(value)) return { label: "Error", cls: 'is-err' };
     if (['pending', 'waiting', 'permission'].includes(value)) return { label: "Waiting", cls: 'is-wait' };
     return { label: status || "In progress", cls: '' };
   }
@@ -3737,7 +3829,6 @@ You can start with a more structured option: one script, short captions, and a c
     const ext = fileName.split('.').pop().toLowerCase();
     const isHtml = ['html', 'htm'].includes(ext);
     if (!isHtml) return null;
-    const previewUrl = `/api/workspace/preview/${encodeURIComponent(filePath).replace(/%2F/g, '/')}`;
     const card = el('div', { class: 'file-preview-card' });
     const head = el('div', { class: 'file-preview-head' },
       iconEl('layout'),
@@ -3749,7 +3840,7 @@ You can start with a more structured option: one script, short captions, and a c
     iframe.className = 'file-preview-frame';
     iframe.sandbox = 'allow-scripts allow-modals allow-popups';
     iframe.loading = 'lazy';
-    iframe.src = previewUrl + '?t=' + Date.now();
+    iframe.src = previewLink(filePath) + '?t=' + Date.now();
     iframe.title = `Preview of ${fileName}`;
     card.appendChild(iframe);
     _livePreviewFrames.set(filePath, iframe);
@@ -3757,8 +3848,8 @@ You can start with a more structured option: one script, short captions, and a c
     const refreshBtn = el('button', { type: 'button' }, iconEl('refresh'), el('span', { text: 'Refresh' }));
     refreshBtn.addEventListener('click', () => { refreshFilePreview(filePath); });
     actions.appendChild(refreshBtn);
-    const openBtn = el('a', { href: previewUrl, target: '_blank', rel: 'noopener noreferrer' },
-      iconEl('external'), el('span', { text: 'Open in new tab' }));
+    const openBtn = el('button', { type: 'button' }, iconEl('external'), el('span', { text: 'Open preview' }));
+    openBtn.addEventListener('click', () => openPreview(previewLink(filePath, { absolute: true }), fileName));
     actions.appendChild(openBtn);
     card.appendChild(actions);
     return card;
@@ -3767,16 +3858,299 @@ You can start with a more structured option: one script, short captions, and a c
   function refreshFilePreview(filePath) {
     const iframe = _livePreviewFrames.get(filePath);
     if (!iframe) return;
-    const previewUrl = `/api/workspace/preview/${encodeURIComponent(filePath).replace(/%2F/g, '/')}`;
-    iframe.src = previewUrl + '?t=' + Date.now();
+    iframe.src = previewLink(filePath) + '?t=' + Date.now();
   }
 
   function refreshAllHtmlPreviews() {
     for (const [path] of _livePreviewFrames) refreshFilePreview(path);
   }
 
+  /* ---------------------------------------------------------------------- */
+  /* Tool calls, Claude Code style:  ● Bash(npm install)                     */
+  /*                                   ⎿  added 120 packages                 */
+  /* ---------------------------------------------------------------------- */
+
+  const TOOL_LABELS = {
+    run_cmd: 'Bash', bash: 'Bash', shell: 'Bash', execute_command: 'Bash', terminal: 'Bash', run_command: 'Bash',
+    read_file: 'Read', read_files: 'Read', read: 'Read', view: 'Read', cat: 'Read',
+    write_file: 'Write', write: 'Write', create_file: 'Write', write_project: 'Write',
+    edit_file: 'Update', edit: 'Update', str_replace: 'Update', str_replace_editor: 'Update', multi_edit: 'Update',
+    ls: 'List', list_files: 'List', list_dir: 'List', list_directory: 'List',
+    search: 'Search', grep: 'Search', glob: 'Search', find: 'Search',
+    mkdir: 'Create folder', delete: 'Delete', stop_cmd: 'Stop',
+    web_search: 'Web search', search_web: 'Web search', web_fetch: 'Fetch', fetch: 'Fetch', fetch_url: 'Fetch',
+    generate_image: 'Generate image', edit_image: 'Edit image', generate_video: 'Generate video',
+    ask_user: 'Question', propose_plan: 'Plan', set_todos: 'Update todos', todo_write: 'Update todos',
+    delegate_task: 'Task', delete_subagent: 'Delete sub-agent', add_voice: 'Choose voice'
+  };
+  const ARG_KEYS = ['command', 'cmd', 'file_path', 'path', 'filePath', 'pattern', 'query', 'url', 'prompt',
+    'question', 'task', 'description', 'id', 'name'];
+  const COLLAPSED_LINES = 4;
+  const expandedActivities = new Set();
+
+  function toolKey(activity) {
+    const raw = activity.raw || {};
+    return String(raw.tool || activity.name || '').toLowerCase().replace(/^arena__/, '').replace(/^tool-/, '');
+  }
+
+  function toolLabel(activity) {
+    const raw = activity.raw || {};
+    if (raw.child_id) return 'Task';
+    if (raw.mcp) return `${raw.server || 'MCP'} · ${raw.mcp_tool || raw.tool || 'tool'}`;
+    const key = toolKey(activity);
+    if (TOOL_LABELS[key]) return TOOL_LABELS[key];
+    const name = String(activity.name || raw.tool || 'Tool');
+    return name.length > 1 ? name.charAt(0).toUpperCase() + name.slice(1).replace(/_/g, ' ') : name;
+  }
+
+  function parseJsonObject(text) {
+    const value = String(text || '').trim();
+    if (!value.startsWith('{')) return null;
+    try {
+      const obj = JSON.parse(value);
+      return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function pickArg(obj) {
+    for (const key of ARG_KEYS) {
+      const value = obj[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+      if (Array.isArray(value) && value.length && typeof value[0] === 'string') return value.join(', ');
+    }
+    if (Array.isArray(obj.questions) && obj.questions[0]) {
+      const q = obj.questions[0];
+      return String(typeof q === 'string' ? q : (q.question || q.text || ''));
+    }
+    const compact = JSON.stringify(obj);
+    return compact === '{}' ? '' : compact;
+  }
+
+  function toolArg(activity) {
+    const raw = activity.raw || {};
+    if (raw.child_id) return raw.model_name || '';
+    const key = toolKey(activity);
+    if (activity.command && key !== 'stop_cmd') return activity.command;
+    const input = raw.input && typeof raw.input === 'object' ? JSON.stringify(raw.input) : String(raw.input || '');
+    const source = input || String(activity.path || raw.path || '');
+    const obj = parseJsonObject(source);
+    if (obj) return pickArg(obj);
+    if (key === 'stop_cmd') return activity.command || '';
+    // Local tools send an absolute path plus a folder-relative one: show the short one.
+    if (raw.rel && raw.rel !== '.' && !raw.mcp) return raw.rel;
+    if (['ask_user', 'propose_plan', 'set_todos'].includes(key)) return '';
+    return source || (raw.rel === '.' ? '.' : '');
+  }
+
+  function toolOutput(activity) {
+    const raw = activity.raw || {};
+    let out = String(activity.output || '');
+    if (!out) {
+      const detail = String(activity.detail || '');
+      const summary = String(raw.summary || '');
+      if (detail && detail !== activity.path && detail !== activity.command && detail !== summary
+        && detail !== String(raw.path || '') && !parseJsonObject(detail)) out = detail;
+    }
+    return out.replace(/\r\n/g, '\n').replace(/\s+$/, '');
+  }
+
+  function lineCount(text) {
+    return text ? text.split('\n').length : 0;
+  }
+
+  function plural(n, word) {
+    return `${n.toLocaleString('en-US')} ${word}${n === 1 ? '' : 's'}`;
+  }
+
+  // Turns raw tool output into what the row shows: an optional one-line
+  // summary (Claude Code's "Read 120 lines") and the body text.
+  function describeOutput(activity, out) {
+    const key = toolKey(activity);
+    const label = toolLabel(activity);
+    if (!out) return { summary: '', body: '' };
+    // Arena Agent's sandbox tools answer with JSON ({stdout, stderr, exitCode}, image records ...).
+    const obj = parseJsonObject(out);
+    if (obj) {
+      const pickText = (value) => (typeof value === 'string' ? value : '');
+      const stdout = pickText(obj.stdout ?? obj.output ?? obj.result ?? obj.text ?? obj.content);
+      const stderr = pickText(obj.stderr);
+      const code = obj.exitCode ?? obj.exit_code ?? obj.returncode ?? obj.code;
+      if (stdout || stderr || typeof obj.stdout === 'string') {
+        out = [stdout, stderr].filter((part) => part.trim()).join('\n');
+        if (label === 'Bash' && Number.isInteger(code)) out = `exit code ${code}\n${out}`;
+      } else if (/^(Generate|Edit) (image|video)$/.test(label)) {
+        return { summary: obj.error ? String(obj.error) : 'Done', body: '' };
+      } else if (!obj.error && (obj.status === 'success' || obj.success === true || obj.ok === true)
+        && Object.keys(obj).every((k) => ['status', 'success', 'ok', 'hash', 'path', 'bytes', 'size', 'message'].includes(k))) {
+        // Arena Agent's file tools answer {"status":"success","hash":...}: say it plainly.
+        const what = label === 'Write' ? 'Written' : label === 'Update' ? 'Updated' : label === 'Delete' ? 'Deleted' : 'Done';
+        return { summary: obj.message ? String(obj.message) : what, body: '' };
+      } else {
+        out = JSON.stringify(obj, null, 2);
+      }
+    }
+    if (label === 'Bash') {
+      let body = out;
+      let code = null;
+      const head = body.match(/^exit code (-?\d+)\n?/);
+      if (head) {
+        code = Number(head[1]);
+        body = body.slice(head[0].length);
+      }
+      body = body.replace(/\n?\[Process exited with code -?\d+\]\s*$/, '')
+        .replace(/^\(command finished with no output\)$/, '');
+      const summary = !body.trim() ? (code === null || code === 0 ? '(No output)' : `Exit code ${code}`) : '';
+      return { summary, body, code };
+    }
+    if (label === 'Read' && !/^(Error|FileNotFoundError|ValueError)/.test(out)) {
+      const ranged = out.match(/^\[lines (\d+)-(\d+) of (\d+)\]\n?/);
+      const body = ranged ? out.slice(ranged[0].length) : out;
+      const n = ranged ? Number(ranged[2]) - Number(ranged[1]) + 1 : lineCount(body);
+      return { summary: `Read ${plural(n, 'line')}`, body, folded: true };
+    }
+    if (label === 'List' && key === 'ls') {
+      const n = out === '(empty folder)' ? 0 : lineCount(out);
+      return { summary: `Listed ${plural(n, 'entry').replace('entrys', 'entries')}`, body: n ? out : '', folded: true };
+    }
+    if (label === 'Search' && key === 'search') {
+      const n = out === 'no matches' ? 0 : out.split('\n').filter((l) => /:\d+:/.test(l)).length;
+      return { summary: n ? `Found ${plural(n, 'match').replace('matchs', 'matches')}` : 'No matches', body: n ? out : '', folded: true };
+    }
+    return { summary: '', body: out };
+  }
+
+  function renderDiffLines(diffText, maxLines) {
+    const lines = String(diffText || '').split('\n')
+      .filter((line) => line && !line.startsWith('+++') && !line.startsWith('---') && !line.startsWith('@@'));
+    if (!lines.length) return null;
+    const shown = lines.slice(0, maxLines);
+    const box = el('div', { class: 'tool-diff' });
+    shown.forEach((line) => {
+      const type = line.startsWith('+') ? ' is-add' : line.startsWith('-') ? ' is-del' : '';
+      box.appendChild(el('div', { class: `tool-diff-line${type}`, text: line }));
+    });
+    if (lines.length > shown.length) box.appendChild(el('div', { class: 'tool-more', text: `… +${plural(lines.length - shown.length, 'line')}` }));
+    return box;
+  }
+
+  function renderToolRow(activity, laneStreaming, awaitingApproval) {
+    const raw = activity.raw || {};
+    const status = activityStatus(activity.status);
+    const label = toolLabel(activity);
+    const arg = toolArg(activity);
+    const out = toolOutput(activity);
+    const running = !status.cls && Boolean(laneStreaming);
+    const stateCls = status.cls === 'is-ok' ? 'is-ok' : status.cls === 'is-err' ? 'is-err'
+      : (status.cls === 'is-wait' || (running && awaitingApproval)) ? 'is-wait' : (running ? 'is-run' : 'is-idle');
+    const row = el('div', { class: `tool-row ${stateCls}`, 'data-activity-id': activity.id });
+
+    const argText = arg.length > 400 ? arg.slice(0, 400) + '…' : arg;
+    const head = el('div', { class: 'tool-head', title: arg || label },
+      el('span', { class: 'tool-dot', 'aria-hidden': 'true' }),
+      el('span', { class: 'tool-name', text: label }),
+      argText ? el('span', { class: 'tool-arg' }, el('span', { class: 'tool-paren', text: '(' }),
+        el('span', { class: 'tool-arg-text', text: argText.replace(/\s*\n\s*/g, ' ↵ ') }),
+        el('span', { class: 'tool-paren', text: ')' })) : null,
+      raw.background ? el('span', { class: 'tool-tag', text: 'background' }) : null
+    );
+    row.appendChild(head);
+
+    const body = el('div', { class: 'tool-body' }, el('span', { class: 'tool-elbow', 'aria-hidden': 'true', text: '⎿' }));
+    const content = el('div', { class: 'tool-content' });
+    body.appendChild(content);
+
+    const described = describeOutput(activity, out);
+    const expanded = expandedActivities.has(activity.id);
+    const diff = raw.diff && ['Write', 'Update'].includes(label) ? raw.diff : '';
+
+    if (stateCls === 'is-wait') {
+      content.appendChild(el('div', { class: 'tool-summary is-wait', text: 'Waiting for your approval…' }));
+    } else if (!out && !diff) {
+      if (running) content.appendChild(el('div', { class: 'tool-summary is-muted' }, el('span', { class: 'tool-spinner', 'aria-hidden': 'true' }), el('span', { text: label === 'Bash' ? 'Running…' : 'Working…' })));
+      else if (stateCls === 'is-err') content.appendChild(el('div', { class: 'tool-summary is-err', text: String(raw.status && raw.status !== 'error' ? raw.status : activity.status || 'Failed') }));
+      else return finishRow(row, activity);
+    }
+
+    if (described.summary) {
+      content.appendChild(el('div', { class: `tool-summary${stateCls === 'is-err' ? ' is-err' : ''}`, text: described.summary }));
+    }
+    const text = described.body || '';
+    if (text && (!described.folded || expanded)) {
+      const lines = text.split('\n');
+      const limit = expanded ? 400 : COLLAPSED_LINES;
+      // While a command runs, follow the newest output (tail); afterwards show the head.
+      const tailMode = running && label === 'Bash';
+      const shown = lines.length > limit ? (tailMode ? lines.slice(-limit) : lines.slice(0, limit)) : lines;
+      const exitedNormally = label === 'Bash' && described.code !== null && described.code !== undefined;
+      const pre = el('pre', { class: `tool-output${stateCls === 'is-err' && !exitedNormally ? ' is-err' : ''}${expanded ? ' is-expanded' : ''}`, text: shown.join('\n') });
+      if (tailMode && lines.length > limit) {
+        content.appendChild(el('div', { class: 'tool-more', text: `… ${plural(lines.length - limit, 'earlier line')}` }));
+      }
+      content.appendChild(pre);
+      if (!tailMode && lines.length > limit) {
+        content.appendChild(el('button', { class: 'tool-more tool-toggle', type: 'button', 'data-tool-toggle': activity.id, text: `… +${plural(lines.length - limit, 'line')} (click to expand)` }));
+      } else if (expanded) {
+        content.appendChild(el('button', { class: 'tool-more tool-toggle', type: 'button', 'data-tool-toggle': activity.id, text: 'Collapse' }));
+      }
+    } else if (text && described.folded) {
+      content.appendChild(el('button', { class: 'tool-more tool-toggle', type: 'button', 'data-tool-toggle': activity.id, text: 'Show output' }));
+    }
+    if (diff) {
+      const diffBox = renderDiffLines(diff, expanded ? 400 : 12);
+      if (diffBox) content.appendChild(diffBox);
+    }
+    if (label === 'Bash' && described.code && described.code !== 0 && described.body) {
+      content.appendChild(el('div', { class: 'tool-summary is-err', text: `Exit code ${described.code}` }));
+    }
+    row.appendChild(body);
+    return finishRow(row, activity);
+  }
+
+  function finishRow(row, activity) {
+    const raw = activity.raw || {};
+    if (activity.url) {
+      row.appendChild(el('a', { class: 'tool-link', href: activity.url, target: '_blank', rel: 'noopener noreferrer', title: activity.url },
+        iconEl('external'), el('span', { text: activity.url })));
+    }
+    if (raw.child_id) {
+      const openBtn = el('button', { class: 'tool-link subagent-open', type: 'button' },
+        iconEl('message'), el('span', { text: 'Open sub-agent chat' }));
+      openBtn.addEventListener('click', () => { void openChat(String(raw.child_id)); });
+      row.appendChild(openBtn);
+    }
+    return row;
+  }
+
+  function onToolToggle(event) {
+    const button = event.target.closest?.('[data-tool-toggle]');
+    if (!button) return;
+    const id = button.getAttribute('data-tool-toggle');
+    if (expandedActivities.has(id)) expandedActivities.delete(id);
+    else expandedActivities.add(id);
+    scheduleChatRender();
+  }
+  document.addEventListener('click', onToolToggle);
+
+  function currentToolActivity(lane) {
+    const list = Array.isArray(lane.activities) ? lane.activities : [];
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const status = activityStatus(list[i].status);
+      if (!status.cls) return list[i];
+      if (status.cls === 'is-wait') return list[i];
+      break;
+    }
+    return null;
+  }
+
+  function laneAwaitsApproval(lane) {
+    return (lane.permissions || []).some((item) => !item.status || item.status === 'pending');
+  }
+
   function renderActivities(lane) {
     if (!Array.isArray(lane.activities) || !lane.activities.length) return null;
+    const waitingId = lane.streaming && laneAwaitsApproval(lane) ? currentToolActivity(lane)?.id : null;
     const cards = lane.activities.map((activity) => {
       const raw = activity.raw || {};
       if (activity.kind === 'sandbox' && (raw.verb === 'Edited' || raw.verb === 'Created' || raw.verb === 'Deleted') && raw.path) {
@@ -3793,64 +4167,54 @@ You can start with a more structured option: one script, short captions, and a c
         }
         return diffCard;
       }
-      const status = activityStatus(activity.status);
-      const detail = activity.command || activity.path || activity.detail;
-      const childId = activity.raw?.child_id;
-      const subModel = activity.raw?.model_name || (activity.raw?.model && !['a', 'b'].includes(activity.raw.model) ? activity.raw.model : '');
-      const iconName = childId ? 'layers' : activity.name === 'Question' ? 'help' : activity.kind === 'sandbox' ? 'package' : activity.kind === 'webdev' ? 'layout' : activity.kind === 'agent' ? 'spark' : 'terminal';
-      const head = el('div', { class: 'activity-head' },
-        el('span', { class: 'activity-icon' }, iconEl(iconName)),
-        el('span', { class: 'activity-title', text: childId ? `Sub-agent${subModel ? ' \u00b7 ' + subModel : ''}` : (activity.name || "Action") }),
-        el('span', { class: `activity-status ${status.cls}`, text: status.label })
-      );
-      const card = el('div', { class: `activity-card${status.cls === 'is-err' ? ' is-danger' : ''}` }, head);
-      if (detail) {
-        const isLong = detail.length > 180 || String(activity.status).toLowerCase() === 'running';
-        if (isLong) {
-          const details = el('details', { class: 'activity-detail' },
-            el('summary', { text: "Show details" }),
-            el('div', { class: 'activity-body' }, el('pre', { text: detail }))
-          );
-          card.appendChild(details);
-        } else {
-          card.appendChild(el('div', { class: 'activity-body' }, el('pre', { text: detail })));
-        }
-      }
-      if (activity.url) {
-        card.appendChild(el('a', { class: 'preview-link', href: activity.url, target: '_blank', rel: 'noopener noreferrer', title: activity.url },
-          iconEl('external'), el('span', { text: activity.url })));
-      }
-      if (childId) {
-        const openBtn = el('button', { class: 'preview-link subagent-open', type: 'button' },
-          iconEl('message'), el('span', { text: 'Open sub-agent chat' }));
-        openBtn.addEventListener('click', () => { void openChat(String(childId)); });
-        card.appendChild(openBtn);
-      }
-      return card;
+      return renderToolRow(activity, lane.streaming, activity.id === waitingId);
     });
-    return el('div', { class: 'activity-list' }, cards);
+    return el('div', { class: 'tool-list' }, cards);
+  }
+
+  function renderSitePreviewCard(artifact) {
+    const href = new URL(artifact.url, window.location.origin).href;
+    const local = href.startsWith(window.location.origin);
+    const host = local ? (artifact.path || artifact.name || 'Local preview') : new URL(href).host;
+    const button = (label, icon, run, primary = false) => {
+      const b = el('button', { type: 'button', class: `button ${primary ? '' : 'button-quiet '}site-preview-btn` }, iconEl(icon), el('span', { text: label }));
+      b.addEventListener('click', run);
+      return b;
+    };
+    return el('div', { class: 'site-preview-card' },
+      el('span', { class: 'site-preview-icon' }, iconEl('globe')),
+      el('div', { class: 'site-preview-copy' },
+        el('span', { class: 'site-preview-title', text: local ? 'Local preview' : 'Live site' }),
+        el('span', { class: 'site-preview-url', text: host, title: href })),
+      el('div', { class: 'site-preview-actions' },
+        button('Preview', 'panel-right', () => openPreview(href, host), true),
+        button('Copy link', 'copy', async () => {
+          try { await navigator.clipboard.writeText(href); toast('Link copied', 'success'); }
+          catch { toast(href, 'info', 'Copy this link'); }
+        }),
+        local ? null : button('Browser', 'external', () => window.open(href, '_blank', 'noopener'))));
   }
 
   function renderArtifactsInline(lane) {
     if (!Array.isArray(lane.artifacts) || !lane.artifacts.length) return null;
-    const items = lane.artifacts.map((artifact) => {
-      const copy = el('div', { class: 'artifact-copy' },
-        el('div', { class: 'artifact-name', text: artifact.path || artifact.name }),
-        el('div', { class: 'artifact-desc', text: artifact.note || (artifact.url ? "Preview link from server event" : "File from files_written event") })
-      );
-      const actions = el('div', { class: 'artifact-actions' });
-      if (artifact.url) {
-        actions.appendChild(el('a', {
-          class: 'icon-button', href: artifact.url, target: '_blank', rel: 'noopener noreferrer',
-          'aria-label': "Open preview", title: "Open preview"
-        }, iconEl('external')));
-      }
-      return el('div', { class: 'artifact-item' }, iconEl(artifact.url ? 'panel-right' : 'file'), copy, actions);
+    const seen = new Set();
+    const unique = lane.artifacts.filter((a) => {
+      const id = a.url || a.path || a.name;
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
     });
-    return el('div', { class: 'activity-list' },
-      el('div', { class: 'sources-title' }, iconEl('package'), el('span', { text: lane.demo ? "Artifacts · demo" : "Artifacts" })),
-      items
-    );
+    const previews = unique.filter((a) => a.url && /^(https?:)?\//.test(a.url));
+    const files = unique.filter((a) => !previews.includes(a));
+    const wrap = el('div', { class: 'artifact-stack' });
+    previews.slice(0, 3).forEach((a) => wrap.appendChild(renderSitePreviewCard(a)));
+    if (files.length) {
+      const note = files.find((f) => f.note)?.note || 'Saved to your folder';
+      wrap.appendChild(el('div', { class: 'saved-files' },
+        el('span', { class: 'saved-files-title' }, iconEl('check'), el('span', { text: `${note} · ${files.length} ${files.length === 1 ? 'file' : 'files'}` })),
+        el('span', { class: 'saved-files-list', text: files.slice(0, 12).map((f) => f.path || f.name).join(', ') + (files.length > 12 ? ` +${files.length - 12} more` : '') })));
+    }
+    return wrap.childNodes.length ? wrap : null;
   }
 
   function renderPermissionCard(permission) {
@@ -3866,7 +4230,7 @@ You can start with a more structured option: one script, short captions, and a c
     const body = el('div', { class: 'permission-body' });
     if (permission.description) body.appendChild(el('p', { class: 'permission-note', text: permission.description }));
     if (permission.command) {
-      body.appendChild(el('div', { class: 'permission-detail-label', text: "Team" }));
+      body.appendChild(el('div', { class: 'permission-detail-label', text: "Command" }));
       body.appendChild(el('pre', { class: 'permission-detail', text: permission.command }));
     }
     if (permission.path) {
@@ -3959,6 +4323,42 @@ You can start with a more structured option: one script, short captions, and a c
     return el('div', { class: 'answer-footnote' }, el('span', { class: 'status-dot is-online' }), el('span', { text: bits.join(' · ') }));
   }
 
+  const _laneTypewriters = new WeakMap();
+  const _laneStartedAt = new WeakMap();
+
+  function dropLaneTypewriter(lane) {
+    const typewriter = _laneTypewriters.get(lane);
+    if (!typewriter) return;
+    typewriter._destroy?.();
+    _laneTypewriters.delete(lane);
+    _laneStartedAt.delete(lane);
+  }
+
+  // Claude Code style status: "✻ Running Bash… 12s" / "✻ Thinking… 3s".
+  function renderGeneratingLabel(lane) {
+    if (!_laneStartedAt.has(lane)) _laneStartedAt.set(lane, Date.now());
+    const startedAt = _laneStartedAt.get(lane);
+    const active = currentToolActivity(lane);
+    let text;
+    if (laneAwaitsApproval(lane) || (active && activityStatus(active.status).cls === 'is-wait')) text = 'Waiting for your approval';
+    else if (active) text = toolLabel(active) === 'Bash' ? 'Running command' : `Running ${toolLabel(active)}`;
+    else text = visibleLaneText(lane) ? 'Writing' : 'Thinking';
+    const timer = el('span', { class: 'generating-time' });
+    let ticks = 0;
+    const tick = () => {
+      if (ticks++ > 0 && !timer.isConnected) return;
+      const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+      timer.textContent = secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`;
+      setTimeout(tick, 1000);
+    };
+    tick();
+    return el('span', { class: 'generating-label', role: 'status' },
+      el('span', { class: 'generating-star', 'aria-hidden': 'true', text: '✻' }),
+      el('span', { text: `${text}…` }),
+      timer
+    );
+  }
+
   function renderAssistantLane(lane, turn, key, totalLanes) {
     const card = el('article', {
       class: `message-assistant assistant-lane${lane.streaming ? ' is-streaming' : ''}`,
@@ -3982,16 +4382,13 @@ You can start with a more structured option: one script, short captions, and a c
       avatar,
       el('div', { class: 'assistant-id' },
         el('span', { class: 'model-name', title: lane.modelName || '', text: lane.modelName || (key === 'b' ? "Model B" : "Model A") }),
-        el('span', { class: 'lane-badge', text: key.toUpperCase() }),
+        totalLanes > 1 ? el('span', { class: 'lane-badge', text: key.toUpperCase() }) : null,
         turn.vote === (key === 'a' ? 'model_a' : 'model_b')
           ? el('span', { class: 'lane-winner', title: "Your choice in this battle" }, iconEl('trophy'), el('span', { text: "best" }))
           : null,
         label ? el('span', { class: 'option-desc', text: label }) : null
       ),
-      lane.streaming ? el('span', { class: 'generating-label', role: 'status' },
-        el('span', { class: 'generating-dots' }, el('i'), el('i'), el('i')),
-        el('span', { text: "Generating…" })
-      ) : el('span', { class: 'assistant-spacer' }),
+      lane.streaming ? renderGeneratingLabel(lane) : el('span', { class: 'assistant-spacer' }),
       visibleLaneText(lane) ? el('button', {
         class: 'icon-button answer-copy-button', type: 'button', 'data-copy-answer': key,
         title: "Copy answer", 'aria-label': `Copy model response ${lane.modelName || key.toUpperCase()}`
@@ -4009,34 +4406,42 @@ You can start with a more structured option: one script, short captions, and a c
 
     const markdown = el('div', { class: 'markdown' });
     const visibleText = visibleLaneText(lane);
-    if (visibleText) markdown.appendChild(renderMarkdown(visibleText));
-    const showTypewriter = lane.streaming && !visibleText;
+    const inTypewriterWindow = lane.typewriterUntil && Date.now() < lane.typewriterUntil;
+    const showTypewriter = lane.streaming && (!visibleText || inTypewriterWindow);
+    if (!lane.streaming) dropLaneTypewriter(lane);
     if (showTypewriter) {
-      markdown.appendChild(createThinkingTypewriter());
+      // Reuse one typewriter per lane: every stream event re-renders the
+      // card, and a fresh element would restart (and never finish) its phrase.
+      let typewriter = _laneTypewriters.get(lane);
+      if (!typewriter || typewriter._dead) {
+        typewriter = createThinkingTypewriter();
+        _laneTypewriters.set(lane, typewriter);
+      }
+      markdown.appendChild(typewriter);
+      if (inTypewriterWindow && visibleText) {
+        const remaining = lane.typewriterUntil - Date.now();
+        setTimeout(() => { lane.typewriterUntil = 0; scheduleChatRender(); }, remaining);
+      }
+    } else {
+      if (visibleText) markdown.appendChild(renderMarkdown(visibleText));
     }
-    if (lane.streaming && visibleText) markdown.appendChild(el('span', { class: 'stream-cursor', 'aria-hidden': 'true' }));
+    if (lane.streaming && visibleText && !showTypewriter) markdown.appendChild(el('span', { class: 'stream-cursor', 'aria-hidden': 'true' }));
+    // Claude order: thinking, then the work (tool rows, approvals), then the
+    // answer itself at the bottom, then what it produced (media, sources, files).
+    const activities = renderActivities(lane);
+    if (activities) card.appendChild(activities);
+    if (Array.isArray(lane.permissions)) {
+      lane.permissions.forEach((permission) => card.appendChild(renderPermissionCard(permission)));
+    }
     card.appendChild(markdown);
-
-    if (turn.round && turn.round > 1) {
-      card.appendChild(el('div', { class: 'agent-steps' }, el('span', { class: 'agent-step' }, el('span', { class: 'status-dot is-online' }), el('span', { text: `Round ${turn.round}` }))));
-    }
-    if (Array.isArray(lane.agentStages) && lane.agentStages.length) {
-      card.appendChild(el('div', { class: 'agent-steps' }, lane.agentStages.slice(-5).map((stage) => el('span', { class: 'agent-step' }, iconEl('spark'), el('span', { text: stage })))));
-    }
-    const sources = renderSources(lane);
-    if (sources) card.appendChild(sources);
     const media = renderMedia(lane);
     if (media) card.appendChild(media);
     const mediaChoices = renderMediaChoices(lane);
     if (mediaChoices) card.appendChild(mediaChoices);
-    const activities = renderActivities(lane);
-    if (activities) card.appendChild(activities);
+    const sources = renderSources(lane);
+    if (sources) card.appendChild(sources);
     const artifacts = renderArtifactsInline(lane);
     if (artifacts) card.appendChild(artifacts);
-
-    if (Array.isArray(lane.permissions)) {
-      lane.permissions.forEach((permission) => card.appendChild(renderPermissionCard(permission)));
-    }
 
     if (Array.isArray(lane.notices)) {
       lane.notices.forEach((notice) => card.appendChild(el('div', { class: 'message-notice' }, iconEl('info'), el('span', { text: notice }))));
@@ -4187,6 +4592,7 @@ You can start with a more structured option: one script, short captions, and a c
       updatePendingPermissionsBadge();
       if (state.view === 'chat') renderMessages();
     } catch { /* offline: live questions still arrive over the stream */ }
+  // ═══ 08-render2.js ═══
   }
 
   async function answerQuestionUI(q, answer, card) {
@@ -4694,14 +5100,11 @@ You can start with a more structured option: one script, short captions, and a c
       mk('↓', 'Next message', () => jump(1)),
       mk('⤓', 'Jump to latest', () => content.scrollTo({ top: content.scrollHeight, behavior: 'smooth' }))
     );
+    // One control, sticky inside the chat column (it used to be fixed to the
+    // window, floating over the side panel, next to a second "back to bottom").
     content.appendChild(pill);
-    const bottomBtn = el('button', { class: 'scroll-bottom-btn', id: 'scrollBottomBtn', type: 'button', title: 'Back to bottom', 'aria-label': 'Back to bottom', hidden: true }, el('span', { text: '↓' }));
-    bottomBtn.addEventListener('click', () => content.scrollTo({ top: content.scrollHeight, behavior: 'smooth' }));
-    content.appendChild(bottomBtn);
     content.addEventListener('scroll', () => {
-      const dist = content.scrollHeight - content.scrollTop - content.clientHeight;
-      pill.hidden = dist < 300;
-      bottomBtn.hidden = dist < 300;
+      pill.hidden = content.scrollHeight - content.scrollTop - content.clientHeight < 300;
     }, { passive: true });
   }
 
@@ -4731,6 +5134,50 @@ You can start with a more structured option: one script, short captions, and a c
       }
       _rlSwitchBtn.hidden = false;
     } catch { /* decorative hint */ }
+  }
+
+  function renderUsageBar() {
+    if (!els.usageBarWrap || !els.usageBarFill || !els.usageBarLabel) return;
+    const remaining = state.usageRemaining;
+    const reset = state.usageReset;
+    const sends = state.usageSendsToday || 0;
+    if (remaining == null && sends === 0) {
+      els.usageBarWrap.hidden = true;
+      return;
+    }
+    els.usageBarWrap.hidden = false;
+    let pct = 0;
+    let label = '';
+    if (remaining != null && remaining >= 0) {
+      // ratelimit-remaining from arena.ai: treat as requests left out of an
+      // estimated daily pool. Arena typically allows ~50 per modality window,
+      // but the daily pool is larger. Use remaining directly for the bar.
+      // Lower remaining = more used.
+      const estimated_total = Math.max(remaining + sends, sends, 50);
+      const used = estimated_total - remaining;
+      pct = Math.min(100, Math.round((used / estimated_total) * 100));
+      label = `${pct}% of daily usage used`;
+      if (remaining <= 5) label += ' — running low';
+    } else {
+      // No server-side remaining; fall back to local send count.
+      pct = Math.min(100, Math.round((sends / 50) * 100));
+      label = `${sends} sends today`;
+    }
+    if (reset) {
+      const resetDate = new Date(reset * 1000);
+      const now = Date.now();
+      if (resetDate.getTime() > now) {
+        const diff = resetDate.getTime() - now;
+        const hours = Math.floor(diff / 3600000);
+        const mins = Math.floor((diff % 3600000) / 60000);
+        if (hours > 0) label += `, resets in ${hours}h ${mins}m`;
+        else if (mins > 0) label += `, resets in ${mins}m`;
+      }
+    }
+    els.usageBarFill.style.width = pct + '%';
+    els.usageBarFill.classList.toggle('warn', pct >= 70 && pct < 90);
+    els.usageBarFill.classList.toggle('danger', pct >= 90);
+    els.usageBarLabel.textContent = label;
   }
 
   function activeTodos() {
@@ -4886,6 +5333,7 @@ You can start with a more structured option: one script, short captions, and a c
 
   /* ---------------------------------------------------------------------- */
   /* Composer and model presentation                                       */
+  // ═══ 09-composer.js ═══
   /* ---------------------------------------------------------------------- */
   function setAgentKind(kind) {
     if (kind !== 'native' && kind !== 'local') return;
@@ -5285,6 +5733,7 @@ You can start with a more structured option: one script, short captions, and a c
     }
 
     syncRateLimitAccountHint(rateLimitLeft);
+    renderUsageBar();
     const locked = chatLocked();
     syncWorkspaceSyncToggle();
     syncCompactChip();
@@ -5384,8 +5833,14 @@ You can start with a more structured option: one script, short captions, and a c
       sub = state.authenticated ? 'Simulation · no tokens' : 'Demo mode';
       avatarClass = 'is-demo';
     } else if (state.authenticated) {
-      name = state.fullName || state.email || 'Connected';
-      sub = state.status?.session_error ? 'Session error' : state.status?.offline ? 'arena.ai offline' : (state.email && state.fullName ? state.email : 'Signed in');
+      // Before the arena.ai session finishes starting, show the saved account
+      // and "Connecting" instead of a nameless "Connected / Signed in".
+      const saved = (state.accounts || []).find((a) => a.id === state.currentAccountId || a.current) || {};
+      const email = state.email || saved.email || '';
+      name = state.fullName || email || 'arena.ai account';
+      sub = engineStarting(state.status) ? 'Connecting to arena.ai…'
+        : state.status?.session_error ? 'Session error' : state.status?.offline ? 'arena.ai offline'
+        : (email && state.fullName ? email : 'Signed in');
       avatarClass = '';
     } else {
       name = state.serverError ? 'Server unavailable' : 'Not signed in';
@@ -5429,13 +5884,17 @@ You can start with a more structured option: one script, short captions, and a c
     }
   }
 
-  function toast(message, kind = 'info', title = '') {
+  function toast(message, kind = 'info', title = '', action = null) {
     if (!els.toastRoot) return;
     const iconName = kind === 'error' ? 'alert' : kind === 'warning' ? 'shield-alert' : kind === 'success' ? 'check' : 'info';
     const node = el('div', { class: `toast is-${kind}`, role: kind === 'error' ? 'alert' : 'status' });
+    const actionButton = action && action.label ? el('button', {
+      class: 'button toast-action', type: 'button',
+      onclick: async () => { node.remove(); try { await action.run(); } catch (err) { toast(err?.message || String(err), 'error', title); } }
+    }, el('span', { text: action.label })) : null;
     node.append(
       iconEl(iconName),
-      el('div', { class: 'toast-copy' }, title ? el('strong', { text: title }) : null, el('span', { text: String(message || '') })),
+      el('div', { class: 'toast-copy' }, title ? el('strong', { text: title }) : null, el('span', { text: String(message || '') }), actionButton),
       el('button', {
         class: 'icon-button toast-close', type: 'button', 'aria-label': "Dismiss notification",
         onclick: () => node.remove()
@@ -5448,7 +5907,25 @@ You can start with a more structured option: one script, short captions, and a c
       node.style.opacity = '0';
       node.style.transform = 'translateY(4px)';
       window.setTimeout(() => node.remove(), 220);
-    }, kind === 'error' ? 7500 : 5000);
+    }, action ? 20000 : (kind === 'error' ? 7500 : 5000));
+  }
+
+  // Offer to install a missing tool (Node.js, Python ...) the moment something needs it.
+  const _componentPrompted = new Set();
+  function promptComponentInstall(event) {
+    const id = String(event?.component || '');
+    if (!id || _componentPrompted.has(id)) return;
+    _componentPrompted.add(id);
+    const name = String(event.name || id);
+    toast(`${event.reason || 'A command needs it'}. Install ${name} on this computer?`, 'warning', `${name} is not installed`, {
+      label: `Install ${name}`,
+      run: async () => {
+        const res = await API.installComponent(id);
+        if (res?.open_url) window.open(res.open_url, '_blank', 'noopener');
+        toast(res?.already ? `${name} is already installed.` : `${name} installer started. Finish it, then retry the command.`, 'info', name);
+        _componentPrompted.delete(id);
+      }
+    });
   }
 
   function tabNotice(message, kind = 'info', title = '') { toast(message, kind, title); }
@@ -5629,6 +6106,14 @@ You can start with a more structured option: one script, short captions, and a c
             const lane = current.lanes[key] || (current.lanes[key] = emptyLane(key));
             const activity = normalizeActivity({ ...step, status: step.ok === false ? 'error' : (step.ok === true ? 'done' : 'running') }, 'sandbox');
             if (activity) lane.activities.push(activity);
+          }
+          // Site previews (arena.site links) saved with the reply.
+          if (Array.isArray(item.previews) && item.previews.length) {
+            const lane = current.lanes.a || (current.lanes.a = emptyLane('a'));
+            item.previews.forEach((url) => {
+              const artifact = normalizeArtifact({ url, title: 'Site preview', name: 'Site preview' }, 'preview');
+              if (artifact) lane.artifacts.push(artifact);
+            });
           }
         } else {
           addLane(item);
@@ -6122,6 +6607,7 @@ You can start with a more structured option: one script, short captions, and a c
   }
 
   /* ---------------------------------------------------------------------- */
+  // ═══ 10-stream.js ═══
   /* Stream generation                                                      */
   /* ---------------------------------------------------------------------- */
   function turnLane(turn, key, event = {}) {
@@ -6318,15 +6804,33 @@ You can start with a more structured option: one script, short captions, and a c
       const id = event.id ?? event.tool_call_id ?? event.call_id;
       // Backend tool_result has no call id: match the most recent pending call by tool.
       const existing = id ? lane.activities.find((item) => String(item.id) === String(id)) :
-        [...lane.activities].reverse().find((item) => item.kind === 'tool' && item.name === event.tool && item.status === 'running');
+        [...lane.activities].reverse().find((item) => item.kind === 'tool'
+          && (item.tool === event.tool || item.name === event.tool)
+          && (!item.status || item.status === 'running' || item.status === 'pending'));
       const output = textValue(event.output ?? event.result ?? event.text ?? event.message ?? '');
       if (existing) {
         existing.status = event.status || 'ok';
-        if (output) existing.detail = output;
+        // Keep the call's input (command, path) and its result apart: the
+        // row shows the input in its title and the result underneath.
+        if (output) existing.output = output;
       } else {
-        addActivity(turn, lane, { ...event, name: event.name || "Tool result", detail: output, status: event.status || 'ok' }, 'tool');
+        addActivity(turn, lane, { ...event, name: event.name || "Tool result", output, status: event.status || 'ok' }, 'tool');
       }
       scheduleChatRender();
+      return;
+    }
+    if (type === 'component_missing') {
+      promptComponentInstall(event);
+      return;
+    }
+    if (type === 'tool_progress') {
+      const id = event.id ?? event.tool_call_id;
+      const existing = id ? lane.activities.find((item) => String(item.id) === String(id))
+        : [...lane.activities].reverse().find((item) => item.kind === 'tool' && item.status === 'running');
+      if (existing) {
+        existing.output = textValue(event.output ?? '');
+        scheduleChatRender();
+      }
       return;
     }
     if (type === 'subagent') {
@@ -6418,7 +6922,7 @@ You can start with a more structured option: one script, short captions, and a c
           path: event.path,
           name: event.path.split('/').pop(),
           title: event.path.split('/').pop(),
-          url: `/api/workspace/preview/${encodeURIComponent(event.path).replace(/%2F/g, '/')}`,
+          url: previewLink(event.path),
           note: 'Live HTML preview'
         }, 'preview');
         if (artifact) {
@@ -6470,9 +6974,7 @@ You can start with a more structured option: one script, short captions, and a c
         lane.artifacts.push(artifact);
         addArtifactRecord(artifact, key);
       });
-      if (list.length) {
-        lane.notices.push(`The server reported ${list.length} ${list.length === 1 ? "in the file" : "files"}. Artifacts are available, but full workspace synchronization is not guaranteed.`);
-      }
+      if (list.length) void refreshWorkspacePanel?.();
       scheduleChatRender();
       return;
     }
@@ -6589,6 +7091,15 @@ You can start with a more structured option: one script, short captions, and a c
       scheduleChatRender();
       return;
     }
+    if (type === 'usage') {
+      if (event.remaining != null) state.usageRemaining = Number(event.remaining);
+      if (event.reset != null) state.usageReset = Number(event.reset);
+      if (event.modality) state.usageModality = String(event.modality);
+      if (event.sends_today != null) state.usageSendsToday = Number(event.sends_today);
+      if (event.rate_limits_today != null) state.usageRateLimitsToday = Number(event.rate_limits_today);
+      renderUsageBar();
+      return;
+    }
     if (type === 'done') {
       generation.done = true;
       if (typeof event.history_chars === 'number' && String(event.chat_id) === String(state.activeChatId)) {
@@ -6642,10 +7153,12 @@ You can start with a more structured option: one script, short captions, and a c
       laneA.modelOrg = "Automatic model selection";
     }
     laneA.streaming = true;
+    laneA.typewriterUntil = Date.now() + 1800;
     lanes.a = laneA;
     if (mode === 'battle' || mode === 'side-by-side') {
       const laneB = emptyLane('b', currentModelB());
       laneB.streaming = true;
+      laneB.typewriterUntil = Date.now() + 1800;
       lanes.b = laneB;
     }
     return {
@@ -6710,6 +7223,11 @@ You can start with a more structured option: one script, short captions, and a c
     }
     const genChatId = generation.chatId ? String(generation.chatId) : null;
     if (genChatId) state.generations.delete(genChatId);
+    if (genChatId && generation.done && !wasStopped) {
+      // The backend swaps a new chat's provisional title for the summary
+      // title Arena generates; pick it up without a manual refresh.
+      [10, 30, 60, 100].forEach((secs) => setTimeout(() => { void loadChats({ silent: true }); }, secs * 1000));
+    }
     const isOpenChat = genChatId && String(state.activeChatId) === genChatId;
     if (genChatId && !isOpenChat && !generation.hadError && !wasStopped && generation.done) {
       // Finished in the background: the sidebar shows a check until opened.
@@ -6746,6 +7264,22 @@ You can start with a more structured option: one script, short captions, and a c
     'text/markdown', 'text/csv', 'text/html', 'text/xml', 'text/css', 'text/javascript',
     'application/json', 'application/xml', 'application/javascript', 'application/pdf'];
   const EVAL_ATTACH_MIME = ['image/png', 'image/jpeg', 'image/webp', 'application/pdf'];
+  // v1.5.0 upload middleman (app.py _convert_attachment): these are converted
+  // on the way up - images to PNG everywhere, code/text files to text/plain in Agent Mode.
+  const CONVERT_IMAGE_EXT = ['bmp', 'dib', 'tif', 'tiff', 'ico', 'avif', 'tga', 'ppm', 'pgm', 'pbm',
+    'jfif', 'pjpeg', 'gif', 'jp2', 'psd', 'pcx'];
+  const TEXTLIKE_EXT = ['py', 'pyw', 'ts', 'tsx', 'jsx', 'java', 'go', 'rs', 'c', 'h', 'cpp', 'cc', 'hpp', 'cs',
+    'rb', 'php', 'swift', 'kt', 'kts', 'scala', 'sh', 'bash', 'zsh', 'ps1', 'psm1', 'bat', 'cmd', 'sql', 'yaml',
+    'yml', 'toml', 'ini', 'cfg', 'conf', 'log', 'r', 'lua', 'pl', 'dart', 'vue', 'svelte', 'scss', 'sass', 'less',
+    'gradle', 'properties', 'tex', 'rst', 'svg', 'ipynb', 'tsv', 'srt', 'vtt', 'env', 'gitignore', 'dockerfile',
+    'mk', 'asm', 's', 'm', 'jl', 'ex', 'exs', 'erl', 'hs', 'clj', 'fs', 'vb', 'zig', 'nim', 'sol', 'proto', 'graphql'];
+  const fileExt = (file) => String(file?.name || '').split('.').pop()?.toLowerCase() || '';
+  function convertibleHere(file, mediaType, kind) {
+    const ext = fileExt(file);
+    if (ext === 'heic' || ext === 'heif') return false;
+    if (CONVERT_IMAGE_EXT.includes(ext) || (mediaType.startsWith('image/') && mediaType !== 'image/svg+xml')) return true;
+    return kind === 'agent' && (TEXTLIKE_EXT.includes(ext) || mediaType.startsWith('text/'));
+  }
   let attachmentSeq = 0;
   let uploadChain = Promise.resolve();
 
@@ -6766,14 +7300,15 @@ You can start with a more structured option: one script, short captions, and a c
   }
   function attachmentAccept() {
     if (attachmentKind() === 'agent') {
-      return '.png,.webp,.jpg,.jpeg,.gif,.pdf,.txt,.md,.csv,.html,.xml,.css,.js,.json';
+      return '';  // anything text-like or an image: the middleman converts what Arena refuses
     }
-    if (state.modality === 'text' || state.modality === 'auto') return '.png,.jpg,.jpeg,.webp,.pdf';
-    return '.png,.jpg,.jpeg,.webp';
+    const images = '.png,.jpg,.jpeg,.webp,' + CONVERT_IMAGE_EXT.map((e) => '.' + e).join(',');
+    if (state.modality === 'text' || state.modality === 'auto') return images + ',.pdf';
+    return images;
   }
   function attachmentHint() {
     if (attachmentKind() === 'agent') {
-      return 'PNG, WebP, JPEG, GIF, PDF, TXT, MD, CSV, HTML, XML, CSS, JS, JSON · up to 25 MB per file (PDF 10 MB), 50 MB per message';
+      return 'Images, PDF, text and code files (other image types become PNG, code becomes text) · up to 25 MB per file (PDF 10 MB), 50 MB per message';
     }
     if (state.modality === 'video') return 'PNG, JPEG, WebP · up to 10 MB per file';
     if (state.modality === 'text' || state.modality === 'auto') return 'PNG, JPEG, WebP, PDF · up to 15 MB per file';
@@ -6784,7 +7319,7 @@ You can start with a more structured option: one script, short captions, and a c
     const list = pending || state.attachments;
     if (!attachmentsAllowedHere()) return 'Files cannot be attached in Web Search. Switch the work type to attach files.';
     if (kind === 'agent') {
-      if (!AGENT_ATTACH_MIME.includes(mediaType)) return `${file.name} is not a supported file type. Agent Mode accepts PNG, WebP, JPEG, GIF, PDF, TXT, MD, CSV, HTML, XML, CSS, JS and JSON.`;
+      if (!AGENT_ATTACH_MIME.includes(mediaType) && !convertibleHere(file, mediaType, kind)) return `${file.name} is not a supported file type. Agent Mode accepts PNG, WebP, JPEG, GIF, PDF, TXT, MD, CSV, HTML, XML, CSS, JS and JSON.`;
       if (mediaType === 'application/pdf' && file.size > 10 * 1024 * 1024) return `${file.name} is over the 10 MB PDF limit for Agent Mode.`;
       if (file.size > 25 * 1024 * 1024) return `${file.name} is over the 25 MB per-file limit for Agent Mode.`;
       if (list.length >= 20) return 'Agent Mode accepts up to 20 files per message.';
@@ -6792,7 +7327,7 @@ You can start with a more structured option: one script, short captions, and a c
       if (total > 50 * 1024 * 1024) return 'Agent Mode accepts up to 50 MB of files per message.';
       return null;
     }
-    if (!EVAL_ATTACH_MIME.includes(mediaType)) return `${file.name} is not supported here. This mode accepts PNG, JPEG, WebP and PDF — Agent Mode accepts more types.`;
+    if (!EVAL_ATTACH_MIME.includes(mediaType) && !convertibleHere(file, mediaType, kind)) return `${file.name} is not supported here. This mode accepts PNG, JPEG, WebP and PDF — Agent Mode accepts more types.`;
     if (mediaType === 'application/pdf' && state.modality !== 'text' && state.modality !== 'auto') {
       return 'PDF files attach in Text (and Battle Auto). Switch the work type, or use Agent Mode.';
     }
@@ -7170,6 +7705,7 @@ You can start with a more structured option: one script, short captions, and a c
 
   /* ---------------------------------------------------------------------- */
   /* Popovers                                                              */
+  // ═══ 11-ui.js ═══
   /* ---------------------------------------------------------------------- */
   let activePopover = null;
 
@@ -8321,6 +8857,7 @@ You can start with a more structured option: one script, short captions, and a c
 
   /* ---------------------------------------------------------------------- */
   /* Settings                                                              */
+  // ═══ 12-settings.js ═══
   /* ---------------------------------------------------------------------- */
 
   async function loadPermissionModeFromServer({ quiet = true } = {}) {
@@ -8507,7 +9044,7 @@ You can start with a more structured option: one script, short captions, and a c
       wrap.appendChild(el('p', { class: 'modal-copy', text: 'Which agent new Agent Mode chats use. A started chat keeps its own agent.' }));
       const agentCards = el('div', { class: 'radio-cards' });
       [
-        { id: 'native', label: 'Arena Agent', desc: 'Arena’s own agent: cloud workspace, search, files and Arena connectors. Recommended.' },
+        { id: 'native', label: 'Arena Agent', desc: "Arena's own agent: cloud workspace, search, files and Arena connectors. Recommended." },
         { id: 'local', label: 'Local Agent', desc: 'Works in the folder you pick, on this computer, under the permissions above.' }
       ].forEach((kind) => {
         const selected = state.agentKind === kind.id;
@@ -8851,7 +9388,7 @@ You can start with a more structured option: one script, short captions, and a c
     };
     wrap.append(
       el('h3', { class: 'modal-section-title', text: 'Components' }),
-      el('p', { class: 'modal-note', text: 'Arena Desktop itself is a single file and needs none of these for regular chats. Optional components unlock specific features and are only ever installed when you ask; downloads come from the official sources shown.' }),
+      el('p', { class: 'modal-note', text: 'Optional. Only installed when you ask.' }),
       el('div', { class: 'modal-field-row' },
         el('span', { class: 'modal-field-label', text: 'Status' }),
         el('button', { class: 'btn ghost small', type: 'button', onclick: () => { void fill(); } },
@@ -8864,7 +9401,7 @@ You can start with a more structured option: one script, short captions, and a c
   function renderGatewayPanel() {
     const wrap = el('div', { class: 'memory-panel' });
     wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Agent Gateway' }));
-    wrap.appendChild(el('p', { class: 'modal-note', text: 'Lets the genuine Arena Agent use selected local MCP servers (Blender, Roblox Studio…) and your picked Workspace folder on this computer. For a session, a temporary Cloudflare tunnel exposes a pairing-protected job endpoint; the agent receives the address automatically in Agent chats — including a fresh address when a continued chat finds its tunnel gone. Tool calls follow your Permissions mode — the app asks before anything that can change things, unless you use Bypass. Off by default: a tunnel makes this PC reachable from the internet for anyone holding the pairing code, so keep the code secret and stop the session when done.' }));
+    wrap.appendChild(el('p', { class: 'modal-note', text: 'Connects Arena Agent to your local MCP servers and Workspace folder via a temporary Cloudflare tunnel. Off by default.' }));
     const host = el('div', {}, el('p', { class: 'modal-note', text: 'Loading gateway status…' }));
     wrap.appendChild(host);
     let poll = null;
@@ -9037,6 +9574,11 @@ You can start with a more structured option: one script, short captions, and a c
           <span class="modal-field-label">${esc(a.email || id)}</span>
           <span class="muted">${esc(bits.join(' \u00B7 '))}${models ? `<br>${esc(models)}` : ''}</span></div>`;
       };
+      const live = (data.live || {})[data.current_account] || null;
+      const liveHtml = live && (live.remaining != null || live.reset)
+        ? `<div class="modal-field-row"><span class="modal-field-label">Arena says</span>
+            <span>${live.remaining != null ? `<strong class="tabular">${esc(live.remaining)}</strong> requests left` : 'Limit reported'}${live.modality ? ` · ${esc(live.modality)}` : ''}${live.reset ? ` · ${esc(humanWait(live.reset - Date.now() / 1000))}` : ''}<br><span class="muted">as of ${esc(new Date(live.ts * 1000).toLocaleTimeString())} — Arena only reports this with replies</span></span></div>`
+        : '<p class="modal-note">Arena reports your remaining requests with each reply. Send a message to see it here.</p>';
       const todayHtml = Object.keys(today).length
         ? Object.entries(today).map(([id, a]) => accountRow(id, a)).join('')
         : '<p class="modal-note">No sends recorded yet today.</p>';
@@ -9054,6 +9596,8 @@ You can start with a more structured option: one script, short captions, and a c
           <span class="muted">${esc([what, humanWait(ev.wait)].filter(Boolean).join(' \u00B7 '))}${ev.message ? `<br>${esc(String(ev.message).slice(0, 140))}` : ''}</span></div>`;
       }).join('') || '<p class="modal-note">No rate limits recorded. Nice.</p>';
       body.innerHTML = `
+        <h4 class="modal-mini-title">Arena limit</h4>
+        ${liveHtml}
         <h4 class="modal-mini-title">Today</h4>
         ${todayHtml}
         <h4 class="modal-mini-title">Recent rate limits</h4>
@@ -9062,42 +9606,36 @@ You can start with a more structured option: one script, short captions, and a c
     };
     wrap.innerHTML = `
       <h3 class="modal-section-title">Usage &amp; Arena limits</h3>
-      <p class="modal-note">Arena meters every account with a daily balance that resets every 24 hours. Heavier models and longer contexts cost more; each agent round re-sends the whole conversation.</p>
-      <details class="limits-details" open>
-        <summary class="limits-summary">Known Arena rate limits</summary>
+      <p class="modal-note">Arena has a daily balance per account. Heavier models cost more. Agent mode re-sends history each round.</p>
+      <details class="limits-details">
+        <summary class="limits-summary">Rate limit details</summary>
         <ul class="limits-list compact">
-          <li><strong>Daily balance</strong> \u2014 resets every 24 hours. Heavier models (o1, Opus, Gemini Pro) drain it faster than lighter ones (Flash, Haiku, Mini).</li>
-          <li><strong>Agent mode</strong> \u2014 each round re-sends the full conversation. Long agent sessions consume balance quickly; 10\u201320 rounds can exhaust a daily limit.</li>
-          <li><strong>Battle mode</strong> \u2014 counts as 2 sends (one per model). Votes do not cost extra.</li>
-          <li><strong>Video / image generation</strong> \u2014 heavily rate-limited. You may hit 429 after just a few generations per day.</li>
-          <li><strong>Burst limit</strong> \u2014 rapid back-to-back sends (under ~3s apart) may trigger temporary 429s even with balance remaining.</li>
-          <li><strong>429 response</strong> \u2014 Arena returns a wait time in seconds. This app auto-queues a retry when pacing is on.</li>
-          <li><strong>Shared IP</strong> \u2014 accounts on the same IP may share one rate-limit bucket.</li>
-          <li><strong>No response / timeout</strong> \u2014 if agent mode does not respond, it usually means the balance is spent or a burst limit was hit. Check the rate limit log below.</li>
+          <li><strong>Daily balance</strong> \u2014 resets every 24h. Heavy models drain faster.</li>
+          <li><strong>Battle</strong> \u2014 counts as 2 sends. Votes are free.</li>
+          <li><strong>Video / images</strong> \u2014 heavily limited, few per day.</li>
+          <li><strong>429s</strong> \u2014 auto-retried when pacing is on.</li>
         </ul>
       </details>
       <div class="modal-field-row"><span class="modal-field-label">Send log</span>
         <button class="btn ghost small" id="usageRefresh" type="button">Refresh</button></div>
       <div id="usageBody"><p class="modal-note">Loading usage\u2026</p></div>`;
-    $('#usageRefresh', wrap)?.addEventListener('click', () => { void fill(); });
-    requestAnimationFrame(() => { void fill(); });
+    const safeFill = () => fill().catch((err) => {
+      const body = $('#usageBody', wrap);
+      if (body) body.innerHTML = `<p class="modal-note">Could not show usage: ${esc(err?.message || err)}</p>`;
+    });
+    $('#usageRefresh', wrap)?.addEventListener('click', () => { void safeFill(); });
+    requestAnimationFrame(() => { void safeFill(); });
     return wrap;
   }
 
   function renderAboutPanel() {
       const wrap = el('div');
       const logoMark = el('div', { class: 'about-mark' });
-      logoMark.innerHTML = '<svg viewBox="0 0 512 512" width="56" height="56" style="border-radius:12px"><rect width="512" height="512" rx="96" fill="#1a1f1e"/><g transform="translate(256,256)"><ellipse cx="0" cy="20" rx="130" ry="55" fill="none" stroke="#3a4541" stroke-width="10"/><ellipse cx="0" cy="20" rx="130" ry="55" fill="none" stroke="#8bb09c" stroke-width="4" stroke-dasharray="16 8" opacity=".5"/><path d="M-100,-40 C-100,-100 -60,-130 0,-130 C60,-130 100,-100 100,-40" fill="none" stroke="#F4F0EB" stroke-width="14" stroke-linecap="round"/><path d="M-80,-30 C-80,-80 -48,-105 0,-105 C48,-105 80,-80 80,-30" fill="none" stroke="#9db6a0" stroke-width="8" stroke-linecap="round"/><path d="M-55,-20 C-55,-55 -32,-72 0,-72 C32,-72 55,-55 55,-20" fill="none" stroke="#34d399" stroke-width="5" stroke-linecap="round"/><circle cx="0" cy="-10" r="12" fill="#34d399"/><circle cx="0" cy="-10" r="5" fill="#1a1f1e"/></g></svg>';
+      logoMark.innerHTML = '<svg viewBox="0 0 512 512" width="56" height="56" style="border-radius:12px"><rect width="512" height="512" rx="96" fill="#1a1f1e"/><g transform="translate(256,180)"><rect x="-100" y="-60" width="24" height="110" rx="5" fill="#F4F0EB"/><rect x="-52" y="-100" width="24" height="150" rx="5" fill="#F4F0EB"/><rect x="-12" y="-130" width="24" height="180" rx="5" fill="#F4F0EB"/><rect x="28" y="-100" width="24" height="150" rx="5" fill="#F4F0EB"/><rect x="76" y="-60" width="24" height="110" rx="5" fill="#F4F0EB"/><line x1="-110" y1="55" x2="110" y2="55" stroke="#F4F0EB" stroke-width="6" stroke-linecap="round"/></g><rect x="244" y="310" width="14" height="14" rx="2" fill="#34d399"/><text x="256" y="356" text-anchor="middle" fill="#F4F0EB" font-family="system-ui,sans-serif" font-size="42" font-weight="700" letter-spacing="6">ARENA</text><text x="256" y="388" text-anchor="middle" fill="#9db6a0" font-family="system-ui,sans-serif" font-size="22" font-weight="500" letter-spacing="8">CLI</text></svg>';
       wrap.appendChild(logoMark);
       wrap.appendChild(el('h3', { class: 'about-title', text: 'Arena Desktop' }));
       wrap.appendChild(el('p', { class: 'about-sub', text: state.appVersion ? `Version ${state.appVersion}` : 'Desktop client' }));
-      wrap.appendChild(el('p', { class: 'modal-copy', text: 'An unofficial desktop client for arena.ai — not affiliated with Arena. Everything runs through your own Arena account.' }));
-      const bullets = [
-        'Battle, Agent, Side by Side and Direct work as on arena.ai; a started chat keeps its mode, work type and models.',
-        'The Local Agent works only inside the folder you pick, under the permission mode you choose.',
-        'Arena can rate-limit accounts per work type (Video especially); the app shows Arena’s reset time when it sends one.'
-      ];
-      wrap.appendChild(el('ul', { class: 'limits-list' }, bullets.map((text) => el('li', { text }))));
+      wrap.appendChild(el('p', { class: 'modal-copy', text: 'Unofficial desktop client for arena.ai. Not affiliated with Arena.' }));
       wrap.appendChild(el('div', { class: 'setting-actions' },
         settingsActionButton('GitHub', 'external', async () => { window.open('https://github.com/PlayzAe/arena.ai-desktop', '_blank', 'noopener'); }),
         settingsActionButton('Terms of Use', 'external', async () => { window.open('https://help.arena.ai/articles/5629909088-terms-of-use', '_blank', 'noopener'); }),
@@ -9187,7 +9725,7 @@ You can start with a more structured option: one script, short captions, and a c
         el('span', { class: 'switch' }, pacingToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
       wrap.appendChild(el('label', { class: 'setting-toggle-row' },
         el('span', { text: 'Pacing strength' }), pacingPreset));
-      wrap.appendChild(el('p', { class: 'setting-desc', text: 'Pacing spaces out outgoing requests and queues a resend until Arena\u2019s reset instead of failing on a 429. It does not raise Arena\u2019s daily usage limit \u2014 tasks just run steadier.' }));
+      wrap.appendChild(el('p', { class: 'setting-desc', text: 'Spaces out requests and auto-retries 429s.' }));
       const cheapToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: cfg.cheap_subagents !== false, 'aria-label': 'Lighter models for research subagents' });
       cheapToggle.addEventListener('change', async () => {
         await API.saveSettings({ cheap_subagents: cheapToggle.checked });
@@ -9205,7 +9743,7 @@ You can start with a more structured option: one script, short captions, and a c
       wrap.appendChild(el('label', { class: 'setting-toggle-row' },
         el('span', { text: 'Continue on another account at daily limit' }),
         el('span', { class: 'switch' }, failoverToggle, el('span', { class: 'switch-track', 'aria-hidden': 'true' }))));
-      wrap.appendChild(el('p', { class: 'setting-desc', text: 'Failover is off by default on purpose: rotating accounts around a daily cap is a fair-use grey zone, and accounts on the same IP may share one limit anyway. See the Usage tab for your send log.' }));
+      wrap.appendChild(el('p', { class: 'setting-desc', text: 'Off by default. Same-IP accounts may share limits.' }));
       const trayToggle = el('input', { type: 'checkbox', class: 'switch-input', checked: Boolean(cfg.tray_enabled), 'aria-label': 'Keep in system tray when closed' });
       trayToggle.addEventListener('change', async () => {
         await API.saveSettings({ tray_enabled: trayToggle.checked });
@@ -9262,7 +9800,7 @@ You can start with a more structured option: one script, short captions, and a c
       }));
       wrap.appendChild(ioActions);
       wrap.appendChild(importInput);
-      wrap.appendChild(el('p', { class: 'setting-desc', text: 'Export carries settings, memory files and the MCP connector list \u2014 never account cookies. Import backs up the current settings first.' }));
+      wrap.appendChild(el('p', { class: 'setting-desc', text: 'Export includes settings, memory and connectors. Never cookies.' }));
       return wrap;
     }
 
@@ -9338,6 +9876,7 @@ You can start with a more structured option: one script, short captions, and a c
 
   /* ---------------------------------------------------------------------- */
   /* Right Workspace / Connectors panel                                    */
+  // ═══ 13-connectors.js ═══
   /* ---------------------------------------------------------------------- */
   function formatBytes(bytes) {
     const value = Number(bytes);
@@ -9763,7 +10302,7 @@ You can start with a more structured option: one script, short captions, and a c
   }
 
   function workspacePreviewUrl(path) {
-    return '/api/workspace/preview/' + String(path || '').split('/').map(encodeURIComponent).join('/');
+    return previewLink(path);
   }
 
   async function openWorkspaceFilePreview(entry) {
@@ -10102,7 +10641,9 @@ You can start with a more structured option: one script, short captions, and a c
   }
 
   function renderArenaConnectorsInto(node) {
-    node.appendChild(el('div', { class: 'connector-group-title', text: "Official Arena Connectors" }));
+    node.appendChild(el('div', { class: 'connector-group-title' },
+      el('span', { text: 'Arena connectors' }),
+      el('span', { class: 'connector-group-hint', text: 'Cloud apps for the Arena Agent' })));
     node.appendChild(el('div', { class: 'connector-group-note', text: "Agent Mode only — these work with Arena Agent. The switch picks which connected ones it may use." }));
     if (state.arenaConnectorsLoading && !state.arenaConnectors) {
       node.appendChild(el('div', { class: 'connector-empty' }, el('span', { class: 'mini-spinner' }), el('span', { text: " Loading account connectors…" })));
@@ -10162,11 +10703,18 @@ You can start with a more structured option: one script, short captions, and a c
     node.setAttribute('aria-busy', String(state.connectorsLoading || state.arenaConnectorsLoading));
     renderArenaConnectorsInto(node);
     node.appendChild(el('div', { class: 'connector-group-title connector-group-row' },
-      el('span', { text: 'Local MCP servers' }),
-      el('button', {
-        class: 'button button-small', type: 'button',
-        onclick: () => openAddConnectorModal('local')
-      }, iconEl('plus'), el('span', { text: 'Add' }))
+      el('span', { class: 'connector-group-name' },
+        el('span', { text: 'Local MCP servers' }),
+        el('span', { class: 'connector-group-hint', text: 'Run on this computer, from mcp.json' })),
+      el('span', { class: 'connector-group-actions' },
+        el('button', {
+          class: 'button button-small button-quiet', type: 'button', title: 'Edit mcp.json',
+          onclick: () => els.openMcpJsonButton?.click()
+        }, iconEl('braces'), el('span', { text: 'mcp.json' })),
+        el('button', {
+          class: 'button button-small', type: 'button',
+          onclick: () => openAddConnectorModal('local')
+        }, iconEl('plus'), el('span', { text: 'Add' })))
     ));
     if (state.connectorsLoading && !state.connectors) {
       node.appendChild(el('div', { class: 'connector-empty' }, el('span', { class: 'mini-spinner' }), el('span', { text: " Loading connectors…" })));
@@ -10319,7 +10867,7 @@ You can start with a more structured option: one script, short captions, and a c
   function openConnectorJsonOpenedModal(path) {
     const content = el('div', {},
       el('div', { class: 'note-box' }, iconEl('check'), el('span', { text: "The special MCP file is already open in the system editor." })),
-      el('p', { class: 'modal-copy', text: "Add servers to the mcpServers object, save the file, then come back here and click ‘Reload’. Local STDIO servers with command, args, env, and cwd are supported." }),
+      el('p', { class: 'modal-copy', text: "Add servers to the mcpServers object, save the file, then come back here and click 'Reload'. Local STDIO servers with command, args, env, and cwd are supported." }),
       el('div', { class: 'permission-detail-label', text: "File path" }),
       el('pre', { class: 'permission-detail', text: path })
     );
@@ -10568,6 +11116,7 @@ You can start with a more structured option: one script, short captions, and a c
 
   /* ---------------------------------------------------------------------- */
   /* Elements and event wiring                                             */
+  // ═══ 14-boot.js ═══
   /* ---------------------------------------------------------------------- */
   function cacheElements() {
     els.app = $('#app');
@@ -10620,6 +11169,9 @@ You can start with a more structured option: one script, short captions, and a c
     els.messageList = $('#messageList');
     els.composerForm = $('#composerForm');
     els.composerCard = $('.composer-card');
+    els.usageBarWrap = $('#usageBarWrap');
+    els.usageBarFill = $('#usageBarFill');
+    els.usageBarLabel = $('#usageBarLabel');
     els.composerShell = $('.composer-shell');
     els.welcomeComposerSlot = $('#welcomeComposerSlot');
     els.mainArea = $('.main-area');
@@ -11159,6 +11711,130 @@ You can start with a more structured option: one script, short captions, and a c
   /* ---------------------------------------------------------------------- */
   /* Boot                                                                  */
   /* ---------------------------------------------------------------------- */
+  /* ---------------------------------------------------------------------- */
+  /* One-time first-run setup: checks what the app needs, offers installs.  */
+  /* ---------------------------------------------------------------------- */
+  async function runFirstRunSetup() {
+    let settings = {};
+    try { settings = await API.getSettings(); } catch { return; }
+    if (settings?.setup_done) return;
+
+    const overlay = el('div', { class: 'setup-overlay', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'setupTitle' });
+    const list = el('ol', { class: 'setup-steps' });
+    const finish = el('button', { class: 'button setup-finish', type: 'button', disabled: true }, el('span', { text: 'Checking…' }));
+    overlay.appendChild(el('div', { class: 'setup-panel' },
+      el('h2', { class: 'setup-title', id: 'setupTitle', text: 'Setting up Arena Desktop' }),
+      el('p', { class: 'setup-sub', text: 'A one-time check of what this computer has. Optional tools can be installed now or later in Settings → Components.' }),
+      list,
+      el('div', { class: 'setup-actions' }, finish)));
+    document.body.appendChild(overlay);
+
+    const addStep = (label) => {
+      const status = el('span', { class: 'setup-status is-run' }, el('span', { class: 'tool-spinner', 'aria-hidden': 'true' }));
+      const detail = el('span', { class: 'setup-detail', text: '' });
+      const row = el('li', { class: 'setup-step' }, status, el('div', { class: 'setup-copy' }, el('span', { class: 'setup-label', text: label }), detail));
+      list.appendChild(row);
+      return {
+        row,
+        done(text, kind = 'ok') {
+          status.className = `setup-status is-${kind}`;
+          status.replaceChildren(iconEl(kind === 'ok' ? 'check' : kind === 'warn' ? 'alert' : 'x'));
+          detail.textContent = text || '';
+        }
+      };
+    };
+    const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    const app = addStep('App settings and data folder');
+    await pause(250);
+    app.done(state.appVersion ? `Version ${state.appVersion}` : 'Ready');
+
+    const folder = addStep('Workspace folder');
+    await pause(200);
+    const ws = typeof state.workspace === 'string' ? state.workspace : '';
+    folder.done(ws ? `${ws}${state.workspaceChosen ? '' : ' (default — change it from the folder menu)'}` : 'Pick one from the folder menu when you need it', ws ? 'ok' : 'warn');
+
+    let components = [];
+    try { components = (await API.getComponents())?.components || []; } catch { components = []; }
+    const find = (id) => components.find((c) => c.id === id);
+    const offer = (id, label, why) => {
+      const step = addStep(label);
+      const comp = find(id);
+      if (!comp) { step.done('Could not check', 'warn'); return; }
+      if (comp.installed) { step.done(comp.version ? `Installed · ${comp.version}` : 'Installed'); return; }
+      step.done(`Not installed — ${why}`, 'warn');
+      const install = el('button', { class: 'button button-quiet setup-install', type: 'button' }, el('span', { text: 'Install' }));
+      install.addEventListener('click', async () => {
+        install.disabled = true;
+        install.firstChild.textContent = 'Starting…';
+        try {
+          const res = await API.installComponent(id);
+          if (res?.open_url) window.open(res.open_url, '_blank', 'noopener');
+          install.firstChild.textContent = res?.open_url ? 'Opened download page' : 'Installer started';
+        } catch (err) {
+          install.disabled = false;
+          install.firstChild.textContent = 'Retry';
+          toast(errorMessage(err), 'error', label);
+        }
+      });
+      step.row.appendChild(install);
+    };
+    await pause(150);
+    offer('webview2', 'Window engine (WebView2)', 'needed to draw the app window');
+    offer('node', 'Node.js', 'needed for npm / npx commands and most MCP servers');
+    offer('python', 'Python', 'needed for Python scripts the agent runs');
+
+    // Battle mode (the default) has no model list by design, so ask for the
+    // Direct-chat list to prove the arena.ai connection really works.
+    const account = addStep('Arena account');
+    for (let i = 0; i < 40 && engineStarting(state.status); i += 1) {
+      await pause(500);
+      await loadStatus({ quiet: true }).catch(() => null);
+    }
+    if (!state.authenticated) {
+      account.done('Not signed in yet. Use Sign in at the bottom left.', 'warn');
+    } else {
+      let count = 0;
+      try { count = modelArray(await API.getModels('text', 'direct')).length; } catch { count = 0; }
+      const who = state.email ? `Signed in as ${state.email}` : 'Signed in';
+      account.done(count ? `${who} · ${count} models available` : `${who} · model list did not load, it retries when you pick a model`, count ? 'ok' : 'warn');
+    }
+
+    finish.disabled = false;
+    finish.firstChild.textContent = 'Get started';
+    playChime(doneAudio || (primeDoneAudio(), doneAudio) || { state: 'closed' });
+    finish.focus();
+    await new Promise((resolve) => finish.addEventListener('click', resolve, { once: true }));
+    try { await API.saveSettings({ setup_done: true }); } catch { /* shown again next launch */ }
+    overlay.classList.add('is-leaving');
+    setTimeout(() => overlay.remove(), 180);
+  }
+
+  function engineStarting(status) {
+    const engine = status?.engine;
+    return Boolean(status && (status.loading || status.engine_loading
+      || (engine && typeof engine === 'object' && (engine.ready === false || engine.challenge))));
+  }
+
+  // Cold start: the arena.ai session loads in the background for a few
+  // seconds. Poll until it is ready, then load account, history and models,
+  // so nobody has to press Refresh after launching the app.
+  function watchEngineUntilReady() {
+    let tries = 0;
+    const tick = async () => {
+      tries += 1;
+      const status = await loadStatus({ quiet: true }).catch(() => null);
+      if (status && !engineStarting(status)) {
+        await Promise.allSettled([loadChats({ silent: true }), loadModels(state.modality, { quiet: true })]);
+        updateAccountUI();
+        renderChats();
+        return;
+      }
+      if (tries < 120) window.setTimeout(tick, 1500);
+    };
+    window.setTimeout(tick, 1200);
+  }
+
   async function boot() {
     loadUnreadDone();
     cacheElements();
@@ -11202,6 +11878,8 @@ You can start with a more structured option: one script, short captions, and a c
         await loadPermissions({ quiet: true });
         if (status.engine && normalizeEngine(status.engine).open) syncDock(false);
         updateComposerState();
+        if (!state.demo && (engineStarting(status) || state.cloudChatsError)) watchEngineUntilReady();
+        if (!state.demo) void runFirstRunSetup().catch(() => { document.querySelector('.setup-overlay')?.remove(); });
       } else {
         state.chatsLoading = false;
         state.chatsError = state.serverError || "Local server is unavailable.";

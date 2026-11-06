@@ -516,6 +516,7 @@ class FakeClient:
 class FakeResp:
     def __init__(self, lines=(), status=200, text=""):
         self.status_code, self._lines, self._text, self.error = status, list(lines), text, None
+        self.headers = {}
 
     def iter_text(self):
         for line in self._lines:
@@ -2547,6 +2548,11 @@ def test_portable_config_dir(tmp_path, monkeypatch):
     from arena import config as cfgmod
     exe_dir = tmp_path / "app"; exe_dir.mkdir()
     (exe_dir / "portable.txt").write_text("", encoding="utf-8")
+    monkeypatch.delenv("ARENA_CONFIG_DIR", raising=False)  # conftest isolation override
+    assert cfgmod._config_dir() != tmp_path  # sanity: env override gone
+    monkeypatch.setenv("ARENA_CONFIG_DIR", str(tmp_path / "override"))
+    assert cfgmod._config_dir() == tmp_path / "override"
+    monkeypatch.delenv("ARENA_CONFIG_DIR")
     monkeypatch.setattr(_sys, "frozen", True, raising=False)
     monkeypatch.setattr(_sys, "executable", str(exe_dir / "Arena-Desktop.exe"))
     assert cfgmod._config_dir() == exe_dir / "data"
@@ -2853,8 +2859,9 @@ def test_shell_refusal_and_idle_kill(monkeypatch, tmp_path):
     from arena import agent as agent_mod
     monkeypatch.setattr(agent_mod, "SHELL_IDLE_LIMIT", 1)
     assert "not run" in agent_mod.run_shell_command("vim file.txt", tmp_path)
-    out = agent_mod.run_shell_command(
-        "python3 -c \"import time; time.sleep(30)\"", tmp_path)
+    sleeper = tmp_path / "sleeper.py"
+    sleeper.write_text("import time\ntime.sleep(30)\n")
+    out = agent_mod.run_shell_command(f'python "{sleeper}"', tmp_path)
     assert "killed after 1s without output" in out
     assert agent_mod.run_shell_command("echo hi", tmp_path).endswith("hi")
 

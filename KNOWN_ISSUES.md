@@ -6,7 +6,9 @@ Things that are broken or unfinished in Arena Desktop. Fixes and pull requests a
 
 - **Your local files are not in arena's sandbox.** The model builds in arena.ai's own sandbox, so it only sees files it made there. Arena Desktop copies what it creates and edits into your folder, and sends back the files *it* wrote that you changed. Files it never wrote (for example an old `kimi-k3.txt`) are not sent, so asking it to edit one makes it create a new file instead.
 - **No file tree, editor or "Building..." view yet.** arena.ai shows a file tree, a code editor and a live preview while it builds. The app only shows the activity rows ("Created src/App.tsx") and the preview link.
-- **Commands and media stay in the sandbox.** `bash` steps (like `npm install`) and `fetch_media` images run only in arena's sandbox. Run `npm install` in your folder yourself.
+- **Commands and media stay in the sandbox.** In Arena Agent mode (arena.ai's own agent), `bash` steps (like `npm install`) and `fetch_media` images run only in arena's sandbox (`/home/user`), not on your computer. To run commands on your computer, use Agent mode with a local folder (Arena Desktop's own tools); its `run_cmd` runs in your folder.
+- **Background commands are per app session.** Dev servers started with `<background>true</background>` stop when the app closes. Their logs stay in `.arena-artifacts/bg<N>.log`. The ids restart at `bg1` after a restart.
+- **Shell commands are Windows `cmd.exe` syntax on Windows.** Bash-only syntax (`$(...)`, `export X=1`) fails there; the agent guide tells the model which shell it has.
 - **Preview link:** the `<id>.arena.site` link is picked up when arena.ai sends it in the stream; when arena finishes building after the stream ends, the link may not appear yet.
 - **Battle in Code mode** writes each model's files to `option-a` and `option-b`. Not tested live yet.
 
@@ -20,7 +22,7 @@ Things that are broken or unfinished in Arena Desktop. Fixes and pull requests a
 - **Tree does not auto-refresh.** Changing files outside the app (e.g. in VS Code) does not update the workspace panel until you manually navigate or refresh.
 - **Workspace preview runs scripts in a sandbox.** As of v1.3.0, `allow-scripts` is re-enabled with an opaque origin. Scripts run but cannot access the app's cookies or API token.
 
-## Security (v1.4.0)
+## Security (v1.5.0)
 
 - **CDN scripts still load without subresource integrity.** Planned for a future release.
 - **Release binary is unsigned.** No code signature, no SBOM, no CI pipeline yet. SmartScreen will warn.
@@ -31,10 +33,15 @@ Things that are broken or unfinished in Arena Desktop. Fixes and pull requests a
 
 ## Testing
 
-- 33 test failures in `test_tools`, `test_uploads`, and `test_v4` suites. Upload status code assertions and MCP stdio client pagination need updating.
+- 40 test failures in `test_core` (agent loop, auto-retry and subagent logic). Token injection and upload/safety tests fixed via `tests/conftest.py`.
 - The live test scripts close `arena-ai.exe` and change the shared folder setting while they run. Close the app before running them.
 
 ## Logs
 
 - `%USERPROFILE%\.arena-cli\desktop.log`: every send, its HTTP status, human checks and each sandbox step.
 - Start the app with `ARENA_STREAM_DUMP=1` to save every raw stream line to `%USERPROFILE%\.arena-cli\streams\`.
+
+## Arena Agent → local folder (v1.5.0)
+
+- Only file-tool writes and `cat > file << 'EOF'` heredocs are copied. Files made by other commands in Arena's cloud (`npm create`, `git clone`, `unzip`, generated builds) are not. Use the Local Agent for those, or ask the agent to write the files with its file tool.
+- Old Arena Agent chats saved before v1.5.0 have no tool input/output, so their rows show only the tool name.

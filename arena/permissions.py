@@ -25,7 +25,27 @@ MODES: Dict[str, str] = {
 
 KIND = {"read_file": "read", "ls": "read", "search": "read",
         "write_file": "edit", "edit_file": "edit", "mkdir": "edit", "write_project": "edit",
-        "delete": "delete", "run_cmd": "shell"}
+        "delete": "delete", "run_cmd": "shell",
+        # Stopping a background command the agent itself started cannot harm anything.
+        "stop_cmd": "read"}
+
+# Characters that only mean something to a real shell (chaining, pipes,
+# redirection, substitution, variable expansion). A command that uses any of
+# them runs through the system shell, so it is never auto-approved: the user
+# confirms each one, even after "allow such actions in this session".
+SHELL_OPERATORS = re.compile(r"[&|;<>`^!]|\$\(|\$\{|%[A-Za-z_][\w]*%|\$[A-Za-z_]")
+# Inline-code flags (python -c, node -e, powershell -enc ...) get the same treatment.
+INLINE_CODE = re.compile(r"(^|\s)(-c|-e|-r|--eval|--exec|-enc|-encodedcommand|-command|/c)(\s|$)", re.I)
+
+
+def needs_shell(command: str) -> bool:
+    """True when the command uses shell syntax (&&, |, >, $VAR ...)."""
+    return bool(SHELL_OPERATORS.search(command or ""))
+
+
+def needs_explicit_approval(command: str) -> bool:
+    """Commands the user must confirm one by one, whatever the session grants."""
+    return needs_shell(command) or bool(INLINE_CODE.search(command or ""))
 
 SAFE_CMD = re.compile(
     r"^\s*(dir|ls|pwd|echo|type|cat|where|which|tree|git\s+(status|log|diff|show|branch)|"
@@ -52,6 +72,8 @@ def decide(mode: str, tool: str, inside: bool = True, command: str = "") -> str:
     if kind == "read":
         return "allow" if inside else "ask"
     if mode == "bypassPermissions":
+        if kind == "shell" and needs_explicit_approval(command):
+            return "ask"
         return "allow" if inside else "ask"
     if mode == "plan":
         return "deny"
@@ -76,7 +98,10 @@ class PermissionBroker:
 
     def check(self, mode: str, tool: str, inside: bool = True, command: str = "") -> str:
         verdict = decide(mode, tool, inside, command)
-        if verdict == "ask" and inside and KIND.get(tool, "shell") in self._always:
+        kind = KIND.get(tool, "shell")
+        if verdict == "ask" and inside and kind in self._always:
+            if kind == "shell" and needs_explicit_approval(command):
+                return "ask"
             return "allow"
         return verdict
 

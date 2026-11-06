@@ -37,6 +37,22 @@ def ui_selection(mode: Any, modality: Any) -> Tuple[str, str]:
     return ui_mode, ui_modality
 
 
+def is_injected_title(title: Any) -> bool:
+    """True for titles Arena copied from the app's injected tool guide
+    ("[Arena Desktop] The user is chatting ...", or "[System] You are Arena
+    CLI ..." from older versions) instead of the user's words."""
+    return str(title or "").strip().lower().startswith((
+        "[arena desktop]", "[arena cli]", "[system]",
+        "you are working as a coding agent inside arena desktop", "you are arena cli"))
+
+
+def clean_title(title: Any, fallback: str = "Arena chat") -> str:
+    text = " ".join(str(title or "").split())
+    if is_injected_title(text):
+        return "Arena Desktop chat"
+    return text or fallback
+
+
 def entry_summary(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not isinstance(entry, dict) or not entry.get("id"):
         return None
@@ -51,7 +67,7 @@ def entry_summary(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "id": str(entry["id"]),
         "eval_id": str(entry["id"]),
         "type": kind,
-        "title": str(entry.get("title") or "Arena chat"),
+        "title": clean_title(entry.get("title")),
         "updated_at": entry.get("updatedAt") or entry.get("createdAt") or "",
         "created_at": entry.get("createdAt") or "",
         "mode": mode,
@@ -268,7 +284,7 @@ def session_to_local(session: Dict[str, Any],
     return {
         "id": str(session.get("id") or ""),
         "eval_id": str(session.get("id") or ""),
-        "title": str(session.get("title") or "Arena chat"),
+        "title": clean_title(session.get("title")),
         "mode": mode,
         "modality": modality,
         "model_a": model_ids["a"],
@@ -299,6 +315,36 @@ def _message_signature(message: Dict[str, Any]) -> Tuple[str, str, str]:
     )
 
 
+def _unwrap_injected(remote: List[Dict[str, Any]], local: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Arena stores what the app sent: injected memory or tool-guide text
+    followed by the user's words. Map such a user turn back to the local turn
+    that ends with the same words, and drop app-only turns (tool results,
+    continue prompts) plus the reply to them, so a refresh never adds them
+    to the chat as if the user had written them."""
+    def norm(value: Any) -> str:
+        return " ".join(str(value or "").split())
+
+    local_users = {norm(m.get("text")): m.get("text") for m in local if m.get("role") == "user" and norm(m.get("text"))}
+    out: List[Dict[str, Any]] = []
+    skip_reply = False
+    for message in remote:
+        role = message.get("role")
+        if role == "user":
+            text = norm(message.get("text"))
+            match = next((orig for words, orig in local_users.items() if text != words and text.endswith(words)), None)
+            if match is not None:
+                message = dict(message, text=match)
+            elif is_injected_title(text):
+                skip_reply = True
+                continue
+            skip_reply = False
+        elif role == "assistant" and skip_reply:
+            skip_reply = False
+            continue
+        out.append(message)
+    return out
+
+
 def merge_messages(local_messages: Any, remote_messages: Any) -> Tuple[List[Dict[str, Any]], int]:
     """Merge a fresh Arena transcript into an existing local one.
 
@@ -312,6 +358,7 @@ def merge_messages(local_messages: Any, remote_messages: Any) -> Tuple[List[Dict
     """
     local = [dict(item) for item in local_messages if isinstance(item, dict)] if isinstance(local_messages, list) else []
     remote = [dict(item) for item in remote_messages if isinstance(item, dict)] if isinstance(remote_messages, list) else []
+    remote = _unwrap_injected(remote, local)
     if not remote:
         return local, 0
     local_sigs = [_message_signature(item) for item in local]

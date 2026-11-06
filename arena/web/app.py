@@ -266,9 +266,12 @@ STATIC_DIR = _base / "arena" / "web" / "static" if getattr(sys, 'frozen', False)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 
 _API_TOKEN = secrets.token_urlsafe(32)
+# Read-only key for /preview/<key>/...: it only serves files of the chosen
+# folder, so a preview link can open anywhere without exposing the API token.
+_PREVIEW_TOKEN = secrets.token_urlsafe(18)
 _secrets = hmac
 
 
@@ -292,6 +295,18 @@ _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 
 def _validate_chat_id(chat_id: str) -> bool:
     return bool(_UUID_RE.match(chat_id))
+
+
+def _chat_changed(old, new) -> bool:
+    """True when the conversation itself changed: a message was added or a
+    message's text differs (re-saving the same history is not a change)."""
+    old, new = list(old or []), list(new or [])
+    if len(old) != len(new):
+        return True
+    def text(m):
+        return (m.get("role"), str(m.get("text") or m.get("content") or ""), str(m.get("text_b") or "")) \
+            if isinstance(m, dict) else (None, str(m), "")
+    return any(text(a) != text(b) for a, b in zip(old, new))
 
 
 def _save_chat(chat_id: str, title: str, messages: list,
@@ -319,7 +334,10 @@ def _save_chat(chat_id: str, title: str, messages: list,
         "title": title,
         "account_id": existing.get("account_id") or _current_account_id(),
         "created_at": existing.get("created_at", now),
-        "updated_at": now,
+        # Only real conversation changes move a chat up the list. Opening a
+        # chat runs an automatic refresh from Arena that re-saves it; that
+        # alone must not bump it to the top (it used to jump on every click).
+        "updated_at": now if _chat_changed(existing.get("messages"), messages) else existing.get("updated_at", now),
         "mode": mode,
         "modality": modality,
         "model_a": model_a,
@@ -366,6 +384,20 @@ def _chat_visible(data: dict, current_id, first_id) -> bool:
     return current_id is not None and owner == current_id
 
 
+def _chat_title(data: dict) -> str:
+    """Stored title, unless Arena copied it from the injected tool guide
+    ("[Arena Desktop] The user is ..."); then summarize the first user message."""
+    title = " ".join(str(data.get("title") or "").split())
+    if title and not history_sync.is_injected_title(title):
+        return title
+    for message in data.get("messages") or []:
+        if isinstance(message, dict) and message.get("role") == "user":
+            text = str(message.get("text") or "").strip()
+            if text and not history_sync.is_injected_title(text):
+                return _smart_title(text)
+    return history_sync.clean_title(title, "Untitled")
+
+
 def _list_chats() -> list:
     if not CHATS_DIR.exists():
         return []
@@ -384,7 +416,7 @@ def _list_chats() -> list:
                 continue
             chats.append({
                 "id": data.get("id", d.name),
-                "title": data.get("title", "Untitled"),
+                "title": _chat_title(data),
                 "updated_at": data.get("updated_at", ""),
                 "mode": data.get("mode"),
                 "modality": data.get("modality"),
@@ -527,7 +559,8 @@ def _auto_agent_model(preferred_id: str = None) -> Optional[dict]:
 @app.route("/")
 def index():
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    html = html.replace("</head>", f'  <meta name="api-token" content="{_API_TOKEN}">\n</head>', 1)
+    html = html.replace("</head>", f'  <meta name="api-token" content="{_API_TOKEN}">\n'
+                                   f'  <meta name="preview-token" content="{_PREVIEW_TOKEN}">\n</head>', 1)
     return html, 200, {"Content-Type": "text/html; charset=utf-8"}
 
 
@@ -1195,6 +1228,7 @@ _SETTINGS_ALLOWLIST = frozenset({
     "theme", "font_size", "show_welcome", "auto_scroll", "send_on_enter",
     "workspace_dir", "default_mode", "default_modality", "model_a", "model_b",
     "sidebar_collapsed", "sound", "notifications", "check_updates",
+    "notify_sound", "notify_volume", "update_check", "setup_done",
 })
 
 @app.route("/api/settings", methods=["GET", "POST"])
@@ -1217,6 +1251,7 @@ def api_usage():
     return jsonify({"today": datetime.date.today().isoformat(),
                     "current_account": _current_account_id(),
                     "days": store.get("days") or {},
+                    "live": store.get("live") or {},
                     "events": list(reversed(store.get("events") or []))})
 
 
@@ -1385,7 +1420,7 @@ def api_chat_load(chat_id):
     client.active_mode = contracts.api_mode(_ui_mode)
     client.active_modality = contracts.api_modality(_ui_modality)
     client.eval_id = data.get("eval_id")
-    data = dict(data, history_chars=_history_chars(data.get("messages") or []))
+    data = dict(data, title=_chat_title(data), history_chars=_history_chars(data.get("messages") or []))
     return jsonify(data)
 
 
@@ -1406,6 +1441,12 @@ def api_chat_refresh(chat_id):
     data = _load_chat(chat_id)
     if not data:
         return jsonify({"error": "Chat not found", "code": "not_found"}), 404
+    if data.get("tools_guide") or data.get("agent_backend") == "local":
+        # Local-tool chats: Arena's copy holds the tool guide and every tool
+        # result as extra turns. The local transcript is the real one; merging
+        # Arena's copy in made those turns bleed into the chat.
+        return jsonify({"ok": True, "chat_id": chat_id, "kind": "local", "added": 0,
+                        "total": len(data.get("messages") or []), "title": _chat_title(data)})
     if _chat_generating(chat_id):
         return jsonify({"error": "This chat is generating right now. Refresh it when the answer finishes.",
                         "code": "busy"}), 409
@@ -1656,20 +1697,36 @@ def api_settings_import():
         if key in _SETTINGS_ALLOWLIST:
             cfg[key] = val
     save_config(cfg)
+    # Validate workspace_dir through the same rules as /api/workspace/set
+    if "workspace_dir" in cfg:
+        ws_raw = cfg["workspace_dir"]
+        if isinstance(ws_raw, str) and ws_raw.strip():
+            ws_path = Path(ws_raw).expanduser().resolve()
+            if ws_path == Path(ws_path.anchor) or ws_path == Path.home().resolve():
+                cfg.pop("workspace_dir", None)
+                save_config(cfg)
+    _MEMORY_CAP = 100_000
+    warnings = []
     try:
         if isinstance(data.get("memory_global"), str):
+            mem = data["memory_global"][:_MEMORY_CAP]
             GLOBAL_MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-            GLOBAL_MEMORY_FILE.write_text(data["memory_global"], encoding="utf-8")
+            GLOBAL_MEMORY_FILE.write_text(mem, encoding="utf-8")
         folder = _chosen_ws()
         if folder and isinstance(data.get("memory_workspace"), str):
-            (Path(folder) / MEMORY_FILE_NAME).write_text(data["memory_workspace"], encoding="utf-8")
+            mem = data["memory_workspace"][:_MEMORY_CAP]
+            (Path(folder) / MEMORY_FILE_NAME).write_text(mem, encoding="utf-8")
+        # MCP config is NOT imported — it can contain arbitrary commands that
+        # auto-start without user approval.  Users must configure MCP servers
+        # manually through the UI.
         if isinstance(data.get("mcp"), (dict, list)):
-            mcp_file = connectors._config_path()
-            mcp_file.parent.mkdir(parents=True, exist_ok=True)
-            mcp_file.write_text(json.dumps(data["mcp"], ensure_ascii=False, indent=1), encoding="utf-8")
+            warnings.append("MCP server config was skipped for security — configure servers manually.")
     except OSError as e:
         return jsonify({"error": f"Import partially failed: {e}", "code": "save_failed"}), 500
-    return jsonify({"ok": True, "backup": stamp})
+    result = {"ok": True, "backup": stamp}
+    if warnings:
+        result["warnings"] = warnings
+    return jsonify(result)
 
 
 _URL_RE = re.compile(r"(https?://[A-Za-z0-9.\-]+)(/[^\s'\"]*)?")
@@ -2676,6 +2733,69 @@ def api_chat_vote(chat_id):
 
 # ---------- arena.ai account history (cloud chats) ----------
 
+_TITLE_LEADIN = re.compile(
+    r"^(?:(?:please|pls|hey|hi|hello|ok|okay|so)[,!.]?\s+|(?:can|could|would|will) you\s+|"
+    r"i (?:want|need|would like)(?: you)? to\s+|help me(?: to)?\s+|let'?s\s+|i want\s+)+", re.I)
+
+
+def _smart_title(text: str) -> str:
+    """Short sidebar title from the first message, used until Arena names the chat."""
+    flat = " ".join(str(text or "").split())
+    flat = re.sub(r"https?://\S+", "", flat).strip()
+    first = re.split(r"(?<=[.!?])\s", flat, maxsplit=1)[0] if flat else ""
+    first = _TITLE_LEADIN.sub("", first).strip(" .!?,:;-\"'")
+    words = first.split()
+    if not words:
+        return "New chat"
+    title = " ".join(words[:8]) + ("…" if len(words) > 8 else "")
+    return (title[:1].upper() + title[1:])[:60]
+
+
+def _schedule_arena_title(chat_id: str) -> None:
+    """Swap the provisional title for the summary title Arena generates for the
+    conversation (the one arena.ai shows in its own sidebar), once it exists."""
+    def work():
+        for delay in (8, 20, 45, 90):
+            time.sleep(delay)
+            data = _load_chat(chat_id)
+            if not data:
+                return
+            native = data.get("native") if isinstance(data.get("native"), dict) else {}
+            remote = native.get("session_id") or data.get("eval_id")
+            if not remote:
+                continue
+            title = ""
+            try:
+                if data.get("agent_backend") == "arena" or native.get("session_id"):
+                    session, error, _ = _arena_get_json(contracts.PATHS["chat_session"].format(
+                        session_id=urllib.parse.quote(str(remote))), timeout=20)
+                    title = "" if error else history_sync.agentic_title(session)
+                else:
+                    session, error, _ = _arena_get_json(contracts.PATHS["evaluation"].format(
+                        eval_id=urllib.parse.quote(str(remote))), timeout=20)
+                    if not error and isinstance(session, dict):
+                        title = str(session.get("title") or "").strip()
+            except Exception:
+                LOG.debug("arena title fetch failed", exc_info=True)
+            title = " ".join(title.split())[:80]
+            if history_sync.is_injected_title(title):
+                return  # Arena titled the tool guide, not the user's words; keep ours.
+            if not title or title.lower() in ("arena chat", "arena agent", "new chat", "untitled"):
+                continue
+            if _chat_generating(chat_id):
+                continue
+            fresh = _load_chat(chat_id) or {}
+            if fresh.get("title") != title:
+                fresh["title"] = title
+                try:
+                    (CHATS_DIR / chat_id / "chat.json").write_text(
+                        json.dumps(fresh, ensure_ascii=False, indent=2), encoding="utf-8")
+                except OSError:
+                    return
+            return
+    threading.Thread(target=work, daemon=True, name="arena-title").start()
+
+
 def _arena_get_json(path: str, timeout: float = 30, method: str = "GET"):
     """Request one Arena API resource through the signed-in engine when present."""
     method = str(method or "GET").upper()
@@ -2968,6 +3088,73 @@ def _wait_for(check, seconds: int):
         if i % 10 == 9:
             yield _sse({"type": "ping"})
     return check()
+
+
+def _history_output(output) -> str:
+    """The part of a tool result kept in chat history for the UI (not the model)."""
+    text = str(output or "")
+    if len(text) <= 2000:
+        return text
+    return text[:1200] + "\n...\n" + text[-700:]
+
+
+def _run_cmd_live(tool_obj, call: dict, lane: str, call_id: str):
+    """Run one run_cmd on a worker thread, streaming its output to the UI.
+
+    Yields ``tool_progress`` SSE events (the tail of the output so far) and
+    keep-alive pings; returns (ok, output). Stop kills the command."""
+    chunks: "queue.Queue[str]" = queue.Queue()
+    stop_evt = threading.Event()
+    box: dict = {}
+
+    def work():
+        try:
+            box["res"] = tool_obj.run(call, on_output=chunks.put, should_stop=stop_evt.is_set)
+        except Exception as e:  # never leave the generator waiting
+            box["res"] = (False, f"{type(e).__name__}: {e}")
+
+    worker = threading.Thread(target=work, daemon=True, name="arena-run-cmd")
+    worker.start()
+    tail = ""
+    last_emit = last_ping = time.monotonic()
+    while True:
+        worker.join(0.3)
+        got = []
+        while True:
+            try:
+                got.append(chunks.get_nowait())
+            except queue.Empty:
+                break
+        if got:
+            tail = (tail + "".join(got))[-6000:]
+        if _stopped():
+            stop_evt.set()
+        now = time.monotonic()
+        alive = worker.is_alive()
+        if got and (now - last_emit >= 0.35 or not alive):
+            last_emit = last_ping = now
+            yield _sse({"type": "tool_progress", "id": call_id, "model": lane, "tool": "run_cmd",
+                        "output": tail[-4000:]})
+        elif now - last_ping >= 10:
+            last_ping = now
+            yield _sse({"type": "ping"})
+        if not alive:
+            break
+    result = box.get("res") or (False, "Error: the command did not report a result")
+    try:
+        missing = None if result[0] else agent.missing_component(
+            (call.get("params") or {}).get("cmd") or "", result[1])
+        if missing:
+            names = {"node": "Node.js", "python": "Python"}
+            yield _sse({"type": "component_missing", "component": missing,
+                        "name": names.get(missing, missing),
+                        "reason": f"The agent ran a command that needs {names.get(missing, missing)}"})
+            result = (result[0], result[1] + f"\n[Arena Desktop] {names.get(missing, missing)} is not "
+                      "installed on this computer. The user was offered an installer; do not retry "
+                      "this command until they say it is installed.")
+    except Exception:
+        pass
+    return result
 
 
 def _permit(mode: str, tool: str, info: dict):
@@ -3487,6 +3674,47 @@ def _usage_note_429(conv, err) -> None:
         pass
 
 
+def _emit_usage_from_headers(headers: dict, conv: dict):
+    """Emit a usage SSE event from the ratelimit headers arena.ai already sent."""
+    if not headers:
+        return
+    try:
+        rl_remaining = headers.get("ratelimit-remaining")
+        rl_reset = headers.get("ratelimit-reset")
+        rl_modality = headers.get("ratelimit-modality")
+        if rl_remaining is None and rl_reset is None:
+            return
+        evt = {"type": "usage"}
+        if rl_remaining is not None:
+            try:
+                evt["remaining"] = int(float(rl_remaining))
+            except (TypeError, ValueError):
+                evt["remaining_raw"] = str(rl_remaining)
+        if rl_reset is not None:
+            try:
+                evt["reset"] = int(float(rl_reset))
+            except (TypeError, ValueError):
+                evt["reset_raw"] = str(rl_reset)
+        if rl_modality:
+            evt["modality"] = str(rl_modality)
+        account_id, email = _usage_account()
+        try:
+            live = _usage().setdefault("live", {})
+            live[account_id] = {k: evt.get(k) for k in ("remaining", "reset", "modality")
+                                if evt.get(k) is not None}
+            live[account_id].update({"ts": time.time(), "email": email})
+        except Exception:
+            pass
+        day = _usage_day()
+        acct = day.get(account_id)
+        if acct:
+            evt["sends_today"] = int(acct.get("sends") or 0)
+            evt["rate_limits_today"] = int(acct.get("rate_limits") or 0)
+        yield _sse(evt)
+    except Exception:
+        pass
+
+
 # ----------------------------------------------------------------------
 # Adaptive request pacing (v5.1.1): a client-side governor in front of
 # every chat send. Short Arena throttles are mostly triggered by bursts
@@ -3659,6 +3887,7 @@ def _turn(client: ArenaClient, content: str, conv: dict):
                 out = yield from _line_events(r, conv)
                 if _engine_on():
                     ENGINE.sync_to(client)
+                yield from _emit_usage_from_headers(r.headers, conv)
                 return out
             err = contracts.classify_error(r.status_code, r.text if r.status_code else (r.error or ""),
                                            headers=getattr(r, "headers", None))
@@ -4626,7 +4855,7 @@ def _native_drain_cursor(client, session_id, trigger_address, pat, timezone, max
     return cursor, pat
 
 
-def _native_agent_run(client, message: str, existing: dict, timezone, result=None, files=None):
+def _native_agent_run(client, message: str, existing: dict, timezone, result=None, files=None, sync=False):
     """Run one native Arena Agent turn. Yields SSE events; returns a result dict.
 
     The PAT lives only in memory; the persisted state is
@@ -4648,6 +4877,9 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
     needs_drain = bool(nat.get("needs_drain"))
     connectors = _native_connected_slugs()
     pat = None
+    # Workspace Sync: copy the agent's file writes into the chosen local folder.
+    sync_root = _chosen_ws() if sync else None
+    result.setdefault("previews", [])
 
     def publish_native():
         if session_id:
@@ -4995,6 +5227,7 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
                     elif event["type"] == "tool_call":
                         entry = {"tool": event["tool"], "summary": event["summary"],
                                  "tool_call_id": event.get("id") or None,
+                                 "input": str(event.get("path") or "")[:2000] or None,
                                  "lane": "a", "diff": None, "ok": True, "status": "running"}
                         result["tools"].append(entry)
                         if event.get("id"):
@@ -5004,6 +5237,15 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
                         if entry is not None:
                             entry["ok"] = event["ok"]
                             entry["status"] = event["status"]
+                            entry["output"] = _history_output(event.get("output"))
+                        if sync_root is not None and event.get("ok"):
+                            call = str(event.get("id") or "")
+                            yield from _native_mirror(event.get("tool") or (entry or {}).get("tool"),
+                                                      tool_inputs.get(call), nat, sync_root)
+                        for url in _ARENA_SITE.findall(json.dumps(chunk.get("output"), default=str)):
+                            if url not in result["previews"]:
+                                result["previews"].append(url)
+                                yield _sse({"type": "preview", "model": "a", "url": url, "title": "Site preview"})
                     elif event["type"] == "hitl_wait":
                         call_id = str(event.get("tool_call_id") or event.get("id") or "")
                         entry = tool_entries.get(call_id)
@@ -5097,6 +5339,144 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
                    "the next message will pick it up.")
     publish_native()
     return result
+
+
+_SANDBOX_HOMES = ("/home/user", "/workspace", "/mnt/data", "/mnt/user-data")
+_MIRROR_SKIP_DIRS = {"node_modules", ".git", "__pycache__", ".venv", "venv", ".next", ".cache"}
+_HEREDOC_HEAD = re.compile(
+    r"cat\s+(?:>\s*(?P<p1>[^\s<>|;&]+)\s*<<-?\s*(?P<q1>['\"]?)(?P<t1>[A-Za-z_]\w*)(?P=q1)"
+    r"|<<-?\s*(?P<q2>['\"]?)(?P<t2>[A-Za-z_]\w*)(?P=q2)\s*>\s*(?P<p2>[^\s<>|;&]+))[^\n]*\n")
+_ARENA_SITE = re.compile(r"https://[a-z0-9-]+\.arena\.site(?:/[^\s\"'<>)\]`]*)?", re.I)
+
+
+def _sandbox_rel(path, cwd=None):
+    """Map a path in Arena Agent's cloud sandbox to one relative to the local
+    folder; None for system paths outside the agent's home or for bulky
+    dependency folders (node_modules, .git ...)."""
+    import posixpath
+    p = str(path or "").replace("\\", "/").strip().strip("'\"")
+    base = str(cwd or "/home/user").replace("\\", "/").strip().strip("'\"")
+    if not p:
+        return None
+    if p == "~" or p.startswith("~/"):
+        p = "/home/user" + p[1:]
+    if base == "~" or base.startswith("~/"):
+        base = "/home/user" + base[1:]
+    if not base.startswith("/"):
+        base = "/home/user/" + base
+    if not p.startswith("/"):
+        p = base.rstrip("/") + "/" + p
+    p = posixpath.normpath(p)
+    for home in _SANDBOX_HOMES:
+        if p.startswith(home + "/"):
+            rel = p[len(home) + 1:]
+            break
+    else:
+        return None
+    parts = rel.split("/")
+    if not rel or ".." in parts or any(seg in _MIRROR_SKIP_DIRS for seg in parts[:-1]):
+        return None
+    return rel
+
+
+def _heredoc_writes(command: str):
+    """Files a shell command writes with `cat > f << 'EOF' ... EOF` (the way
+    agents often create files): [(path, content, cwd)]. Unquoted heredocs
+    whose body the shell would expand ($VAR, backticks) are skipped."""
+    found, pos = [], 0
+    while True:
+        m = _HEREDOC_HEAD.search(command or "", pos)
+        if not m:
+            return found
+        tag = m.group("t1") or m.group("t2")
+        quoted = bool(m.group("q1") or m.group("q2"))
+        end = re.compile(r"^[ \t]*" + re.escape(tag) + r"[ \t]*$", re.M).search(command, m.end())
+        if not end:
+            return found
+        body = command[m.end():end.start()]
+        if quoted or not re.search(r"[$`]", body):
+            cds = re.findall(r"(?:^|&&|;|\n)\s*cd\s+([^\s;&|]+)", command[:m.start()])
+            found.append(((m.group("p1") or m.group("p2")), body, cds[-1] if cds else None))
+        pos = end.end()
+
+
+def _native_mirror(tool, tool_input, nat, root):
+    """Workspace Sync for Arena Agent's own file tools: each write, edit and
+    delete it makes in its cloud sandbox is copied into the local folder as it
+    happens. Same safety as the Code-mode mirror: one permission per chat, and
+    a file changed on this computer is never overwritten or deleted.
+    Yields SSE events; returns the relative paths saved."""
+    if root is None or not tool_input:
+        return []
+    args = tool_input
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            args = {}
+    args = args if isinstance(args, dict) else {}
+    op = contracts.sandbox_op({"toolName": str(tool or "tool"), "input": args})
+    ops = []
+    if op.get("kind") in ("write", "edit", "delete"):
+        rel = _sandbox_rel(op.get("path"))
+        if rel:
+            ops.append(dict(op, rel=rel))
+    elif op.get("kind") == "run":
+        for path, body, cwd in _heredoc_writes(str(args.get("command") or args.get("cmd") or "")):
+            rel = _sandbox_rel(path, cwd)
+            if rel:
+                ops.append({"kind": "write", "rel": rel, "content": body})
+    if not ops:
+        return []
+    if nat.get("file_sync_ok") is None:
+        info = {"tool": "write_file", "inside": True, "path": str(root), "rel": ".", "model": "a",
+                "summary": f"Copy the files Arena Agent writes into {root.name}"}
+        nat["file_sync_ok"] = (yield from _permit(_perm_mode(), "write_file", info)) == "allow"
+    if not nat.get("file_sync_ok"):
+        return []
+    man = _sync_load(root)
+    saved = []
+    for op in ops:
+        try:
+            target = workspace._inside(root, op["rel"])
+            rel = target.relative_to(root).as_posix()
+            current = target.read_bytes() if target.is_file() else None
+            if target.exists() and not target.is_file():
+                raise ValueError(f"{rel} is a folder on this computer")
+            if current is not None and (rel not in man or _digest(current) != man[rel]):
+                raise PermissionError(f"{rel} has changes made on this computer, so it was left as is")
+            if op["kind"] == "delete":
+                if current is not None:
+                    info = {"tool": "delete", "inside": True, "path": str(target), "rel": rel, "model": "a",
+                            "summary": f"Delete {rel} (Arena Agent deleted it)"}
+                    if (yield from _permit(_perm_mode(), "delete", info)) != "allow":
+                        continue
+                    target.unlink()
+                man.pop(rel, None)
+                saved.append(rel)
+                continue
+            if op["kind"] == "edit":
+                old = (current or b"").decode("utf-8", errors="replace")
+                if current is None or op["old"] not in old:
+                    raise ValueError(f"{rel} could not be updated: the local copy differs from Arena's")
+                data = old.replace(op["old"], op["new"], 1).encode("utf-8")
+            else:
+                data = str(op.get("content") or "").encode("utf-8")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            man[rel] = _digest(data)
+            saved.append(rel)
+        except (OSError, ValueError) as e:
+            yield _sse({"type": "notice", "model": "a", "text": f"Workspace Sync: {e}"})
+    _sync_save(root, man)
+    for rel in saved:
+        if rel.lower().endswith((".html", ".htm")) and (root / rel).is_file():
+            yield _sse({"type": "file_preview", "model": "a", "path": rel, "html": True})
+    if saved:
+        yield _sse({"type": "files_written", "model": "a", "root": str(root), "written": saved,
+                    "deleted": [], "files": [{"path": rel, "name": rel.rsplit("/", 1)[-1],
+                                              "note": f"Saved to {root.name}"} for rel in saved]})
+    return saved
 
 
 def _native_file_bridge(files, native_state):
@@ -6147,6 +6527,8 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                     }
                 else:
                     info = dict(tools[l].describe(call), model=l)
+                call_id = f"t{uuid.uuid4().hex[:10]}"
+                info["id"] = call_id
                 yield _sse(dict(info, type="tool_call"))
                 if mcp_entry:
                     if mcp_error:
@@ -6174,7 +6556,10 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                     if answer == "allow":
                         if call["name"] in ("write_file", "edit_file", "delete"):
                             _checkpoint_capture(conv, l, info)
-                        ok, output = tools[l].run(call)
+                        if call["name"] == "run_cmd":
+                            ok, output = yield from _run_cmd_live(tools[l], call, l, call_id)
+                        else:
+                            ok, output = tools[l].run(call)
                         status = "ok" if ok else "error"
                         if call["name"] == "run_cmd":
                             conv.pop("_output_cache", None)
@@ -6186,8 +6571,12 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                             if answer == "blocked" else "denied by the user"
                 outcomes.append((call, status, output))
                 conv.setdefault("tools", []).append({"tool": call["name"], "summary": info.get("summary"), "lane": l,
-                                                     "diff": info.get("diff"), "ok": ok, "status": status})
-                yield _sse({"type": "tool_result", "model": l, "tool": call["name"], "rel": info.get("rel"), "ok": ok,
+                                                     "diff": info.get("diff"), "ok": ok, "status": status,
+                                                     "id": call_id, "command": info.get("command") or None,
+                                                     "rel": info.get("rel"), "background": info.get("background") or None,
+                                                     "output": _history_output(output)})
+                yield _sse({"type": "tool_result", "id": call_id, "model": l, "tool": call["name"],
+                            "rel": info.get("rel"), "ok": ok,
                             "status": status, "output": (output or "")[:4000]})
         if _stopped():
             break
@@ -6295,6 +6684,65 @@ def _storage_put(upload_url: str, data: bytes, media_type: str) -> Optional[str]
     return None
 
 
+_IMAGE_CONVERT_EXT = {".bmp", ".dib", ".tif", ".tiff", ".ico", ".avif", ".tga", ".ppm", ".pgm",
+                      ".pbm", ".jfif", ".pjpeg", ".gif", ".heic", ".heif", ".jp2", ".psd", ".pcx"}
+_TEXTLIKE_EXT = {".py", ".pyw", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs", ".c", ".h", ".cpp", ".cc",
+                 ".hpp", ".cs", ".rb", ".php", ".swift", ".kt", ".kts", ".scala", ".sh", ".bash", ".zsh",
+                 ".ps1", ".psm1", ".bat", ".cmd", ".sql", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+                 ".log", ".r", ".lua", ".pl", ".dart", ".vue", ".svelte", ".scss", ".sass", ".less",
+                 ".gradle", ".properties", ".tex", ".rst", ".svg", ".ipynb", ".tsv", ".srt", ".vtt",
+                 ".env", ".gitignore", ".dockerfile", ".makefile", ".mk", ".asm", ".s", ".m", ".jl", ".ex",
+                 ".exs", ".erl", ".hs", ".clj", ".fs", ".vb", ".zig", ".nim", ".sol", ".proto", ".graphql"}
+
+
+def _looks_like_text(data: bytes) -> bool:
+    head = data[:8192]
+    if b"\x00" in head:
+        return False
+    try:
+        head.decode("utf-8")
+        return True
+    except UnicodeDecodeError as e:
+        return e.start >= len(head) - 4  # a multi-byte char cut at the sample edge
+
+
+def _convert_attachment(filename: str, data: bytes, media_type: str, kind: str):
+    """Middleman for files Arena refuses: (filename, data, media_type, note).
+
+    Images Arena does not take (BMP, TIFF, ICO, AVIF, GIF outside Agent Mode ...)
+    become PNG; code and other text files become text/plain for Agent Mode.
+    Anything else is returned unchanged and the normal validation explains why
+    it cannot be sent."""
+    ext = Path(filename).suffix.lower()
+    allowed = (contracts.AGENT_ATTACHMENT_MIME_TYPES if kind == "agent"
+               else contracts.EVAL_ATTACHMENT_MIME_TYPES)
+    if media_type in allowed:
+        return filename, data, media_type, None
+    if media_type.startswith("image/") and media_type != "image/svg+xml" or ext in _IMAGE_CONVERT_EXT:
+        if ext in (".heic", ".heif"):
+            raise ValueError("HEIC/HEIF photos cannot be converted here yet. Export the photo as JPEG or PNG and attach that.")
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(data)) as im:
+                im.seek(0)
+                frame = im.convert("RGBA" if im.mode in ("RGBA", "LA", "P", "PA") else "RGB")
+            frame.thumbnail((4096, 4096))
+            buf = io.BytesIO()
+            frame.save(buf, "PNG", optimize=True)
+            return (Path(filename).stem or "image") + ".png", buf.getvalue(), "image/png", \
+                f"converted {ext or media_type} to PNG"
+        except Exception:
+            LOG.info("attachment image conversion failed for %s", ext or media_type, exc_info=True)
+            return filename, data, media_type, None
+    if kind == "agent" and (ext in _TEXTLIKE_EXT or media_type.startswith("text/") or _looks_like_text(data)):
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = data.decode("latin-1")
+        return filename + ".txt", text.encode("utf-8"), "text/plain", f"sent {ext or 'the file'} as plain text"
+    return filename, data, media_type, None
+
+
 @app.route("/api/uploads", methods=["POST"])
 def api_uploads():
     """Upload one attachment to Arena's storage, exactly like arena.ai's composer.
@@ -6318,8 +6766,16 @@ def api_uploads():
     if not data:
         return jsonify({"error": "That file is empty.", "code": "bad_request"}), 400
     media_type = _attachment_media_type(filename, upload.mimetype or "")
+    try:
+        filename, data, media_type, converted = _convert_attachment(filename, data, media_type, kind)
+    except ValueError as e:
+        return jsonify({"error": str(e), "code": "unsupported_attachment"}), 400
+    if converted:
+        LOG.info("upload middleman: %s", converted)
     refusal = _validate_upload(kind, media_type, len(data), modality)
     if refusal:
+        if kind != "agent" and _looks_like_text(data):
+            refusal += " Text and code files can be attached in Agent Mode."
         return jsonify({"error": refusal, "code": "unsupported_attachment"}), 400
     if kind == "agent":
         digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
@@ -6516,7 +6972,9 @@ def _api_chat_impl():
         return jsonify({"error": attachment_error, "code": "unsupported_attachment"}), 400
     if _ui_mode == "agent" and agent_backend == "arena":
         tz = data.get("timezone") if isinstance(data.get("timezone"), str) else None
-        title = existing.get("title") or message[:50]
+        title = existing.get("title") or _smart_title(message)
+        if not existing.get("title"):
+            _schedule_arena_title(chat_id)
         nat_history = list(existing.get("messages") or [])
         user_entry = {"role": "user", "text": message}
         if turn_attachments:
@@ -6583,7 +7041,8 @@ def _api_chat_impl():
             session_persisted = bool((existing.get("native") or {}).get("session_id"))
             try:
                 run = _native_agent_run(client, native_message, existing, tz, result=out,
-                                        files=turn_attachments or None)
+                                        files=turn_attachments or None,
+                                        sync=data.get("tools") is not False)
                 returned = None
                 while True:
                     try:
@@ -6620,6 +7079,10 @@ def _api_chat_impl():
                         reply["reasoning"] = out["reasoning"]
                     if out.get("tools"):
                         reply["tools"] = out["tools"]
+                    previews = list(out.get("previews") or [])
+                    previews += [u for u in _ARENA_SITE.findall(out.get("text") or "") if u not in previews]
+                    if previews:
+                        reply["previews"] = previews[:5]
                     if out.get("error") and not out.get("text"):
                         reply["error"] = out["error"]
                     nat_history.append(reply)
@@ -6668,7 +7131,9 @@ def _api_chat_impl():
             "mcp_guide_hash": existing.get("mcp_guide_hash"),
             "memory_hash": existing.get("memory_hash"),
             "delegate_sent": bool(existing.get("delegate_guide")),
-            "title": existing.get("title") or message[:50], "tools": []}
+            "title": existing.get("title") or _smart_title(message), "tools": []}
+    if not existing.get("title"):
+        _schedule_arena_title(chat_id)
     history = list(existing.get("messages") or [])
     user_entry = {"role": "user", "text": message}
     if turn_attachments:
@@ -6958,7 +7423,7 @@ def api_terminal():
         r"\bcertutil\b|\bcurl\b.*-o|\bwget\b|\biwr\b|\binvoke-webrequest\b)", re.I)
     if _BLOCKED_RE.search(cmd):
         return jsonify({"error": "Blocked command pattern"}), 403
-    if any(c in cmd for c in ('|', '&', ';', '`', '$(')):
+    if any(c in cmd for c in ('|', '&', ';', '`', '$(', '>', '<', '^', '%', '!')):
         return jsonify({"error": "Shell metacharacters not allowed"}), 403
     try:
         argv = shlex.split(cmd)
@@ -6999,6 +7464,8 @@ def _local_same_origin_only():
         return jsonify({"error": "Unknown host"}), 403
     if request.path.startswith("/api/"):
         token = request.headers.get("X-Arena-Token")
+        if request.path.startswith("/api/workspace/preview/") and not token:
+            token = request.args.get("token")
         if not _secrets.compare_digest(token or "", _API_TOKEN):
             return jsonify({"error": "Missing or invalid API token"}), 403
     if request.method in ("GET", "HEAD", "OPTIONS"):
@@ -7249,6 +7716,15 @@ def api_workspace_download():
     return send_file(target, as_attachment=True, download_name=target.name)
 
 
+@app.route("/preview/<key>/<path:subpath>")
+def workspace_preview_link(key, subpath):
+    """Shareable preview URL: the key sits in the path, so the page's own
+    relative CSS/JS/image requests carry it too (a ?token= query does not)."""
+    if not _secrets.compare_digest(key or "", _PREVIEW_TOKEN):
+        return jsonify({"error": "This preview link expired. Open the preview again from the app."}), 403
+    return api_workspace_preview(subpath)
+
+
 @app.route("/api/workspace/preview/<path:subpath>")
 def api_workspace_preview(subpath):
     # Inline serving for the workspace preview: relative assets of an HTML
@@ -7292,13 +7768,17 @@ def api_workspace_upload():
         if ".." in rel.split("/"):
             results.append({"path": rel, "error": "Invalid path"})
             continue
-        target = root / rel
-        try:
-            workspace._inside(root, rel)
-        except Exception:
+        target = (root / rel).resolve()
+        if target != root and root not in target.parents:
             results.append({"path": rel, "error": "Path outside workspace"})
             continue
-        parts_lower = {part.lower() for part in Path(rel).parts}
+        if target.is_symlink():
+            sym_target = target.resolve()
+            if sym_target != root and root not in sym_target.parents:
+                results.append({"path": rel, "error": "Symlink escapes workspace"})
+                continue
+        resolved_rel = target.relative_to(root)
+        parts_lower = {part.lower() for part in resolved_rel.parts}
         if parts_lower & {s.lower() for s in _SENSITIVE_DIRS}:
             results.append({"path": rel, "error": "Sensitive directory"})
             continue
@@ -7796,6 +8276,8 @@ def api_media_save():
     folder = workspace.PROJECTS_DIR / "media"
     try:
         if url.startswith("data:"):
+            if len(url) > 10 * 1024 * 1024:
+                return jsonify({"ok": False, "error": "Data URI exceeds 10 MB limit."}), 413
             head, _, payload = url.partition(",")
             mime = head[5:].split(";")[0]
             blob, stem = base64.b64decode(payload), "media"
@@ -7809,11 +8291,13 @@ def api_media_save():
                 resolved = _sock.getaddrinfo(host, None)
                 for _, _, _, _, addr in resolved:
                     ip = _ipmod.ip_address(addr[0])
-                    if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
+                    _CGNAT = _ipmod.ip_network("100.64.0.0/10")
+                    if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local \
+                            or ip in _CGNAT:
                         return jsonify({"ok": False, "error": "Private/internal addresses not allowed."}), 400
             except _sock.gaierror:
                 return jsonify({"ok": False, "error": "Cannot resolve hostname."}), 400
-            r = requests.get(url, timeout=60, stream=True)
+            r = requests.get(url, timeout=60, stream=True, allow_redirects=False)
             r.raise_for_status()
             blob = b""
             for chunk in r.iter_content(1 << 16):

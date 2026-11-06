@@ -129,15 +129,27 @@ class TestFileTools(unittest.TestCase):
     def test_run_cmd_tool(self):
         runner = RunCmdTool(self.test_dir)
 
-        # Successful command
-        res = runner.execute({"cmd": "python -c \"print('Hello from shell')\""})
+        # Write helper scripts (inline -c is blocked by dangerous-flag filter).
+        # Paths quoted for shlex.split on Windows backslashes.
+        hello = Path(self.test_dir) / "hello.py"
+        hello.write_text("print('Hello from shell')", encoding="utf-8")
+        res = runner.execute({"cmd": f'python "{hello}"'})
         self.assertIn("Hello from shell", res)
 
-        # Command with error
-        err_res = runner.execute({"cmd": "python -c \"import sys; sys.stderr.write('error msg'); sys.exit(2)\""})
+        errscript = Path(self.test_dir) / "fail.py"
+        errscript.write_text(
+            "import sys; sys.stderr.write('error msg'); sys.exit(2)",
+            encoding="utf-8",
+        )
+        err_res = runner.execute({"cmd": f'python "{errscript}"'})
         self.assertIn("[STDERR]", err_res)
         self.assertIn("error msg", err_res)
         self.assertIn("exited with code 2", err_res)
+
+    def test_run_cmd_tool_blocks_dangerous_flags(self):
+        runner = RunCmdTool(self.test_dir)
+        res = runner.execute({"cmd": "python -c pass"})
+        self.assertIn("blocked for safety", res)
 
 
 class TestToolParsing(unittest.TestCase):
