@@ -99,9 +99,12 @@ settings*. Unchecked (the default) keeps user data. Silent removal:
 The binary is built on Windows in CI (`.github/workflows/build.yml`):
 
 1. Reads the version from `arena/version.py`.
-2. `python -m PyInstaller arena-cli.spec` → `dist/Arena-Desktop.exe`.
-3. Runs `Arena-Desktop.exe --version` as a smoke test.
-4. Publishes `Arena-Desktop-Setup-<version>.exe` and `Arena-Desktop-<version>.exe`.
+2. Runs the test suite, so a broken build never reaches a release.
+3. `python -m PyInstaller arena-cli.spec` → `dist/Arena-Desktop.exe`. The spec
+   collects `arena/web/server/` by folder, so the backend parts that
+   `app.py` loads by name ship with the exe instead of failing at startup.
+4. Runs `Arena-Desktop.exe --version` as a smoke test.
+5. Publishes `Arena-Desktop-Setup-<version>.exe` and `Arena-Desktop-<version>.exe`.
 
 Push a tag to publish a release the updater can see:
 
