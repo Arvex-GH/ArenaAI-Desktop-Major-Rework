@@ -39,20 +39,31 @@
       </header>
 
       <div class="sidebar-primary">
-        <button class="new-chat-button" id="newChatBtn" type="button" aria-label="New chat">
-          <span data-icon="plus"></span>
-          <span class="new-chat-label">New chat</span>
+        <button class="rail-row rail-row-new" id="newChatBtn" type="button" aria-label="New chat">
+          <span class="rail-icon" data-icon="plus"></span>
+          <span class="rail-label">New chat</span>
+          <span class="rail-key" aria-hidden="true">Ctrl N</span>
         </button>
 
-        <nav class="sidebar-nav" aria-label="Main sections">
-          <button class="nav-item" id="modelsNavBtn" type="button">
-            <span data-icon="layers"></span>
-            <span>Models</span>
-            <span class="nav-count" id="modelsNavCount" aria-hidden="true">—</span>
+        <span class="rail-rule" role="presentation"></span>
+
+        <nav class="rail-nav" aria-label="Main sections">
+          <button class="rail-row" id="searchNavBtn" type="button" aria-label="Search chats">
+            <span class="rail-icon" data-icon="search"></span>
+            <span class="rail-label">Search</span>
+            <span class="rail-key" aria-hidden="true">Ctrl K</span>
           </button>
-          <button class="nav-item" id="searchNavBtn" type="button">
-            <span data-icon="search"></span>
-            <span>Search</span>
+          <button class="rail-row" type="button" data-action="workspace" aria-label="Projects — choose the folder you work in">
+            <span class="rail-icon" data-icon="folder"></span>
+            <span class="rail-label">Projects</span>
+          </button>
+          <button class="rail-row rail-row-soon" id="artifactsNavBtn" type="button" aria-label="Artifacts">
+            <span class="rail-icon" data-icon="spark"></span>
+            <span class="rail-label">Artifacts</span>
+          </button>
+          <button class="rail-row" type="button" data-action="settings" aria-label="Customize — open settings">
+            <span class="rail-icon" data-icon="sliders"></span>
+            <span class="rail-label">Customize</span>
           </button>
         </nav>
       </div>
@@ -60,7 +71,6 @@
       <section class="sidebar-recents" aria-labelledby="recentsHeading">
         <div class="recents-head">
           <button class="recents-title" id="recentsToggle" type="button" aria-expanded="true" aria-controls="recentsBody">
-            <span data-icon="clock"></span>
             <span id="recentsHeading">Chats</span>
             <span class="recents-count" id="chatCount"></span>
           </button>
