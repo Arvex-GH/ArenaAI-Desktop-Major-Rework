@@ -3317,3 +3317,64 @@ body.is-resizing-y, body.is-resizing-y * { cursor: ns-resize !important; }
 .jump-pill { position: sticky; right: auto; bottom: 14px; width: max-content; margin: -40px 18px 0 auto; }
 .jump-pill[hidden] { display: none; }
 .scroll-bottom-btn { display: none !important; }
+
+/* ---------------------------------------------------------------------- */
+/* v1.6.0: in-app updates — one window that downloads and installs        */
+/* ---------------------------------------------------------------------- */
+.update-island { font-family: inherit; }
+.update-island .island-close { pointer-events: auto; }
+
+.modal.modal-update { width: min(92vw, 560px); }
+.update-body { display: flex; flex-direction: column; gap: 14px; }
+
+.update-versions {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.update-version {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 10px; border-radius: 7px;
+  border: 1px solid #333a39; background: #232727;
+  color: #bec3c0; font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.update-version.is-current { color: #8f9994; }
+.update-version.is-next {
+  border-color: #3b6a4c; background: #1e2b23; color: #cdeed8; font-weight: 600;
+}
+.update-arrow { color: #5b6560; font-size: 13px; }
+
+.update-notes {
+  max-height: 210px; overflow: auto; overscroll-behavior: contain;
+  padding: 12px 14px; border: 1px solid #2b3130; border-radius: 10px;
+  background: #1b1f1f;
+}
+.update-notes-text {
+  margin: 0; font-family: inherit; font-size: 12.5px; line-height: 1.6;
+  color: #b9bfbc; white-space: pre-wrap; word-break: break-word;
+}
+.update-notes-empty { margin: 0; color: #77807b; font-size: 12.5px; }
+
+.update-progress { display: flex; flex-direction: column; gap: 7px; }
+.update-progress-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  font-size: 11.5px; color: #9aa39e;
+}
+.update-progress-pct { font-variant-numeric: tabular-nums; color: #77807b; }
+.update-progress-track {
+  height: 4px; border-radius: 3px; background: #2c3231; overflow: hidden;
+}
+.update-progress-fill {
+  height: 100%; width: 0%; border-radius: 3px;
+  background: linear-gradient(90deg, #8dd39a, #b8e5bf);
+  transition: width 260ms cubic-bezier(.22,.72,.24,1);
+}
+
+.update-note { margin: 0; color: #8f9994; font-size: 12px; line-height: 1.55; }
+.update-error {
+  margin: 0; padding: 9px 11px; border-radius: 8px;
+  border: 1px solid #70433e; background: rgba(240,161,155,.08);
+  color: #ffc8c2; font-size: 12px; line-height: 1.5;
+}
+
+.update-foot { display: flex; align-items: center; gap: 8px; }
+.update-foot-spacer { flex: 1 1 auto; }
+.update-meta { color: #77807b; font-size: 11px; font-variant-numeric: tabular-nums; }

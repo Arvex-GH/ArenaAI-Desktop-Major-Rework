@@ -13,6 +13,10 @@
 
   // ═══ 01-core.js ═══
   const DEMO = new URLSearchParams(window.location.search).get('demo') === '1';
+  // The right-hand Workspace/Connectors column is retired for the 1.6 rework:
+  // its jobs (folder, files) live in the composer chip and Settings. Flip this
+  // back to true to bring the column and its buttons back.
+  const WORKSPACE_PANEL_ENABLED = false;
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -604,6 +608,11 @@
     getMemory() { return this.request('/api/memory'); },
     saveMemory(body) { return this.request('/api/memory', { method: 'POST', body }); },
     updateCheck(force = false) { return this.request(`/api/update-check${force ? '?force=1' : ''}`); },
+    updateDownload(force = false) { return this.request('/api/update/download', { method: 'POST', body: { force } }); },
+    updateProgress() { return this.request('/api/update/progress'); },
+    updateInstall() { return this.request('/api/update/install', { method: 'POST', body: {} }); },
+    updateCancel() { return this.request('/api/update/cancel', { method: 'POST', body: {} }); },
+    installInfo() { return this.request('/api/install-info'); },
     exportSettings() { return this.request('/api/settings/export'); },
     importSettings(bundle) { return this.request('/api/settings/import', { method: 'POST', body: bundle }); },
     diagnostics() { return this.request('/api/diagnostics'); },
@@ -1130,7 +1139,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '5.6.1',
+        app_version: '1.6.0',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -1330,7 +1339,26 @@
       if ('enabled' in body) demoStore.memoryEnabled = Boolean(body.enabled);
       return { ok: true, enabled: demoStore.memoryEnabled !== false, demo: true };
     },
-    async updateCheck() { await sleep(60); return { enabled: true, current: 'demo', latest: null, update: false, url: null, demo: true }; },
+    async updateCheck() {
+      await sleep(60);
+      const wanted = new URLSearchParams(window.location.search).get('update') === '1';
+      if (wanted) {
+        return {
+          enabled: true, current: '1.6.0', latest: '1.6.1', update: true, demo: true,
+          url: 'https://github.com/PlayzAe/arena.ai-desktop/releases',
+          published_at: new Date(Date.now() - 86400000 * 2).toISOString(),
+          notes: 'What changed in this build:\n\n· The sidebar is quieter: one New chat row, no oversized button.\n· Update flow rebuilt: the app downloads the new build, replaces itself and restarts.\n· Fixed lane answers being clipped when two models answered at once.\n· Chat titles are written by Arena and no longer overwritten locally.',
+          installer: { name: 'Arena-Desktop-Setup-1.6.1.exe', size: 84 * 1024 * 1024, kind: 'installer' },
+          can_install: true, install_mode: 'helper', installed_version: '1.6.0'
+        };
+      }
+      return { enabled: true, current: 'demo', latest: null, update: false, url: null, demo: true };
+    },
+    async updateDownload() { await sleep(60); return { ok: false, error: 'Updates are simulated in demo mode.' }; },
+    async updateProgress() { await sleep(30); return { ok: true, job: { phase: 'idle' }, mode: 'manual' }; },
+    async updateInstall() { await sleep(60); return { ok: false, error: 'Updates are simulated in demo mode.' }; },
+    async updateCancel() { await sleep(30); return { ok: true }; },
+    async installInfo() { await sleep(30); return { installed: false, mode: 'manual', version: 'demo' }; },
     async exportSettings() { await sleep(60); return { app: 'Arena Desktop', version: 1, config: {}, memory_global: demoStore.memoryGlobal || '', memory_workspace: demoStore.memoryWorkspace || '', mcp: null, demo: true }; },
     async importSettings(bundle = {}) { await sleep(60); if (typeof bundle.memory_global === 'string') demoStore.memoryGlobal = bundle.memory_global; return { ok: true, backup: 'demo', demo: true }; },
     async diagnostics() { await sleep(60); return { text: 'Arena Desktop (demo)\nDiagnostics are illustrative in demo mode.', demo: true }; },
@@ -2719,30 +2747,14 @@ You can start with a more structured option: one script, short captions, and a c
   }
 
   function checkForUpdatesOnce() {
-    if (state.demo || state.updateInfo) return;
+    if (state.updateInfo) return;
+    if (state.demo && new URLSearchParams(window.location.search).get('update') !== '1') return;
     API.updateCheck().then((info) => {
       state.updateInfo = info;
       if (info?.enabled !== false && info?.update && info?.latest) {
-        showUpdateIsland(info.latest, info.url);
+        maybeNotifyUpdate(info);
       }
     }).catch(() => {});
-  }
-
-  function showUpdateIsland(version, url) {
-    const existing = document.querySelector('.update-island');
-    if (existing) existing.remove();
-    const island = el('div', { class: 'update-island', title: 'Click to download the update' });
-    island.appendChild(el('span', { class: 'island-dot' }));
-    island.appendChild(el('span', { text: 'Update available \u2014 ' }));
-    island.appendChild(el('span', { class: 'island-ver', text: `v${version}` }));
-    const close = el('span', { class: 'island-close', text: '\u00d7' });
-    close.addEventListener('click', (e) => { e.stopPropagation(); island.remove(); });
-    island.appendChild(close);
-    island.addEventListener('click', () => {
-      if (url) window.open(url, '_blank', 'noopener');
-      else openSettings('about');
-    });
-    document.body.appendChild(island);
   }
 
   async function exportSettingsFile() {
@@ -9649,8 +9661,10 @@ You can start with a more structured option: one script, short captions, and a c
         wrap.appendChild(el('p', { class: 'setting-desc', text: `Version ${info.latest} is available (you have ${info.current}).` }));
       }
       const updActions = el('div', { class: 'setting-actions' });
-      if (info?.update && info?.url) {
-        updActions.appendChild(settingsActionButton(`Get ${info.latest}`, 'download', async () => { window.open(info.url, '_blank', 'noopener'); }, { variant: 'primary' }));
+      if (info?.update && info?.latest) {
+        updActions.appendChild(settingsActionButton(
+          info.can_install ? `Install ${info.latest}` : `Get ${info.latest}`, 'download',
+          async () => { openUpdateDialog(info); }, { variant: 'primary' }));
       }
       updActions.appendChild(settingsActionButton('Check for updates', 'refresh', async () => {
         const fresh = await API.updateCheck(true);
@@ -9935,6 +9949,11 @@ You can start with a more structured option: one script, short captions, and a c
   }
 
   function setWorkspacePanelOpen(open, { focusConnectors = false, persist = true, load = true } = {}) {
+    if (!WORKSPACE_PANEL_ENABLED) {
+      state.workspacePanelOpen = false;
+      syncWorkspacePanelVisibility();
+      return;
+    }
     state.workspacePanelOpen = Boolean(open);
     syncWorkspacePanelVisibility();
     if (persist) {
@@ -9953,6 +9972,10 @@ You can start with a more structured option: one script, short captions, and a c
   }
 
   function restoreWorkspacePanelPreference() {
+    if (!WORKSPACE_PANEL_ENABLED) {
+      setWorkspacePanelOpen(false, { persist: false, load: false });
+      return;
+    }
     let open = window.innerWidth >= 1180;
     try {
       const stored = localStorage.getItem('arenaPersonal.workspacePanelOpen.v4');
@@ -11921,4 +11944,283 @@ You can start with a more structured option: one script, short captions, and a c
   } else {
     void boot();
   }
+  // ═══ 15-update.js ═══
+  /* ---------------------------------------------------------------------- */
+  /* Updates: one dialog that checks, downloads and installs in place.       */
+  /* ---------------------------------------------------------------------- */
+
+  function updateSeenKey() { return 'arenaDesktop.updateSeen.v2'; }
+
+  function updateDismissed(version) {
+    try { return window.localStorage.getItem(updateSeenKey()) === String(version); } catch { return false; }
+  }
+
+  function rememberUpdate(version) {
+    try { window.localStorage.setItem(updateSeenKey(), String(version || '')); } catch { /* storage unavailable */ }
+  }
+
+  function releaseDateLabel(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    try {
+      return new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(date);
+    } catch { return ''; }
+  }
+
+  function bytesLabel(value) {
+    const size = Number(value) || 0;
+    if (!size) return '';
+    if (size > 1024 * 1024 * 1024) return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+    return `${Math.round(size / (1024 * 1024))} MB`;
+  }
+
+  function plainNotes(text) {
+    return String(text || '')
+      .replace(/\r/g, '')
+      .replace(/^#{1,6}\s*/gm, '')
+      .replace(/\*\*(.+?)\*\*/g, '$1')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/^\s*[-*]\s+/gm, '· ')
+      .trim();
+  }
+
+  function openUpdateDialog(info) {
+    const data = info || state.updateInfo || {};
+    if (!data || !data.latest) return;
+    if (state.activeModal) state.activeModal.close();
+
+    const canInstall = Boolean(data.can_install);
+    let job = null;
+    let pollTimer = null;
+    let busy = false;
+
+    const backdrop = el('div', { class: 'modal-backdrop' });
+    const modal = el('section', {
+      class: 'modal modal-update', role: 'dialog', 'aria-modal': 'true',
+      'aria-labelledby': 'update-title'
+    });
+
+    const closeButton = el('button', { class: 'icon-button', type: 'button', 'aria-label': 'Close update window' }, iconEl('x'));
+    const head = el('header', { class: 'modal-head' },
+      el('div', {},
+        el('p', { class: 'eyebrow', text: 'Arena Desktop' }),
+        el('h2', { id: 'update-title', text: `Version ${data.latest} is available` })
+      ),
+      closeButton
+    );
+
+    const body = el('div', { class: 'modal-body update-body' });
+    const versionRow = el('div', { class: 'update-versions' },
+      el('span', { class: 'update-version is-current', text: data.current ? `You have ${data.current}` : 'Installed build' }),
+      el('span', { class: 'update-arrow', 'aria-hidden': 'true', text: '→' }),
+      el('span', { class: 'update-version is-next', text: data.latest })
+    );
+    body.appendChild(versionRow);
+
+    const notesText = plainNotes(data.notes);
+    const notes = el('div', { class: 'update-notes' },
+      notesText ? el('pre', { class: 'update-notes-text', text: notesText }) : el('p', { class: 'update-notes-empty', text: 'This release does not include a description.' })
+    );
+    body.appendChild(notes);
+
+    const progress = el('div', { class: 'update-progress', hidden: true },
+      el('div', { class: 'update-progress-head' },
+        el('span', { class: 'update-progress-label', text: 'Preparing' }),
+        el('span', { class: 'update-progress-pct', text: '0%' })
+      ),
+      el('div', { class: 'update-progress-track' }, el('div', { class: 'update-progress-fill' }))
+    );
+    body.appendChild(progress);
+
+    const note = el('p', { class: 'update-note' });
+    body.appendChild(note);
+
+    const error = el('p', { class: 'update-error', hidden: true });
+    body.appendChild(error);
+
+    const foot = el('footer', { class: 'modal-foot update-foot' });
+    const meta = el('span', { class: 'update-meta' });
+    const later = el('button', { class: 'button button-quiet', type: 'button' }, el('span', { text: 'Later' }));
+    const primary = el('button', { class: 'button', type: 'button', 'data-autofocus': '' });
+    foot.append(meta, el('span', { class: 'update-foot-spacer' }), later, primary);
+
+    modal.append(head, body, foot);
+    backdrop.appendChild(modal);
+    els.modalRoot.replaceChildren(backdrop);
+
+    const published = releaseDateLabel(data.published_at);
+    const sizeLabel = bytesLabel(data.installer?.size);
+    meta.textContent = [published ? `Released ${published}` : '', sizeLabel].filter(Boolean).join(' · ');
+
+    function setPrimary(label, onClick) {
+      primary.replaceChildren(el('span', { text: label }));
+      primary.onclick = onClick;
+      primary.disabled = false;
+    }
+
+    function setProgress(visible, label, pct) {
+      progress.hidden = !visible;
+      if (!visible) return;
+      progress.querySelector('.update-progress-label').textContent = label;
+      progress.querySelector('.update-progress-pct').textContent = `${Math.round(pct)}%`;
+      progress.querySelector('.update-progress-fill').style.width = `${Math.max(2, Math.min(100, pct))}%`;
+    }
+
+    function showError(message) {
+      error.hidden = !message;
+      error.textContent = message || '';
+    }
+
+    function stopPolling() {
+      if (pollTimer) { window.clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    function close() {
+      stopPolling();
+      backdrop.remove();
+      document.removeEventListener('keydown', onKey);
+      if (state.activeModal?.backdrop === backdrop) state.activeModal = null;
+    }
+
+    function onKey(event) {
+      if (event.key === 'Escape' && !busy) { event.preventDefault(); close(); }
+    }
+
+    function markDismissed() {
+      rememberUpdate(data.latest);
+      close();
+      showUpdateBadge(data);
+    }
+
+    function fail(message) {
+      busy = false;
+      setProgress(false);
+      showError(message || 'Something went wrong.');
+      setPrimary(canInstall ? 'Try again' : 'Open the release page', startOrOpen);
+      later.disabled = false;
+    }
+
+    async function applyUpdate() {
+      busy = true;
+      showError('');
+      setProgress(true, 'Installing', 100);
+      primary.disabled = true;
+      later.disabled = true;
+      note.textContent = 'Arena Desktop closes and starts again in a moment. Your chats and settings stay where they are.';
+      try {
+        const result = await API.updateInstall();
+        if (!result?.ok) throw new Error(result?.error || 'The update could not be started.');
+        setProgress(true, 'Restarting Arena Desktop', 100);
+        stopPolling();
+      } catch (err) {
+        fail(errorMessage(err));
+      }
+    }
+
+    function pollOnce() {
+      API.updateProgress().then((result) => {
+        job = result?.job || null;
+        if (!job) return;
+        if (job.phase === 'downloading') {
+          const received = Number(job.received) || 0;
+          const total = Number(job.total) || 0;
+          const pct = total ? (received / total) * 100 : Number(job.pct) || 0;
+          setProgress(true, total ? `Downloading ${bytesLabel(received)} of ${bytesLabel(total)}` : 'Downloading', pct);
+        } else if (job.phase === 'ready') {
+          stopPolling();
+          busy = false;
+          setProgress(true, 'Download complete', 100);
+          note.textContent = 'The app will close, replace itself and start again. Chats and settings stay as they are.';
+          later.disabled = false;
+          setPrimary('Restart and update', applyUpdate);
+        } else if (job.phase === 'error') {
+          stopPolling();
+          fail(job.error || 'The download failed.');
+        }
+      }).catch(() => { /* keep the last known state */ });
+    }
+
+    async function startDownload() {
+      busy = true;
+      showError('');
+      primary.disabled = true;
+      later.disabled = true;
+      note.textContent = 'Downloading the new build from the official release page.';
+      setProgress(true, 'Starting the download', 1);
+      try {
+        const result = await API.updateDownload(false);
+        if (!result?.ok) throw new Error(result?.error || 'The download could not start.');
+        busy = false;
+        later.disabled = false;
+        setPrimary('Cancel download', () => {
+          API.updateCancel().catch(() => {});
+          stopPolling();
+          resetIdle();
+        });
+        pollOnce();
+        pollTimer = window.setInterval(pollOnce, 450);
+      } catch (err) {
+        fail(errorMessage(err));
+      }
+    }
+
+    function resetIdle() {
+      busy = false;
+      setProgress(false);
+      note.textContent = canInstall
+        ? 'The update downloads here, then Arena Desktop closes, replaces itself and starts again. Nothing else is touched.'
+        : 'This copy cannot replace itself. Download the new build from GitHub and run it over the old one.';
+      setPrimary(canInstall ? 'Download and install' : 'Open release page', startOrOpen);
+      later.disabled = false;
+    }
+
+    function startOrOpen() {
+      if (!canInstall) {
+        if (data.url) window.open(data.url, '_blank', 'noopener');
+        else toast('No download link in this release.', 'warning', 'Updates');
+        return;
+      }
+      startDownload();
+    }
+
+    primary.addEventListener('click', () => startOrOpen());
+    later.addEventListener('click', markDismissed);
+    closeButton.addEventListener('click', () => { if (!busy) markDismissed(); });
+    backdrop.addEventListener('pointerdown', (event) => { if (event.target === backdrop && !busy) markDismissed(); });
+    document.addEventListener('keydown', onKey);
+
+    resetIdle();
+    state.activeModal = { close, backdrop, modal, body };
+    window.requestAnimationFrame(() => {
+      try { primary.focus({ preventScroll: true }); } catch { /* noop */ }
+    });
+  }
+
+  /* A quiet chip that reopens the dialog after "Later". */
+  function showUpdateBadge(info) {
+    const existing = document.querySelector('.update-island');
+    if (existing) existing.remove();
+    if (!info?.latest) return;
+    const island = el('button', { class: 'update-island', type: 'button', title: `Arena Desktop ${info.latest} is available` },
+      el('span', { class: 'island-dot' }),
+      el('span', { text: 'Update ready' }),
+      el('span', { class: 'island-ver', text: info.latest }),
+      el('span', { class: 'island-close', 'aria-hidden': 'true', text: '×' })
+    );
+    island.addEventListener('click', (event) => {
+      if (event.target.closest('.island-close')) { island.remove(); return; }
+      island.remove();
+      openUpdateDialog(info);
+    });
+    document.body.appendChild(island);
+  }
+
+  function maybeNotifyUpdate(info) {
+    if (!info?.update || !info?.latest) return;
+    if (state.demo && new URLSearchParams(window.location.search).get('update') !== '1') return;
+    if (updateDismissed(info.latest)) { showUpdateBadge(info); return; }
+    openUpdateDialog(info);
+  }
+
 })();

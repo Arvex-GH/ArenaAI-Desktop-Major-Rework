@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark">
   <meta name="description" content="Arena Desktop — an unofficial local Windows client for arena.ai. A desktop interface over a local Flask + pywebview backend.">
   <title>Arena Desktop</title>
-  <link rel="stylesheet" href="/static/style.css?v=5.6.1" onerror="this.onerror=null;this.href='static/style.css?v=5.6.1'">
+  <link rel="stylesheet" href="/static/style.css?v=1.6.0" onerror="this.onerror=null;this.href='static/style.css?v=1.6.0'">
 </head>
 <body>
   <a class="skip-link" href="#prompt">Skip to the message box</a>
@@ -54,10 +54,6 @@
             <span data-icon="search"></span>
             <span>Search</span>
           </button>
-          <button class="nav-item" id="workspacePanelNavBtn" type="button" data-action="workspace-panel">
-            <span data-icon="folder"></span>
-            <span>Workspace</span>
-          </button>
         </nav>
       </div>
 
@@ -90,9 +86,6 @@
         <div class="sidebar-tools" aria-label="Quick actions">
           <button class="icon-button" type="button" data-action="engine-show" aria-label="Open the separate arena.ai window" title="Open the arena.ai window">
             <span data-icon="globe"></span>
-          </button>
-          <button class="icon-button" type="button" data-action="workspace-panel" aria-label="Show Workspace" title="Show Workspace">
-            <span data-icon="folder"></span>
           </button>
           <button class="icon-button" type="button" data-action="settings" aria-label="Settings" title="Settings">
             <span data-icon="settings"></span>
@@ -138,10 +131,6 @@
           <span class="demo-tag" id="demoChip" hidden title="Demo data and events">
             <span class="demo-dot" aria-hidden="true"></span> DEMO
           </span>
-          <button class="button button-quiet" type="button" id="workspacePanelTopButton" data-action="workspace-panel" aria-pressed="false">
-            <span data-icon="panel-right"></span>
-            <span class="button-label">Workspace</span>
-          </button>
           <button class="button button-quiet topbar-engine" type="button" id="engineTopButton" data-action="engine-show">
             <span data-icon="panel-right"></span>
             <span class="button-label">arena.ai window</span>
@@ -311,7 +300,7 @@
       </main>
     </div>
 
-    <aside class="workspace-panel" id="workspacePanel" aria-labelledby="workspacePanelTitle" hidden>
+    <aside class="workspace-panel" id="workspacePanel" aria-labelledby="workspacePanelTitle" hidden data-retired="v1.6">
       <div class="resize-handle resize-handle-workspace" id="workspaceResize" role="separator" aria-orientation="vertical" aria-label="Resize Workspace panel" title="Drag to resize. Double-click to reset." tabindex="0"></div>
       <section class="workspace-card" aria-label="Workspace files">
         <header class="workspace-panel-head">
@@ -410,6 +399,6 @@
     <div class="noscript-message">Arena Desktop needs JavaScript. Enable it in the WebView2 settings.</div>
   </noscript>
 
-  <script src="/static/app.js?v=5.6.1" defer onerror="this.onerror=null;this.src='static/app.js?v=5.6.1'"></script>
+  <script src="/static/app.js?v=1.6.0" defer onerror="this.onerror=null;this.src='static/app.js?v=1.6.0'"></script>
 </body>
 </html>

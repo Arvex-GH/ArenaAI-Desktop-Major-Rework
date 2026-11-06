@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arena Desktop Setup</title>
+<style>
+  /* Arena Desktop setup window — one flat paper surface, ink type, and a
+     single thin progress line. No wizard chrome, no next/back pages. */
+  *, *::before, *::after { box-sizing: border-box; }
+
+  :root {
+    --paper: #f4f1ea;
+    --paper-edge: #e3ddcf;
+    --ink: #14161a;
+    --ink-soft: #3d4048;
+    --muted: #7d786e;
+    --faint: #a49d90;
+    --rail: #e0d9ca;
+    --accent: #1e9e63;
+    --accent-soft: #d8efe1;
+    --danger: #a3392f;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+    --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    cursor: default;
+  }
+
+  .shell {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 0;
+    background:
+      radial-gradient(120% 90% at 50% -20%, #faf8f3 0%, rgba(250, 248, 243, 0) 60%),
+      var(--paper);
+    box-shadow: inset 0 0 0 1px var(--paper-edge);
+  }
+
+  /* Title strip: quiet, draggable, with the one control we need. */
+  .chrome {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 34px;
+    padding: 0 10px 0 18px;
+    flex: 0 0 auto;
+  }
+  .chrome-label {
+    color: var(--faint);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  .chrome-close {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--faint);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .chrome-close:hover { background: rgba(20, 22, 26, 0.07); color: var(--ink); }
+
+  /* Brand block */
+  .stage {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    padding: 0 40px 26px;
+    text-align: center;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .brand-mark {
+    display: block;
+    width: 46px;
+    height: 46px;
+    color: var(--ink);
+  }
+  .brand-mark svg { width: 100%; height: 100%; display: block; }
+
+  .brand-word {
+    font-family: var(--serif);
+    font-size: 43px;
+    font-weight: 400;
+    letter-spacing: -0.022em;
+    line-height: 1;
+    color: var(--ink);
+  }
+
+  .brand-sub {
+    margin: 10px 0 0;
+    color: var(--faint);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.3em;
+    text-indent: 0.3em;
+    text-transform: uppercase;
+  }
+
+  .tagline {
+    margin: 22px 0 0;
+    max-width: 360px;
+    min-height: 20px;
+    color: var(--ink-soft);
+    font-size: 12.5px;
+    line-height: 1.55;
+    text-wrap: pretty;
+  }
+  .tagline b { font-weight: 600; color: var(--ink); }
+
+  /* Bottom: status, one hairline of progress, one quiet row of facts. */
+  .foot {
+    flex: 0 0 auto;
+    padding: 0 30px 20px;
+  }
+
+  .progress-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 9px;
+  }
+  .status-text {
+    color: var(--ink-soft);
+    font-size: 12px;
+    letter-spacing: -0.005em;
+  }
+  .status-pct {
+    color: var(--faint);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .track {
+    position: relative;
+    height: 3px;
+    border-radius: 3px;
+    background: var(--rail);
+    overflow: hidden;
+  }
+  .fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0%;
+    border-radius: 3px;
+    background: var(--ink);
+    transition: width 240ms cubic-bezier(0.22, 0.72, 0.24, 1);
+  }
+  .fill::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.35));
+  }
+  .shell[data-state="error"] .fill { background: var(--danger); }
+  .shell[data-state="done"] .fill { background: var(--accent); }
+
+  .foot-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 34px;
+    margin-top: 12px;
+  }
+  .target {
+    overflow: hidden;
+    color: var(--faint);
+    font-size: 10.5px;
+    letter-spacing: 0.005em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .buttons { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+
+  button.link {
+    padding: 5px 9px;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: var(--muted);
+    font-family: var(--sans);
+    font-size: 11.5px;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  button.link:hover { background: rgba(20, 22, 26, 0.06); color: var(--ink); }
+
+  button.primary {
+    padding: 8px 16px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--ink);
+    color: #f7f4ee;
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 560;
+    letter-spacing: 0.005em;
+    cursor: pointer;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.14) inset, 0 6px 14px -8px rgba(20, 22, 26, 0.7);
+    transition: transform 120ms ease, background 120ms ease;
+  }
+  button.primary:hover { background: #24262c; }
+  button.primary:active { transform: translateY(1px); }
+  button.primary:disabled { opacity: 0.4; cursor: default; transform: none; }
+
+  .dot {
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    vertical-align: 1px;
+  }
+  .shell[data-state="done"] .status-text { color: var(--ink); }
+  .shell[data-state="done"] .status-pct,
+  .shell[data-state="confirm"] .status-pct,
+  .shell[data-state="error"] .status-pct { visibility: hidden; }
+  .shell[data-state="error"] .status-text { color: var(--danger); }
+
+  /* Working animation: a barely-there pulse on the percentage. */
+  .shell[data-state="working"] .status-pct { animation: pulse 1.8s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+  }
+
+  .options { margin-top: 18px; }
+  .opt {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 12px;
+    border: 1px solid var(--paper-edge);
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.5);
+    color: var(--ink-soft);
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .opt input {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <div class="shell" id="shell" data-state="working">
+    <header class="chrome">
+      <span class="chrome-label">Arena Desktop <span id="chromeVersion"></span></span>
+      <button class="chrome-close" id="closeBtn" type="button" aria-label="Close setup">&times;</button>
+    </header>
+
+    <main class="stage">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" fill="none" focusable="false">
+            <g stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="7" y1="12.5" x2="41" y2="12.5" />
+              <line x1="11.5" y1="12.5" x2="11.5" y2="34" />
+              <line x1="19.5" y1="12.5" x2="19.5" y2="34" />
+              <line x1="28.5" y1="12.5" x2="28.5" y2="34" />
+              <line x1="36.5" y1="12.5" x2="36.5" y2="34" />
+              <line x1="7" y1="34" x2="41" y2="34" />
+              <polyline points="7,12.5 24,5.5 41,12.5" />
+            </g>
+            <circle cx="24" cy="41" r="2.1" fill="#1e9e63" />
+          </svg>
+        </span>
+        <span class="brand-word">Arena</span>
+      </div>
+      <p class="brand-sub">Desktop</p>
+      <p class="tagline" id="tagline">Installing for your account only. Your chats, accounts and settings stay exactly where they are.</p>
+      <div class="options hidden" id="options">
+        <label class="opt">
+          <input type="checkbox" id="wipeData">
+          <span>Also delete my chats, accounts and settings</span>
+        </label>
+      </div>
+    </main>
+
+    <footer class="foot">
+      <div class="progress-head">
+        <span class="status-text" id="statusText"><span class="dot"></span>Starting&hellip;</span>
+        <span class="status-pct" id="statusPct">0%</span>
+      </div>
+      <div class="track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="track">
+        <div class="fill" id="fill"></div>
+      </div>
+      <div class="foot-row">
+        <span class="target" id="targetText">Per-user install &middot; no administrator rights needed</span>
+        <div class="buttons" id="buttons">
+          <button class="link" id="cancelBtn" type="button">Cancel</button>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    shell: $("shell"), tagline: $("tagline"), statusText: $("statusText"),
+    statusPct: $("statusPct"), fill: $("fill"), track: $("track"),
+    target: $("targetText"), buttons: $("buttons"), close: $("closeBtn"),
+    version: $("chromeVersion")
+  };
+
+  let mode = "install";        // install | update | uninstall
+  let version = "";
+  let pollTimer = null;
+  let finished = false;
+
+  const bridge = () => (window.pywebview && window.pywebview.api) || null;
+
+  function setProgress(pct) {
+    const value = Math.max(0, Math.min(100, Math.round(pct)));
+    els.fill.style.width = value + "%";
+    els.statusPct.textContent = value + "%";
+    els.track.setAttribute("aria-valuenow", String(value));
+  }
+
+  function setStatus(text) {
+    els.statusText.textContent = text;
+  }
+
+  function button(kind, label, onClick) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = kind;
+    b.textContent = label;
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  function showButtons(...nodes) {
+    els.buttons.replaceChildren(...nodes.filter(Boolean));
+  }
+
+  function relax() {
+    els.buttons.replaceChildren();
+  }
+
+  function renderWorking(state) {
+    els.shell.dataset.state = "working";
+    setProgress(state.progress * 100);
+    const label = state.detail ? `${state.label} \u2014 ${state.detail}` : state.label;
+    setStatus(label || "Working\u2026");
+    if (!state.detail) {
+      els.target.textContent = mode === "update"
+        ? "Replacing the application file \u00b7 your data stays"
+        : "Per-user install \u00b7 no administrator rights needed";
+    }
+  }
+
+  function renderDone(state) {
+    finished = true;
+    stopPolling();
+    els.shell.dataset.state = "done";
+    setProgress(100);
+    setStatus(mode === "update" ? "Update installed"
+      : mode === "uninstall" ? "Removed" : "Arena Desktop is installed");
+    els.tagline.innerHTML = mode === "update"
+      ? "The new version is in place. Arena Desktop is starting again."
+      : mode === "uninstall"
+        ? "Arena Desktop has been removed. You can close this window."
+        : "Arena Desktop is installed for this account. Your chats, accounts and settings are exactly where you left them.";
+    els.target.textContent = state.install_dir || "";
+    if (mode === "update") { relax(); return; }
+    if (mode === "uninstall") {
+      els.target.textContent = "";
+      showButtons(button("primary", "Close", () => { const api = bridge(); if (api) api.close(); }));
+      return;
+    }
+    showButtons(
+      button("primary", "Open Arena Desktop", () => {
+        const api = bridge();
+        if (api) api.launch().catch(() => {});
+        setTimeout(() => { const a = bridge(); if (a) a.close(); }, 400);
+      }),
+      button("link", "Close", () => { const api = bridge(); if (api) api.close(); })
+    );
+  }
+
+  function renderError(state) {
+    finished = true;
+    stopPolling();
+    els.shell.dataset.state = "error";
+    setStatus(state.error || "Setup could not finish");
+    els.tagline.textContent = mode === "update"
+      ? "The update could not be installed. Your current version still works \u2014 start it again and retry later."
+      : "Setup ran into a problem. Nothing was changed on your account data.";
+    showButtons(
+      button("primary", "Try again", () => { start(); }),
+      button("link", "Close", () => { const api = bridge(); if (api) api.close(); })
+    );
+  }
+
+  function applyState(state) {
+    if (!state) return;
+    if (state.phase === "done") renderDone(state);
+    else if (state.phase === "error") renderError(state);
+    else renderWorking(state);
+  }
+
+  function stopPolling() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
+  async function pollOnce() {
+    const api = bridge();
+    if (!api) return;
+    try {
+      const state = await api.state();
+      if (state) applyState(state);
+      if (finished) stopPolling();
+    } catch (err) {
+      renderError({ error: String(err && err.message ? err.message : err) });
+    }
+  }
+
+  function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(pollOnce, 140);
+  }
+
+  async function start() {
+    finished = false;
+    els.shell.dataset.state = "working";
+    el0();
+    const api = bridge();
+    if (!api) return simulate();
+    try {
+      const started = await api.start();
+      if (started) applyState(started);
+    } catch (err) {
+      renderError({ error: String(err && err.message ? err.message : err) });
+      return;
+    }
+    startPolling();
+  }
+
+  function el0() {
+    els.buttons.replaceChildren();
+    setProgress(0);
+    setStatus("Starting");
+    els.tagline.textContent = mode === "update"
+      ? "Updating Arena Desktop in place. Your chats, accounts and settings stay exactly where they are."
+      : "Installing for your account only. Your chats, accounts and settings stay exactly where they are.";
+  }
+
+  function renderConfirm() {
+    els.shell.dataset.state = "confirm";
+    setProgress(0);
+    setStatus("Ready when you are");
+    els.tagline.textContent = "Arena Desktop will be removed from this PC. Your chats, accounts and settings stay unless you tick the box below.";
+    els.target.textContent = "Takes a second \u00b7 no files are kept";
+    $("options").classList.remove("hidden");
+    showButtons(
+      button("primary", "Remove", async () => {
+        const api = bridge();
+        if (api) {
+          try { await api.set_options($("wipeData").checked); } catch { /* older bridge */ }
+          const started = await api.start();
+          if (started) applyState(started);
+        }
+        startPolling();
+      }),
+      button("link", "Keep it", () => { const api = bridge(); if (api) api.close(); })
+    );
+  }
+
+  async function init() {
+    const api = bridge();
+    if (!api) return; // browser preview: simulate on start
+    try {
+      const info = await api.info();
+      mode = info.mode || "install";
+      version = info.version || "";
+      els.version.textContent = version ? `\u00b7 ${version}` : "";
+      if (mode === "uninstall") {
+        els.version.textContent = "";
+        renderConfirm();
+        return;
+      }
+      if (info.install_dir && mode !== "update") els.target.textContent = info.install_dir;
+      if (mode === "update") {
+        els.tagline.textContent = "Updating Arena Desktop in place. Your chats, accounts and settings stay exactly where they are.";
+      }
+      if (info.silent) {
+        const started = await api.start();
+        if (started) applyState(started);
+        startPolling();
+        return;
+      }
+    } catch { /* keep defaults */ }
+    start();
+  }
+
+  // Browser preview only (no pywebview): animate so the screen can be reviewed.
+  function simulate() {
+    els.version.textContent = "\u00b7 1.6.0";
+    const steps = [
+      [0.06, "Preparing"], [0.18, "Copying the application \u2014 12 of 84 MB"],
+      [0.52, "Copying the application \u2014 44 of 84 MB"], [0.78, "Creating shortcuts \u2014 start menu"],
+      [0.9, "Registering with Windows"], [1, "Finishing"]
+    ];
+    let i = 0;
+    const tick = () => {
+      if (i >= steps.length) { renderDone({ install_dir: "%LOCALAPPDATA%\\Programs\\Arena Desktop" }); return; }
+      const [p, label] = steps[i++];
+      setProgress(p * 100);
+      setStatus(label);
+      setTimeout(tick, 640);
+    };
+    setTimeout(tick, 300);
+  }
+
+  els.close.addEventListener("click", () => {
+    const api = bridge();
+    if (api) api.close();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      const api = bridge();
+      if (api) api.close();
+    }
+  });
+
+  if (window.pywebview && window.pywebview.api) {
+    init();
+  } else {
+    document.addEventListener("pywebviewready", init, { once: true });
+    setTimeout(() => {
+      if (!window.pywebview) { els.version.textContent = "\u00b7 1.6.0"; start(); }
+    }, 900);
+  }
+})();
+</script>
+</body>
+</html>

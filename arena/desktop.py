@@ -464,6 +464,15 @@ def main():
 
     contracts.load_overrides()
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    # An update replaces the exe in place; keep the install manifest truthful
+    # so Settings and the updater report the version that is really running.
+    try:
+        from arena.version import APP_VERSION as _APP_VERSION
+        from arena.setup import core as _setup_core
+        if _setup_core.is_supported():
+            _setup_core.sync_installed_manifest(_APP_VERSION)
+    except Exception:
+        pass
     logging.basicConfig(filename=str(CONFIG_DIR / "desktop.log"), level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("werkzeug").setLevel(logging.WARNING)  # keep the log to what the app does
