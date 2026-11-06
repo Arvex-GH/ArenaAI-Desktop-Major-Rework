@@ -789,8 +789,10 @@
         wrap.appendChild(el('p', { class: 'setting-desc', text: `Version ${info.latest} is available (you have ${info.current}).` }));
       }
       const updActions = el('div', { class: 'setting-actions' });
-      if (info?.update && info?.url) {
-        updActions.appendChild(settingsActionButton(`Get ${info.latest}`, 'download', async () => { window.open(info.url, '_blank', 'noopener'); }, { variant: 'primary' }));
+      if (info?.update && info?.latest) {
+        updActions.appendChild(settingsActionButton(
+          info.can_install ? `Install ${info.latest}` : `Get ${info.latest}`, 'download',
+          async () => { openUpdateDialog(info); }, { variant: 'primary' }));
       }
       updActions.appendChild(settingsActionButton('Check for updates', 'refresh', async () => {
         const fresh = await API.updateCheck(true);

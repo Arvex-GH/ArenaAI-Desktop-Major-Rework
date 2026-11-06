@@ -24,7 +24,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '5.6.1',
+        app_version: '1.6.0',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -224,7 +224,26 @@
       if ('enabled' in body) demoStore.memoryEnabled = Boolean(body.enabled);
       return { ok: true, enabled: demoStore.memoryEnabled !== false, demo: true };
     },
-    async updateCheck() { await sleep(60); return { enabled: true, current: 'demo', latest: null, update: false, url: null, demo: true }; },
+    async updateCheck() {
+      await sleep(60);
+      const wanted = new URLSearchParams(window.location.search).get('update') === '1';
+      if (wanted) {
+        return {
+          enabled: true, current: '1.6.0', latest: '1.6.1', update: true, demo: true,
+          url: 'https://github.com/PlayzAe/arena.ai-desktop/releases',
+          published_at: new Date(Date.now() - 86400000 * 2).toISOString(),
+          notes: 'What changed in this build:\n\n· The sidebar is quieter: one New chat row, no oversized button.\n· Update flow rebuilt: the app downloads the new build, replaces itself and restarts.\n· Fixed lane answers being clipped when two models answered at once.\n· Chat titles are written by Arena and no longer overwritten locally.',
+          installer: { name: 'Arena-Desktop-Setup-1.6.1.exe', size: 84 * 1024 * 1024, kind: 'installer' },
+          can_install: true, install_mode: 'helper', installed_version: '1.6.0'
+        };
+      }
+      return { enabled: true, current: 'demo', latest: null, update: false, url: null, demo: true };
+    },
+    async updateDownload() { await sleep(60); return { ok: false, error: 'Updates are simulated in demo mode.' }; },
+    async updateProgress() { await sleep(30); return { ok: true, job: { phase: 'idle' }, mode: 'manual' }; },
+    async updateInstall() { await sleep(60); return { ok: false, error: 'Updates are simulated in demo mode.' }; },
+    async updateCancel() { await sleep(30); return { ok: true }; },
+    async installInfo() { await sleep(30); return { installed: false, mode: 'manual', version: 'demo' }; },
     async exportSettings() { await sleep(60); return { app: 'Arena Desktop', version: 1, config: {}, memory_global: demoStore.memoryGlobal || '', memory_workspace: demoStore.memoryWorkspace || '', mcp: null, demo: true }; },
     async importSettings(bundle = {}) { await sleep(60); if (typeof bundle.memory_global === 'string') demoStore.memoryGlobal = bundle.memory_global; return { ok: true, backup: 'demo', demo: true }; },
     async diagnostics() { await sleep(60); return { text: 'Arena Desktop (demo)\nDiagnostics are illustrative in demo mode.', demo: true }; },

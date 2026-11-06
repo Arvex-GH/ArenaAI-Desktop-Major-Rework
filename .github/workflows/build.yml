@@ -1,0 +1,99 @@
+name: Build Windows build
+
+# Produces the file users download and double-click:
+#   Arena-Desktop-Setup-<version>.exe   ← the installer (same binary, --setup mode)
+#   Arena-Desktop-<version>.exe         ← portable, no install
+# Push a tag (v1.6.0) to publish a release the in-app updater can see.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          version=$(python - <<'PY'
+          import pathlib, re
+          text = pathlib.Path("arena/version.py").read_text(encoding="utf-8")
+          print(re.search(r'APP_VERSION = "([^"]+)"', text).group(1))
+          PY
+          )
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+          echo "Building Arena Desktop $version"
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" != "${{ steps.version.outputs.value }}" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match arena/version.py (${{ steps.version.outputs.value }})"
+            exit 1
+          fi
+
+      - name: Build the application
+        run: python -m PyInstaller arena-cli.spec --noconfirm --clean
+
+      - name: Smoke-test the build
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/Arena-Desktop.exe")) { throw "PyInstaller produced no executable" }
+          $size = (Get-Item "dist/Arena-Desktop.exe").Length / 1MB
+          Write-Host ("Built {0:N1} MB" -f $size)
+          # --version must answer without opening a window.
+          $out = & "dist/Arena-Desktop.exe" --version
+          Write-Host "Version output: $out"
+          if ($out -notmatch "Arena Desktop") { throw "The build did not report its version" }
+
+      - name: Name the downloads
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $v = "${{ steps.version.outputs.value }}"
+          Copy-Item "dist/Arena-Desktop.exe" "out/Arena-Desktop-Setup-$v.exe"
+          Copy-Item "dist/Arena-Desktop.exe" "out/Arena-Desktop-$v.exe"
+          Get-ChildItem out | Format-Table Name, Length
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Arena-Desktop-${{ steps.version.outputs.value }}
+          path: out/*.exe
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/*.exe \
+            --title "Arena Desktop $GITHUB_REF_NAME" \
+            --generate-notes

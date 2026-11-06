@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/PlayzAe/arena.ai-desktop/stargazers"><img src="https://img.shields.io/github/stars/PlayzAe/arena.ai-desktop?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/PlayzAe/arena.ai-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/PlayzAe/arena.ai-desktop?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.0-brightgreen?style=flat-square" alt="v1.5.0" />
+  <img src="https://img.shields.io/badge/version-1.6.0-brightgreen?style=flat-square" alt="v1.6.0" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.0](#whats-new-in-v150)
+- [What's new in v1.6.0](#whats-new-in-v160)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,9 +44,30 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.0
+## What's new in v1.6.0
 
-### Arena Agent files land on your computer
+### A real installer, and updates that install themselves
+
+`Arena-Desktop-Setup-<version>.exe` installs for the current user without admin
+rights: Start-menu shortcut, an entry under *Apps & features*, a working
+uninstaller, and no wizard — one window with the brand and a single progress
+line. The app then keeps itself current: it checks the official release feed,
+offers one dialog (*Download and install*), verifies the download against the
+published size and SHA-256, replaces its own executable and restarts. Accounts,
+chats, settings and memory are never touched, so nothing has to be set up again.
+See [INSTALLER.md](INSTALLER.md).
+
+### The right-hand column is gone
+
+The Workspace/Connectors panel is removed for this rework. Choosing a folder
+still works from the composer chip and Settings → Folder.
+
+### Previous: v1.5.0
+
+<details>
+<summary>What was new in v1.5.0</summary>
+
+#### Arena Agent files land on your computer
 
 With Workspace Sync on, every file the Arena Agent writes, edits or deletes in arena.ai's cloud workspace is copied into your chosen folder as it happens. This covers its file tools and `cat > file << 'EOF'` heredocs in shell commands. It asks once per chat, follows the permission mode, and never overwrites or deletes a file you changed on this computer. Dependency folders (`node_modules`, `.git`) are skipped. An HTML file it saves gets a live local preview.
 
@@ -85,6 +106,8 @@ The typewriter animation ("asking Terry", "beam searching", etc.) now reliably s
 ### Modular JS codebase
 
 `app.js` split from one 11,316-line file into 14 source modules in `js/`, each under 1,500 lines. Concatenated into `app.js` by `python scripts/build-js.py`. Same IIFE, zero runtime change. Only the frontend is split so far: the backend `arena/web/app.py` (about 8,000 lines: Flask routes, chat and agent loops, the Arena Agent stream, uploads, workspace) is still one module, and splitting it into smaller files is planned for the next release.
+
+</details>
 
 ### Previous: v1.4.0
 
@@ -147,9 +170,26 @@ Every build is on the [releases page](https://github.com/PlayzAe/arena.ai-deskto
 
 | Platform | Download | Notes |
 | --- | --- | --- |
-| Windows 10 / 11 | `Arena-Desktop.exe` | Standalone, no installer. Requires Edge WebView2 (built into Windows 11). |
+| Windows 10 / 11 | `Arena-Desktop-Setup-<version>.exe` | Installs for the current user (no admin rights) and keeps itself up to date. |
+| Windows 10 / 11 | `Arena-Desktop-<version>.exe` | Portable — run it from anywhere, nothing is installed. |
 
-If Windows SmartScreen warns: click **More info → Run anyway** (the EXE is not code-signed).
+Both need the Edge WebView2 runtime (built into Windows 11).
+
+**Install** — double-click the Setup file, wait for the one progress line, press
+*Open Arena Desktop*. It lands in `%LOCALAPPDATA%\Programs\Arena Desktop`, adds a
+Start-menu shortcut and a proper entry under *Apps & features*.
+
+**Updates** — the app checks the official releases itself and offers a single
+dialog: *Download and install*. It replaces itself in place and restarts; chats,
+accounts and settings stay exactly where they are. Nothing has to be set up again.
+
+**Uninstall** — *Apps & features → Arena Desktop → Uninstall*, with an opt-in
+checkbox if you also want your chats and settings removed.
+
+See [INSTALLER.md](INSTALLER.md) for the full picture (silent flags, update
+feed, signing, release process).
+
+If Windows SmartScreen warns: click **More info → Run anyway** (the build is not code-signed).
 
 ## What it does
 

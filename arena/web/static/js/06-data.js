@@ -30,30 +30,14 @@
   }
 
   function checkForUpdatesOnce() {
-    if (state.demo || state.updateInfo) return;
+    if (state.updateInfo) return;
+    if (state.demo && new URLSearchParams(window.location.search).get('update') !== '1') return;
     API.updateCheck().then((info) => {
       state.updateInfo = info;
       if (info?.enabled !== false && info?.update && info?.latest) {
-        showUpdateIsland(info.latest, info.url);
+        maybeNotifyUpdate(info);
       }
     }).catch(() => {});
-  }
-
-  function showUpdateIsland(version, url) {
-    const existing = document.querySelector('.update-island');
-    if (existing) existing.remove();
-    const island = el('div', { class: 'update-island', title: 'Click to download the update' });
-    island.appendChild(el('span', { class: 'island-dot' }));
-    island.appendChild(el('span', { text: 'Update available \u2014 ' }));
-    island.appendChild(el('span', { class: 'island-ver', text: `v${version}` }));
-    const close = el('span', { class: 'island-close', text: '\u00d7' });
-    close.addEventListener('click', (e) => { e.stopPropagation(); island.remove(); });
-    island.appendChild(close);
-    island.addEventListener('click', () => {
-      if (url) window.open(url, '_blank', 'noopener');
-      else openSettings('about');
-    });
-    document.body.appendChild(island);
   }
 
   async function exportSettingsFile() {

@@ -43,6 +43,7 @@ PARTS = [
     "12-settings.js",
     "13-connectors.js",
     "14-boot.js",
+    "15-update.js",
 ]
 
 def build():
