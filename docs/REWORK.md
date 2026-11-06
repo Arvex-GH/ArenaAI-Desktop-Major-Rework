@@ -114,7 +114,11 @@ current chat is the only thing that looks selected.
 
 ### What it becomes
 
-A calm rail, 252px wide, in the app's own voice:
+A calm rail, 252px wide, in the app's own voice. Captured from this build:
+
+![The rail on the home screen](screenshots/sidebar/rail-home.png)
+
+![The rail on its own](screenshots/sidebar/rail-crop.png)
 
 ```
  ⛬ Arena  DESKTOP                      ⌄
@@ -154,6 +158,14 @@ A calm rail, 252px wide, in the app's own voice:
   drops to 10px and only appears on the row you are pointing at.
 - **Hairlines instead of borders and shadows.** One 1px rule between the rail
   and the thread, one above the account block, nothing else.
+- **The wordmark is a serif**, the same voice as the setup window, so the app
+  and its installer read as one product. The "Desktop" tag lost its pill.
+- **The rail header is 52px**, matching the topbar, so the two share one
+  horizontal line across the window.
+- **Collapsed, the same rows keep their icons.** Nothing is re-invented for the
+  76px state:
+
+![The collapsed rail](screenshots/sidebar/rail-collapsed.png)
 
 ### Both themes
 
