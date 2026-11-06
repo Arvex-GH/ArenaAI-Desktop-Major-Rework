@@ -308,3 +308,5 @@ Released under the [MIT License](LICENSE). Not affiliated with Arena AI Inc.
 [![Discord](https://img.shields.io/static/v1?label=Discord&message=%40playzae&color=5865F2&style=flat-square&logo=discord&logoColor=white)](https://discord.com)
 
 DMs open — `@playzae`. For bugs and features: [GitHub Issues](../../issues).
+
+[![Star History Chart](https://app.repohistory.com/api/svg?repo=PlayzAe/arena.ai-desktop&type=Date&background=0D1117&color=f8d862)](https://app.repohistory.com/star-history)
