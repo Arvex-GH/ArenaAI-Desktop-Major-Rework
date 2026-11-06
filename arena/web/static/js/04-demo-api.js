@@ -230,7 +230,7 @@
       if (wanted) {
         return {
           enabled: true, current: '1.6.0', latest: '1.6.1', update: true, demo: true,
-          url: 'https://github.com/PlayzAe/arena.ai-desktop/releases',
+          url: 'https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases',
           published_at: new Date(Date.now() - 86400000 * 2).toISOString(),
           notes: 'What changed in this build:\n\n· The sidebar is quieter: one New chat row, no oversized button.\n· Update flow rebuilt: the app downloads the new build, replaces itself and restarts.\n· Fixed lane answers being clipped when two models answered at once.\n· Chat titles are written by Arena and no longer overwritten locally.',
           installer: { name: 'Arena-Desktop-Setup-1.6.1.exe', size: 84 * 1024 * 1024, kind: 'installer' },
@@ -343,6 +343,16 @@
     async setPermissionMode(mode) { demoStore.permissionMode = mode; await sleep(150); return { ok: true, mode }; },
     async getWorkspace() { await sleep(80); return { path: demoStore.workspace, workspace: demoStore.workspace, panel_root: demoStore.workspace }; },
     async setWorkspace(path) { demoStore.workspace = path; await sleep(160); return { ok: true, path }; },
+    async runLocal(path) {
+      await sleep(400);
+      return { ok: true, id: 'bg1', folder: path || demoStore.workspace, cmd: 'npm install && npm run dev',
+        running: true, urls: [], log: 'added 312 packages in 9s' };
+    },
+    async runLocalState(id) {
+      await sleep(120);
+      return { ok: true, id, running: true, urls: ['http://localhost:3000'], log: '  - Local: http://localhost:3000' };
+    },
+    async stopRunLocal(id) { await sleep(120); return { ok: true, id, running: false, urls: [], log: '' }; },
     async clearWorkspace() { demoStore.workspace = 'C:\\Users\\Demo\\ArenaProjects\\workspace'; await sleep(120); return { ok: true, workspace: demoStore.workspace, cleared: true }; },
     async saveWorkspace(chatId, lane) {
       await sleep(220);
@@ -882,6 +892,10 @@ You can start with a more structured option: one script, short captions, and a c
     accounts: [],
     currentAccountId: null,
     accountBusy: false,
+    accountTask: null,
+    arenaStatus: null,
+    arenaUnavailable: null,
+    arenaStatusHidden: '',
     pendingPermissions: [],
     permissionCount: 0,
     decidingPermissions: new Set(),

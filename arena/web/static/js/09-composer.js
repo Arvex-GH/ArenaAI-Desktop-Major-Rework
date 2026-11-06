@@ -485,7 +485,37 @@
         if (els.bannerDemo) els.bannerDemo.hidden = state.demo;
       }
     }
+    updateArenaStatusBanner();
     if (els.topbarTitle) els.topbarTitle.textContent = currentViewTitle();
+  }
+
+  // status.arena.ai trouble, or arena.ai failing the session check: the
+  // chats are not broken here, arena.ai itself is down
+  function updateArenaStatusBanner() {
+    const banner = els.arenaStatusBanner;
+    if (!banner) return;
+    const info = state.arenaStatus || {};
+    const reported = Boolean(info.indicator) && !['none', 'unknown'].includes(info.indicator);
+    const down = reported || Boolean(state.arenaUnavailable);
+    const key = down ? [info.indicator, info.description, info.incident, state.arenaUnavailable].join('|') : '';
+    const blocked = els.connectionBanner && !els.connectionBanner.hidden;
+    const show = !state.demo && down && !blocked && state.arenaStatusHidden !== key;
+    banner.hidden = !show;
+    if (!show) return;
+    banner.dataset.key = key;
+    banner.classList.toggle('is-minor', reported && info.indicator === 'minor');
+    if (els.arenaStatusTitle) {
+      els.arenaStatusTitle.textContent = reported
+        ? `arena.ai: ${info.description || 'service problem'}`
+        : 'arena.ai is not answering';
+    }
+    if (els.arenaStatusText) {
+      const lines = [];
+      if (info.incident) lines.push(`${info.incident}.`);
+      if (state.arenaUnavailable) lines.push(`Your sign-in could not be checked (${state.arenaUnavailable}).`);
+      lines.push('Chats may not load or answer until arena.ai recovers.');
+      els.arenaStatusText.textContent = lines.join(' ');
+    }
   }
 
   function updateAccountUI() {
@@ -511,6 +541,10 @@
       sub = state.serverError ? 'Check the local backend' : state.loginPending ? 'Waiting for sign-in…' : 'Sign in to continue';
       avatarClass = 'is-anonymous';
     }
+    // A running account action (switch, sign-out, cookie import) shows its step here too.
+    const task = state.accountTask;
+    const taskRunning = Boolean(task && !task.error && !task.done && task.step);
+    if (taskRunning) sub = task.step;
     if (els.accountName) els.accountName.textContent = name;
     if (els.accountState) els.accountState.textContent = sub;
     if (els.accountAvatar) {
@@ -530,6 +564,8 @@
     if (els.accountButton) {
       els.accountButton.setAttribute('aria-label', `Profile: ${name}. ${sub}. Open accounts`);
       els.accountButton.setAttribute('aria-haspopup', 'menu');
+      if (taskRunning) els.accountButton.setAttribute('aria-busy', 'true');
+      else els.accountButton.removeAttribute('aria-busy');
     }
   }
 
@@ -693,6 +729,28 @@
         const isSystemInjection = userText.startsWith('[Arena Desktop]') || userText.startsWith('[Arena Desktop memory');
         const isToolResult = /^Tool results:\n?\[?\d/m.test(userText);
         const isToolContinue = userText.startsWith('Continue the task.');
+        if (isSystemInjection) {
+          const words = userWordsAfterInjection(userText);
+          if (words) {
+            newTurn({ content: words, created_at: item.created_at ?? item.createdAt ?? item.timestamp,
+              attachments: normalizeUserAttachments(item.attachments || item.experimental_attachments) });
+            continue;
+          }
+        }
+        if (isToolResult && current?.lanes?.a) {
+          // Old chats: put each result under the call it answers.
+          const results = legacyToolResults(userText);
+          const waiting = current.lanes.a.activities.filter((activity) => activity.raw?.legacy && !activity.raw.answered);
+          results.forEach((result, index) => {
+            const activity = waiting[index];
+            if (!activity) return;
+            activity.raw.answered = true;
+            activity.raw.status = result.status;
+            activity.output = result.output;
+            activity.status = result.status === 'ok' ? 'ok' : 'error';
+          });
+          if (results.length) continue;
+        }
         if (isSystemInjection || isToolResult || isToolContinue) {
           if (!current) newTurn();
           current.notices.push(isSystemInjection ? '(system context)' : '(tool exchange)');
@@ -743,7 +801,13 @@
           current.vote = item.vote || null;
           current.arenaIds = item.arena_message_ids || null;
           current.revealed = Boolean(item.names?.a || item.names?.b);
-          for (const step of (Array.isArray(item.tools) ? item.tools : [])) {
+          const savedSteps = Array.isArray(item.tools) ? item.tools.map(backfillToolStep) : [];
+          if (!savedSteps.length && /<(tool|invoke)\s+name/i.test(String(item.text || item.content || ''))) {
+            // Old chats kept the calls only as tags in the reply text.
+            const laneA = current.lanes.a || (current.lanes.a = emptyLane('a'));
+            laneA.activities.push(...legacyToolActivities(item.text || item.content));
+          }
+          for (const step of savedSteps) {
             const key = step.lane === 'b' ? 'b' : 'a';
             const lane = current.lanes[key] || (current.lanes[key] = emptyLane(key));
             const stepDetail = step.tool === 'ask_user' && step.question
@@ -857,6 +921,15 @@
         state.modality = selection.modality;
         state.selectionTouched = true;
         if (chat.agent_backend) state.agentKind = chat.agent_backend === 'arena' ? 'native' : 'local';
+        // Each chat keeps the folder it worked in. Opening it switches back to
+        // that folder, so "continue" never runs in the folder of whichever
+        // chat was opened last.
+        const chatFolder = typeof chat.raw?.workspace === 'string' ? chat.raw.workspace : '';
+        if (chatFolder && chatFolder !== state.workspace && !chatIsGenerating(chatId)) {
+          applyWorkspacePath(chatFolder)
+            .then(() => toast(`Folder: ${chatFolder}`, 'info', "Switched to this chat's folder"))
+            .catch(() => toast(`This chat worked in ${chatFolder}, which is not available now.`, 'warning', 'Folder missing'));
+        }
         state.historyChars = Number(chat.raw?.history_chars || 0);
         // Restore manual selections saved by Flask only in modes where Arena
         // permits them.  Battle ignores ids and Agent never exposes one.

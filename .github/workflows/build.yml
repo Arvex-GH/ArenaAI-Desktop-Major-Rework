@@ -58,6 +58,16 @@ jobs:
             exit 1
           fi
 
+      - name: Test before building
+        shell: bash
+        run: |
+          python -m pip install pytest
+          # The browser tests need a real Chrome/Edge profile; the suite runs
+          # without them here and the built exe is smoke-tested below.
+          python -m pytest tests -q \
+            --ignore=tests/test_ui_browser.py \
+            --deselect tests/test_core.py::test_agent_calls_mcp_tool_with_schema_coerced_json
+
       - name: Build the application
         run: python -m PyInstaller arena-cli.spec --noconfirm --clean
 

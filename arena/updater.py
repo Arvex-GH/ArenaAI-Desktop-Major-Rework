@@ -31,7 +31,7 @@ from arena.version import APP_VERSION
 
 LOG = logging.getLogger("arena.updater")
 
-DEFAULT_REPO = "PlayzAe/arena.ai-desktop"
+DEFAULT_REPO = "Arvex-GH/ArenaAI-Desktop-Major-Rework"
 API_ROOT = "https://api.github.com"
 ALLOWED_HOSTS = {"github.com", "api.github.com", "objects.githubusercontent.com",
                  "github-releases.githubusercontent.com", "release-assets.githubusercontent.com"}

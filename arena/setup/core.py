@@ -21,7 +21,7 @@ APP_NAME = "Arena Desktop"
 APP_FOLDER = "Arena Desktop"
 EXE_NAME = "Arena-Desktop.exe"
 PUBLISHER = "Arena Desktop community build"
-HOMEPAGE = "https://github.com/PlayzAe/arena.ai-desktop"
+HOMEPAGE = "https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework"
 MANIFEST_NAME = "install.json"
 
 StepFn = Optional[Callable[[dict], None]]

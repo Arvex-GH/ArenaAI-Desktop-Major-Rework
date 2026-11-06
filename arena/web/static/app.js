@@ -646,6 +646,9 @@
     getWorkspace() { return this.request('/api/workspace'); },
     setWorkspace(path) { return this.request('/api/workspace/set', { method: 'POST', body: { path } }); },
     clearWorkspace() { return this.request('/api/workspace/set', { method: 'POST', body: { clear: true } }); },
+    runLocal(path) { return this.request('/api/workspace/run-local', { method: 'POST', body: { path } }); },
+    runLocalState(id) { return this.request(`/api/workspace/run-local/${encodeURIComponent(id)}`); },
+    stopRunLocal(id) { return this.request(`/api/workspace/run-local/${encodeURIComponent(id)}`, { method: 'DELETE' }); },
     async uploadAttachment(file, kind, modality) {
       const form = new FormData();
       form.append('file', file, file.name);
@@ -1345,7 +1348,7 @@
       if (wanted) {
         return {
           enabled: true, current: '1.6.0', latest: '1.6.1', update: true, demo: true,
-          url: 'https://github.com/PlayzAe/arena.ai-desktop/releases',
+          url: 'https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases',
           published_at: new Date(Date.now() - 86400000 * 2).toISOString(),
           notes: 'What changed in this build:\n\n· The sidebar is quieter: one New chat row, no oversized button.\n· Update flow rebuilt: the app downloads the new build, replaces itself and restarts.\n· Fixed lane answers being clipped when two models answered at once.\n· Chat titles are written by Arena and no longer overwritten locally.',
           installer: { name: 'Arena-Desktop-Setup-1.6.1.exe', size: 84 * 1024 * 1024, kind: 'installer' },
@@ -1458,6 +1461,16 @@
     async setPermissionMode(mode) { demoStore.permissionMode = mode; await sleep(150); return { ok: true, mode }; },
     async getWorkspace() { await sleep(80); return { path: demoStore.workspace, workspace: demoStore.workspace, panel_root: demoStore.workspace }; },
     async setWorkspace(path) { demoStore.workspace = path; await sleep(160); return { ok: true, path }; },
+    async runLocal(path) {
+      await sleep(400);
+      return { ok: true, id: 'bg1', folder: path || demoStore.workspace, cmd: 'npm install && npm run dev',
+        running: true, urls: [], log: 'added 312 packages in 9s' };
+    },
+    async runLocalState(id) {
+      await sleep(120);
+      return { ok: true, id, running: true, urls: ['http://localhost:3000'], log: '  - Local: http://localhost:3000' };
+    },
+    async stopRunLocal(id) { await sleep(120); return { ok: true, id, running: false, urls: [], log: '' }; },
     async clearWorkspace() { demoStore.workspace = 'C:\\Users\\Demo\\ArenaProjects\\workspace'; await sleep(120); return { ok: true, workspace: demoStore.workspace, cleared: true }; },
     async saveWorkspace(chatId, lane) {
       await sleep(220);
@@ -1997,6 +2010,10 @@ You can start with a more structured option: one script, short captions, and a c
     accounts: [],
     currentAccountId: null,
     accountBusy: false,
+    accountTask: null,
+    arenaStatus: null,
+    arenaUnavailable: null,
+    arenaStatusHidden: '',
     pendingPermissions: [],
     permissionCount: 0,
     decidingPermissions: new Set(),
@@ -2146,7 +2163,9 @@ You can start with a more structured option: one script, short captions, and a c
       accounts: Array.isArray(data.accounts) ? data.accounts : null,
       current_account_id: data.current_account_id ?? null,
       challenge: data.challenge ?? null,
-      gateway: data.gateway ?? null
+      gateway: data.gateway ?? null,
+      arena_status: data.arena_status && typeof data.arena_status === 'object' ? data.arena_status : null,
+      arena_unavailable: typeof data.arena_unavailable === 'string' ? data.arena_unavailable : null
     };
   }
 
@@ -2644,10 +2663,16 @@ You can start with a more structured option: one script, short captions, and a c
   function normalizeActivity(raw, type = 'tool') {
     if (!raw || typeof raw !== 'object') return null;
     const input = raw.input && typeof raw.input === 'object' ? raw.input : {};
-    const command = String(raw.command ?? input.command ?? raw.cmd ?? '');
+    let command = String(raw.command ?? input.command ?? raw.cmd ?? '');
     const path = String(raw.path ?? input.path ?? input.file_path ?? input.file ?? '');
     const name = String(raw.name ?? raw.tool ?? raw.title ?? (type === 'sandbox' ? "Sandbox" : "Tool"));
-    const detail = String(raw.detail ?? raw.description ?? raw.message ?? raw.note ?? raw.output ?? '');
+    let detail = String(raw.detail ?? raw.description ?? raw.message ?? raw.note ?? raw.output ?? '');
+    // Arena Agent sandbox commands arrive as the row's detail: show them as
+    // the call ("Bash(npm install)"), not as its output.
+    if (type === 'sandbox' && raw.kind === 'run' && !command && detail) {
+      command = detail;
+      detail = '';
+    }
     return {
       id: raw.id ? String(raw.id) : `activity-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       kind: type,
@@ -2660,6 +2685,83 @@ You can start with a more structured option: one script, short captions, and a c
       url: safeUrl(raw.url ?? ''),
       raw
     };
+  }
+
+  /* Pre-1.5 chats: tool calls stayed as <tool> tags in the reply, their
+     results came back as "Tool results:" user turns, and saved steps kept
+     only a summary. These rebuild the call + output rows newer chats save. */
+  const LEGACY_TOOL_RE = /<tool\s+name\s*=\s*["']?([\w-]+)["']?\s*>([\s\S]*?)<\/tool\s*>/gi;
+  const LEGACY_PARAM_RE = /<([A-Za-z_][\w-]*)>([\s\S]*?)<\/\1\s*>/g;
+  const LEGACY_INVOKE_RE = /<invoke\s+name\s*=\s*["']?([\w-]+)["']?\s*>([\s\S]*?)<\/invoke\s*>/gi;
+  const LEGACY_INVOKE_PARAM_RE = /<parameter\s+name\s*=\s*["']?([\w-]+)["']?\s*>([\s\S]*?)<\/parameter\s*>/gi;
+  const LEGACY_BULKY = new Set(['content', 'new_text', 'old_text', 'new_string', 'old_string']);
+  const LEGACY_RESULT_RE = /^\[(\d+)\] ([\w-]+)(?: (.*?))?: (ok|error|skipped|cancelled|denied by the user|blocked(?:: [^\n]*| by safety rules)?)$/;
+
+  function legacyToolActivities(text) {
+    const out = [];
+    const add = (name, body, paramRe) => {
+      const input = {};
+      for (const param of body.matchAll(paramRe)) {
+        const key = param[1].toLowerCase();
+        if (!LEGACY_BULKY.has(key)) input[key] = param[2].trim().slice(0, 400);
+      }
+      const tool = name.toLowerCase();
+      const activity = normalizeActivity({
+        tool, name: tool, input, legacy: true, status: '',
+        command: tool === 'run_cmd' ? (input.cmd || input.command || '') : '',
+        background: /^(1|true|yes)$/i.test(input.background || '') || undefined
+      }, 'tool');
+      if (activity) out.push(activity);
+    };
+    const source = String(text || '');
+    for (const match of source.matchAll(LEGACY_TOOL_RE)) add(match[1], match[2], LEGACY_PARAM_RE);
+    for (const match of source.matchAll(LEGACY_INVOKE_RE)) add(match[1], match[2], LEGACY_INVOKE_PARAM_RE);
+    return out;
+  }
+
+  function legacyToolResults(text) {
+    const results = [];
+    let current = null;
+    for (const line of String(text || '').replace(/\r\n/g, '\n').split('\n')) {
+      if (!current && /^Tool results:/.test(line)) continue;
+      if (line.startsWith('Continue the task.')) break;
+      const head = line.match(LEGACY_RESULT_RE);
+      if (head) {
+        current = { tool: head[2].toLowerCase(), status: head[4], lines: [] };
+        results.push(current);
+      } else if (current) {
+        current.lines.push(line);
+      }
+    }
+    return results.map((result) => ({ ...result, output: result.lines.join('\n').replace(/\s+$/, '') }));
+  }
+
+  // A saved step from before steps kept their command or path: read them back from the summary.
+  function backfillToolStep(step) {
+    if (!step || step.command || step.rel || step.input || step.child_id || step.mcp) return step;
+    const summary = String(step.summary || '');
+    const run = summary.match(/^(Run|Start in background): ([\s\S]+)$/);
+    if (run) return { ...step, command: run[2], background: run[1] !== 'Run' || undefined };
+    const stop = summary.match(/^Stop background command (\S+)/);
+    if (stop) return { ...step, command: stop[1] };
+    const target = summary.match(/^(?:Create folder|Delete folder|Create|Overwrite|Edit|Delete|Read|List|Search)\s+(.+?)(?:\s+\(\d+ (?:lines?|items?)\))?$/);
+    return target ? { ...step, rel: target[1] } : step;
+  }
+
+  // Older chats saved the app's injected guide or memory text in front of the
+  // user's own words, which follow the last of these markers.
+  function userWordsAfterInjection(text) {
+    const source = String(text || '');
+    let cut = -1;
+    for (const marker of ['User message:\n', '[End of memory]\n']) {
+      const at = source.lastIndexOf(marker);
+      if (at >= 0) cut = Math.max(cut, at + marker.length);
+    }
+    if (cut < 0) {
+      const note = source.match(/^\[Arena Desktop\] This chat's project folder is now [^\n]*\n/);
+      if (note) cut = note[0].length;
+    }
+    return cut >= 0 ? source.slice(cut).trim() : '';
   }
 
   function normalizeArtifact(raw, kind = 'file') {
@@ -2841,6 +2943,8 @@ You can start with a more structured option: one script, short captions, and a c
           || (status.accounts.find((a) => a.current) || {}).id || null;
       }
       state.permissionCount = status.pending_permissions;
+      state.arenaStatus = status.arena_status;
+      state.arenaUnavailable = status.arena_unavailable;
       if (status.workspace) state.workspace = status.workspace;
       state.workspaceChosen = Boolean(status.workspace_chosen);
       if (status.app_version) {
@@ -4081,7 +4185,7 @@ You can start with a more structured option: one script, short captions, and a c
       content.appendChild(el('div', { class: 'tool-summary is-wait', text: 'Waiting for your approval…' }));
     } else if (!out && !diff) {
       if (running) content.appendChild(el('div', { class: 'tool-summary is-muted' }, el('span', { class: 'tool-spinner', 'aria-hidden': 'true' }), el('span', { text: label === 'Bash' ? 'Running…' : 'Working…' })));
-      else if (stateCls === 'is-err') content.appendChild(el('div', { class: 'tool-summary is-err', text: String(raw.status && raw.status !== 'error' ? raw.status : activity.status || 'Failed') }));
+      else if (stateCls === 'is-err') content.appendChild(el('div', { class: 'tool-summary is-err', text: String(raw.status && raw.status !== 'error' ? raw.status : (activity.status && activity.status !== 'error' ? activity.status : 'Failed')) }));
       else return finishRow(row, activity);
     }
 
@@ -4272,9 +4376,10 @@ You can start with a more structured option: one script, short captions, and a c
 
     if (isDone) {
       const allowed = permission.status === 'allow' || permission.status === 'always' || permission.status === 'allowed';
+      const unanswered = { stopped: "Not run: the reply was stopped", expired: "Not run: no answer in time" }[permission.status];
       card.append(head, body, el('div', { class: `permission-result${allowed ? '' : ' is-deny'}` },
         iconEl(allowed ? 'check' : 'x'),
-        el('span', { text: allowed ? "Allowed by user" : "Declined by user" })
+        el('span', { text: allowed ? "Allowed by user" : (unanswered || "Declined by user") })
       ));
       return card;
     }
@@ -5221,7 +5326,11 @@ You can start with a more structured option: one script, short captions, and a c
   }
 
   function renderUnattachedPermissions(renderedIds) {
-    const remaining = state.pendingPermissions.filter((permission) => !permission.id || !renderedIds.has(String(permission.id)));
+    // Only this chat's approvals: another chat's request waits in that chat
+    // (the sidebar badge still counts it) instead of showing up here.
+    const here = state.activeChatId ? String(state.activeChatId) : '';
+    const remaining = state.pendingPermissions.filter((permission) => (!permission.id || !renderedIds.has(String(permission.id)))
+      && (!permission.chatId || String(permission.chatId) === here));
     if (!remaining.length) return null;
     const section = el('section', { class: 'message-turn', 'aria-label': "Pending approval" });
     section.appendChild(el('div', { class: 'activity-head' },
@@ -5833,7 +5942,37 @@ You can start with a more structured option: one script, short captions, and a c
         if (els.bannerDemo) els.bannerDemo.hidden = state.demo;
       }
     }
+    updateArenaStatusBanner();
     if (els.topbarTitle) els.topbarTitle.textContent = currentViewTitle();
+  }
+
+  // status.arena.ai trouble, or arena.ai failing the session check: the
+  // chats are not broken here, arena.ai itself is down
+  function updateArenaStatusBanner() {
+    const banner = els.arenaStatusBanner;
+    if (!banner) return;
+    const info = state.arenaStatus || {};
+    const reported = Boolean(info.indicator) && !['none', 'unknown'].includes(info.indicator);
+    const down = reported || Boolean(state.arenaUnavailable);
+    const key = down ? [info.indicator, info.description, info.incident, state.arenaUnavailable].join('|') : '';
+    const blocked = els.connectionBanner && !els.connectionBanner.hidden;
+    const show = !state.demo && down && !blocked && state.arenaStatusHidden !== key;
+    banner.hidden = !show;
+    if (!show) return;
+    banner.dataset.key = key;
+    banner.classList.toggle('is-minor', reported && info.indicator === 'minor');
+    if (els.arenaStatusTitle) {
+      els.arenaStatusTitle.textContent = reported
+        ? `arena.ai: ${info.description || 'service problem'}`
+        : 'arena.ai is not answering';
+    }
+    if (els.arenaStatusText) {
+      const lines = [];
+      if (info.incident) lines.push(`${info.incident}.`);
+      if (state.arenaUnavailable) lines.push(`Your sign-in could not be checked (${state.arenaUnavailable}).`);
+      lines.push('Chats may not load or answer until arena.ai recovers.');
+      els.arenaStatusText.textContent = lines.join(' ');
+    }
   }
 
   function updateAccountUI() {
@@ -5859,6 +5998,10 @@ You can start with a more structured option: one script, short captions, and a c
       sub = state.serverError ? 'Check the local backend' : state.loginPending ? 'Waiting for sign-in…' : 'Sign in to continue';
       avatarClass = 'is-anonymous';
     }
+    // A running account action (switch, sign-out, cookie import) shows its step here too.
+    const task = state.accountTask;
+    const taskRunning = Boolean(task && !task.error && !task.done && task.step);
+    if (taskRunning) sub = task.step;
     if (els.accountName) els.accountName.textContent = name;
     if (els.accountState) els.accountState.textContent = sub;
     if (els.accountAvatar) {
@@ -5878,6 +6021,8 @@ You can start with a more structured option: one script, short captions, and a c
     if (els.accountButton) {
       els.accountButton.setAttribute('aria-label', `Profile: ${name}. ${sub}. Open accounts`);
       els.accountButton.setAttribute('aria-haspopup', 'menu');
+      if (taskRunning) els.accountButton.setAttribute('aria-busy', 'true');
+      else els.accountButton.removeAttribute('aria-busy');
     }
   }
 
@@ -6041,6 +6186,28 @@ You can start with a more structured option: one script, short captions, and a c
         const isSystemInjection = userText.startsWith('[Arena Desktop]') || userText.startsWith('[Arena Desktop memory');
         const isToolResult = /^Tool results:\n?\[?\d/m.test(userText);
         const isToolContinue = userText.startsWith('Continue the task.');
+        if (isSystemInjection) {
+          const words = userWordsAfterInjection(userText);
+          if (words) {
+            newTurn({ content: words, created_at: item.created_at ?? item.createdAt ?? item.timestamp,
+              attachments: normalizeUserAttachments(item.attachments || item.experimental_attachments) });
+            continue;
+          }
+        }
+        if (isToolResult && current?.lanes?.a) {
+          // Old chats: put each result under the call it answers.
+          const results = legacyToolResults(userText);
+          const waiting = current.lanes.a.activities.filter((activity) => activity.raw?.legacy && !activity.raw.answered);
+          results.forEach((result, index) => {
+            const activity = waiting[index];
+            if (!activity) return;
+            activity.raw.answered = true;
+            activity.raw.status = result.status;
+            activity.output = result.output;
+            activity.status = result.status === 'ok' ? 'ok' : 'error';
+          });
+          if (results.length) continue;
+        }
         if (isSystemInjection || isToolResult || isToolContinue) {
           if (!current) newTurn();
           current.notices.push(isSystemInjection ? '(system context)' : '(tool exchange)');
@@ -6091,7 +6258,13 @@ You can start with a more structured option: one script, short captions, and a c
           current.vote = item.vote || null;
           current.arenaIds = item.arena_message_ids || null;
           current.revealed = Boolean(item.names?.a || item.names?.b);
-          for (const step of (Array.isArray(item.tools) ? item.tools : [])) {
+          const savedSteps = Array.isArray(item.tools) ? item.tools.map(backfillToolStep) : [];
+          if (!savedSteps.length && /<(tool|invoke)\s+name/i.test(String(item.text || item.content || ''))) {
+            // Old chats kept the calls only as tags in the reply text.
+            const laneA = current.lanes.a || (current.lanes.a = emptyLane('a'));
+            laneA.activities.push(...legacyToolActivities(item.text || item.content));
+          }
+          for (const step of savedSteps) {
             const key = step.lane === 'b' ? 'b' : 'a';
             const lane = current.lanes[key] || (current.lanes[key] = emptyLane(key));
             const stepDetail = step.tool === 'ask_user' && step.question
@@ -6205,6 +6378,15 @@ You can start with a more structured option: one script, short captions, and a c
         state.modality = selection.modality;
         state.selectionTouched = true;
         if (chat.agent_backend) state.agentKind = chat.agent_backend === 'arena' ? 'native' : 'local';
+        // Each chat keeps the folder it worked in. Opening it switches back to
+        // that folder, so "continue" never runs in the folder of whichever
+        // chat was opened last.
+        const chatFolder = typeof chat.raw?.workspace === 'string' ? chat.raw.workspace : '';
+        if (chatFolder && chatFolder !== state.workspace && !chatIsGenerating(chatId)) {
+          applyWorkspacePath(chatFolder)
+            .then(() => toast(`Folder: ${chatFolder}`, 'info', "Switched to this chat's folder"))
+            .catch(() => toast(`This chat worked in ${chatFolder}, which is not available now.`, 'warning', 'Folder missing'));
+        }
         state.historyChars = Number(chat.raw?.history_chars || 0);
         // Restore manual selections saved by Flask only in modes where Arena
         // permits them.  Battle ignores ids and Agent never exposes one.
@@ -6648,7 +6830,7 @@ You can start with a more structured option: one script, short captions, and a c
     const id = activity.id;
     const existing = lane.activities.find((item) => String(item.id) === String(id));
     if (existing) {
-      Object.assign(existing, { status: activity.status, detail: activity.detail || existing.detail, command: activity.command || existing.command, path: activity.path || existing.path, url: activity.url || existing.url });
+      Object.assign(existing, { status: activity.status, detail: activity.detail || existing.detail, command: activity.command || existing.command, path: activity.path || existing.path, url: activity.url || existing.url, output: activity.output || existing.output });
       return existing;
     }
     lane.activities.push(activity);
@@ -6726,9 +6908,20 @@ You can start with a more structured option: one script, short captions, and a c
     const key = eventLaneKey(event);
     const lane = turnLane(turn, key, event);
 
+    if (type === 'text_replace') {
+      // The stream broke and the server read the finished reply from
+      // arena.ai's copy of the chat: it replaces what had streamed so far.
+      lane.text = textValue(event.text ?? '');
+      clearRetryNote(lane);
+      scheduleChatRender();
+      return;
+    }
     if (type === 'text' || type === 'message') {
       const delta = textValue(event.text ?? event.delta ?? event.content ?? '');
-      if (delta) lane.text += delta;
+      if (delta) {
+        lane.text += delta;
+        clearRetryNote(lane);
+      }
       if (event.model_id && !lane.modelId) {
         const model = normalizeModel(event.model_id);
         if (model) {
@@ -6916,8 +7109,10 @@ You can start with a more structured option: one script, short captions, and a c
       const decision = String(event.decision ?? event.status ?? 'done');
       state.pendingPermissions = state.pendingPermissions.filter((item) => String(item.id) !== String(id));
       state.permissionCount = state.pendingPermissions.length;
-      state.messages.forEach((messageTurn) => {
-        Object.values(messageTurn.lanes || {}).forEach((messageLane) => {
+      // The reply's own turn too: it is not in state.messages while another
+      // chat is open.
+      [...state.messages, turn].forEach((messageTurn) => {
+        Object.values(messageTurn?.lanes || {}).forEach((messageLane) => {
           (messageLane.permissions || []).forEach((permission) => {
             if (id && String(permission.id) === String(id)) permission.status = decision;
           });
@@ -7055,8 +7250,12 @@ You can start with a more structured option: one script, short captions, and a c
           if (lobj.text) lobj.text = lobj.text.slice(0, Math.max(0, lobj.text.length - n));
         }
       });
-      const msg = `The reply was interrupted — auto-continuing (${event.attempt || 1}/${event.max || 2})…`;
-      if (!lane.notices.includes(msg)) lane.notices.push(msg);
+      // Shown only while the retry runs: new text, done or Stop removes it,
+      // so a stopped chat never claims it will continue.
+      clearRetryNote(lane);
+      const msg = `The reply was interrupted — retrying (${event.attempt || 1}/${event.max || 2})…`;
+      lane.notices.push(msg);
+      lane.retryNote = msg;
       scheduleChatRender();
       return;
     }
@@ -7188,6 +7387,12 @@ You can start with a more structured option: one script, short captions, and a c
     };
   }
 
+  function clearRetryNote(lane) {
+    if (!lane || !lane.retryNote) return;
+    lane.notices = (lane.notices || []).filter((note) => note !== lane.retryNote);
+    lane.retryNote = null;
+  }
+
   function markGenerationError(generation, message) {
     if (!generation || generation.finished) return;
     generation.hadError = true;
@@ -7234,6 +7439,20 @@ You can start with a more structured option: one script, short captions, and a c
       if (lane && !lane.text) lane.notices.push("Generation stopped before text was received.");
     }
     const genChatId = generation.chatId ? String(generation.chatId) : null;
+    // A finished or stopped reply asks nothing any more: the server denied
+    // whatever was still waiting, so its approval cards must not linger
+    // (or show up in another chat).
+    Object.values(generation.turn.lanes || {}).forEach((laneItem) => {
+      clearRetryNote(laneItem);
+      (laneItem.permissions || []).forEach((permission) => {
+        if (!permission.status || permission.status === 'pending') permission.status = wasStopped ? 'stopped' : 'expired';
+      });
+    });
+    if (genChatId) {
+      state.pendingPermissions = state.pendingPermissions.filter((item) => String(item.chatId || '') !== genChatId);
+      state.permissionCount = state.pendingPermissions.length;
+      updatePendingPermissionsBadge();
+    }
     if (genChatId) state.generations.delete(genChatId);
     if (genChatId && generation.done && !wasStopped) {
       // The backend swaps a new chat's provisional title for the summary
@@ -8389,6 +8608,78 @@ You can start with a more structured option: one script, short captions, and a c
     return state.workspace;
   }
 
+  /* ---------------------------------------------------------------------- */
+  /* Run on this PC                                                         */
+  /* ---------------------------------------------------------------------- */
+  // Code mode runs projects in arena.ai's cloud sandbox; only the files come
+  // here. This installs and starts the local copy and shows where it serves.
+  const runLocal = { id: null, timer: null };
+
+  function renderRunLocal(data) {
+    const box = els.workspaceRunStatus;
+    if (!box) return;
+    clear(box);
+    box.hidden = !data;
+    if (!data) return;
+    const url = (data.urls || [])[0] || '';
+    const log = String(data.log || '').trim().split('\n').filter((line) => line.trim());
+    const title = data.running
+      ? (url ? `Running at ${url}` : 'Installing packages and starting…')
+      : (url || data.stoppedByUser ? 'Stopped' : 'Stopped before it started serving');
+    box.append(el('p', { class: 'workspace-run-title', text: title }));
+    if (!url && log.length) box.append(el('pre', { class: 'workspace-run-log', text: log.slice(data.running ? -2 : -8).join('\n') }));
+    const actions = el('div', { class: 'workspace-run-actions' });
+    const add = (label, run) => {
+      const b = el('button', { type: 'button', class: 'button button-quiet', text: label });
+      b.addEventListener('click', run);
+      actions.append(b);
+    };
+    if (data.running && url) add('Open', () => openPreview(url, 'Dev server'));
+    if (data.running) add('Stop', () => { void stopRunLocal(); });
+    else add('Close', () => renderRunLocal(null));
+    box.append(actions);
+  }
+
+  async function pollRunLocal() {
+    window.clearTimeout(runLocal.timer);
+    if (!runLocal.id) return;
+    try {
+      const data = await API.runLocalState(runLocal.id);
+      renderRunLocal(data);
+      if (data.running) runLocal.timer = window.setTimeout(pollRunLocal, (data.urls || []).length ? 8000 : 1500);
+      else runLocal.id = null;
+    } catch {
+      runLocal.id = null;
+      renderRunLocal(null);
+    }
+  }
+
+  async function startRunLocal() {
+    const folder = state.workspacePanelRoot || state.workspace;
+    if (!folder) { toast('Choose the project folder first.', 'warning', 'Run on this PC'); return; }
+    if (runLocal.id) await stopRunLocal();
+    els.workspaceRunButton?.setAttribute('aria-busy', 'true');
+    try {
+      const data = await API.runLocal(folder);
+      runLocal.id = data.id;
+      renderRunLocal(data);
+      toast(`${data.cmd} in ${data.folder}`, 'info', 'Running on this PC');
+      runLocal.timer = window.setTimeout(pollRunLocal, 1500);
+    } catch (error) {
+      toast(errorMessage(error), 'error', 'Could not run the project');
+    } finally {
+      els.workspaceRunButton?.removeAttribute('aria-busy');
+    }
+  }
+
+  async function stopRunLocal() {
+    const id = runLocal.id;
+    if (!id) return;
+    window.clearTimeout(runLocal.timer);
+    runLocal.id = null;
+    try { renderRunLocal({ ...(await API.stopRunLocal(id)), stoppedByUser: true }); } catch { renderRunLocal(null); }
+  }
+
   async function chooseNativeFolder() {
     if (!state.nativeReady) {
       openSettings('workspace');
@@ -8545,24 +8836,69 @@ You can start with a more structured option: one script, short captions, and a c
     }
   }
 
-  async function loginWithCookie(cookie) {
-    if (state.demo || state.loginPending || !cookie.trim()) return;
-    state.loginPending = true;
-    updateConnectionUI();
+  // One account action at a time (switch, sign-out, cookie import). Its
+  // current step shows in the account menu, the settings panel and the
+  // sidebar, so the user sees the work instead of a button that does nothing.
+  function setAccountTask(task) {
+    state.accountTask = task;
+    if (task) announce(task.error || task.step || '');
     updateAccountUI();
+    activePopover?.node?.querySelector('.account-menu')?._rerender?.();
+    state.settingsRerender?.();
+  }
+
+  function finishAccountTask(task, ms = 5000) {
+    setAccountTask(task);
+    window.setTimeout(() => { if (state.accountTask === task) setAccountTask(null); }, ms);
+  }
+
+  function accountTaskVisible() {
+    return Boolean(activePopover?.node?.querySelector('.account-menu') || state.settingsRerender);
+  }
+
+  // Errors show next to the action when the menu or settings are open, else as a toast.
+  function failAccountTask(kind, message, title, extra = {}) {
+    if (accountTaskVisible()) finishAccountTask({ kind, error: message, ...extra }, 12000);
+    else { setAccountTask(null); toast(message, 'error', title); }
+  }
+
+  function accountTaskLine(task) {
+    const line = el('div', { class: `account-task${task?.error ? ' is-error' : task?.done ? ' is-done' : ''}`, role: task?.error ? 'alert' : 'status' });
+    if (!task) { line.hidden = true; return line; }
+    line.append(
+      task.error ? iconEl('alert') : task.done ? iconEl('check') : el('span', { class: 'loading-spinner', 'aria-hidden': 'true' }),
+      el('span', { text: task.error || task.step || '' }));
+    return line;
+  }
+
+  function accountTaskRunning(kind = null) {
+    const task = state.accountTask;
+    return Boolean(task && !task.error && !task.done && (!kind || task.kind === kind));
+  }
+
+  async function loginWithCookie(cookie) {
+    if (state.demo || state.loginPending || state.accountBusy || !cookie.trim()) return;
+    state.loginPending = true;
+    state.accountBusy = true;
+    updateConnectionUI();
     updateComposerState();
+    const step = (text) => setAccountTask({ kind: 'cookie', step: text });
     try {
+      step('Checking the cookies with arena.ai…');
       const result = await API.loginCookie(cookie);
       if (!result?.ok) throw new ApiError(extractError(result, 0));
+      step('Loading your account…');
       await loadStatus({ quiet: true });
       if (!state.authenticated) throw new ApiError("Session imported, but the server has not confirmed the account. Check cookies and connection.");
-      toast(state.email || "Login completed.", 'success', "Arena connected");
+      step('Loading chats and models…');
       await Promise.allSettled([loadChats({ silent: true }), loadModels(state.modality), loadPermissions({ quiet: true }), refreshWorkspacePanel({ force: true })]);
-      announce("Login completed.");
+      finishAccountTask({ kind: 'cookie', done: true, step: `Signed in as ${state.email || 'your arena.ai account'}` });
+      if (!accountTaskVisible()) toast(state.email || "Login completed.", 'success', "Arena connected");
     } catch (error) {
-      toast(errorMessage(error), 'error', "Login via cookies not performed");
+      failAccountTask('cookie', errorMessage(error), "Login via cookies not performed");
     } finally {
       state.loginPending = false;
+      state.accountBusy = false;
       updateConnectionUI();
       updateAccountUI();
       updateComposerState();
@@ -8606,28 +8942,34 @@ You can start with a more structured option: one script, short captions, and a c
   }
 
   async function switchToAccount(account) {
-    if (!account || state.accountBusy) return;
+    if (!account || state.accountBusy || state.loginPending) return false;
+    const label = account.email || account.name || 'the account';
     if (anyGenerationRunning() || state.remoteBusy) {
-      toast('Finish or stop the running generations before switching accounts.', 'warning', 'Account not switched');
-      return;
+      failAccountTask('switch', 'Finish or stop the running generations before switching accounts.', 'Account not switched', { accountId: account.id });
+      return false;
     }
     state.accountBusy = true;
+    const step = (text) => setAccountTask({ kind: 'switch', accountId: account.id, step: text });
     try {
+      step(`Switching to ${label}…`);
       const result = await API.switchAccount(account.id);
       if (Array.isArray(result?.accounts)) state.accounts = result.accounts;
-      closePopover(false);
+      step('Loading chats and models…');
       resetForAccountChange();
       await loadStatus({ quiet: true });
       await Promise.allSettled([loadChats({ silent: true }), loadArenaChats({ silent: true }), loadModels(state.modality, { quiet: true })]);
-      toast(account.email || account.name || 'Account switched.', 'success', 'Account switched');
-      state.settingsRerender?.();
+      setAccountTask(null);
+      toast(label, 'success', 'Account switched');
+      return true;
     } catch (error) {
       const payload = error?.payload;
       if (Array.isArray(payload?.accounts)) state.accounts = payload.accounts;
-      toast(errorMessage(error), 'error', payload?.expired ? 'Session expired — sign in again' : 'Account not switched');
       await loadStatus({ quiet: true }).catch(() => undefined);
+      failAccountTask('switch', errorMessage(error), payload?.expired ? 'Session expired — sign in again' : 'Account not switched', { accountId: account.id });
+      return false;
     } finally {
       state.accountBusy = false;
+      updateAccountUI();
     }
   }
 
@@ -8647,102 +8989,95 @@ You can start with a more structured option: one script, short captions, and a c
 
   function buildAccountMenu() {
     const content = el('div', { class: 'account-menu' });
+    let addOpen = false;
     const render = () => {
+      const hadFocus = content.contains(document.activeElement);
       clear(content);
-      content.appendChild(el('p', { class: 'account-menu-head', text: 'Accounts' }));
       const accounts = Array.isArray(state.accounts) ? state.accounts : [];
-      if (!accounts.length) {
-        content.appendChild(el('p', { class: 'account-menu-note', text: state.authenticated
-          ? 'Signed in. Accounts you add will appear here for quick switching.'
-          : 'Not signed in yet. Sign in, then add more accounts here to switch between them.' }));
+      const task = state.accountTask;
+      const busy = Boolean(state.accountBusy || state.loginPending || accountTaskRunning());
+      const current = accounts.find((a) => a.current)
+        || (state.authenticated ? { email: state.email, name: state.fullName, avatar_url: state.avatarUrl } : null);
+      const action = (id, icon, label, run, { danger = false, expanded = null } = {}) => el('button', {
+        class: `account-menu-action${danger ? ' is-danger' : ''}`, type: 'button', 'data-popover-action': id,
+        disabled: busy, 'aria-expanded': expanded === null ? null : String(expanded), onclick: run
+      }, iconEl(icon), el('span', { text: label }));
+
+      // Who is signed in now: the one thing this menu must answer at a glance.
+      const named = Boolean(current?.name && current.name !== current.email);
+      content.appendChild(el('div', { class: 'account-menu-current' },
+        current ? accountAvatarEl(current)
+          : el('span', { class: 'avatar account-menu-avatar is-anonymous', 'aria-hidden': 'true' }, iconEl('user')),
+        el('span', { class: 'account-menu-copy' },
+          el('span', { class: 'account-menu-email', text: current ? (named ? current.name : (current.email || 'arena.ai account')) : 'Not signed in' }),
+          el('span', { class: `account-menu-sub${current?.expired ? ' is-warn' : ''}`, text: !current ? 'Sign in to chat on arena.ai'
+            : current.expired ? 'Session expired' : (named ? current.email : 'Signed in') }))));
+      if (task && task.kind !== 'cookie') content.appendChild(accountTaskLine(task));
+      if (current?.expired) {
+        content.appendChild(action('account-reauth', 'login', 'Sign in again', () => { closePopover(false); void startLogin(); }));
       }
-      accounts.forEach((account) => {
-        if (account.expired) {
-          const card = el('button', {
-            class: 'account-expired-card', type: 'button', 'data-popover-action': 'account-expired',
-            onclick: () => { closePopover(false); void startLogin({ addAccount: !account.current }); }
-          },
-            accountAvatarEl(account),
-            el('span', { class: 'account-menu-copy' },
-              el('span', { class: 'account-menu-email', text: account.email || account.name || 'Arena account' }),
-              el('span', { class: 'account-menu-sub', text: 'Session expired: sign in' }))
-          );
-          content.appendChild(card);
-          return;
-        }
-        const row = el('div', { class: `account-menu-row${account.current ? ' is-current' : ''}` });
-        const main = el('button', {
-          class: 'account-menu-main', type: 'button', 'data-popover-action': 'account-switch',
-          'data-account-id': account.id || '',
-          'aria-label': account.current ? `Current account: ${account.email || account.name}` : `Switch to ${account.email || account.name}`,
-          onclick: () => { if (!account.current) void switchToAccount(account); }
-        },
-          accountAvatarEl(account),
-          el('span', { class: 'account-menu-copy' },
-            el('span', { class: 'account-menu-email', text: account.email || account.name || 'Arena account' }),
-            el('span', { class: 'account-menu-sub', text: account.name && account.name !== account.email ? account.name : 'Arena account' })),
-          account.current
-            ? el('span', { class: 'account-current-label', text: 'Current' })
-            : el('span', { class: 'account-menu-chev', 'aria-hidden': 'true' }, iconEl('chevron-right'))
-        );
-        row.appendChild(main);
-        if (!account.current) {
-          row.appendChild(el('button', {
-            class: 'account-menu-remove', type: 'button', 'aria-label': `Remove saved account ${account.email || account.name}`,
-            title: 'Forget this account on this device',
-            onclick: (event) => { event.stopPropagation(); void removeSavedAccount(account).then(render); }
-          }, iconEl('x')));
-        }
-        content.appendChild(row);
-      });
+
+      const others = accounts.filter((a) => !a.current);
+      if (others.length) {
+        content.appendChild(el('p', { class: 'account-menu-label', text: 'Switch to' }));
+        others.forEach((account) => {
+          const label = account.email || account.name || 'arena.ai account';
+          const switching = task?.kind === 'switch' && task.accountId === account.id && accountTaskRunning();
+          const row = el('div', { class: `account-menu-row${account.expired ? ' is-expired' : ''}${switching ? ' is-busy' : ''}` },
+            el('button', {
+              class: 'account-menu-main', type: 'button', disabled: busy,
+              'data-popover-action': account.expired ? 'account-expired' : 'account-switch', 'data-account-id': account.id || '',
+              'aria-label': account.expired ? `Sign in again to ${label}` : `Switch to ${label}`,
+              onclick: () => {
+                if (account.expired) { closePopover(false); void startLogin({ addAccount: true }); return; }
+                void switchToAccount(account).then((ok) => { if (ok) closePopover(false); });
+              }
+            },
+              accountAvatarEl(account),
+              el('span', { class: 'account-menu-copy' },
+                el('span', { class: 'account-menu-email', text: label }),
+                el('span', { class: 'account-menu-sub', text: switching ? 'Switching…'
+                  : account.expired ? 'Session expired · sign in again'
+                    : (account.name && account.name !== account.email ? account.name : 'Saved on this computer') })),
+              switching ? el('span', { class: 'loading-spinner', 'aria-hidden': 'true' }) : null));
+          if (!busy) {
+            row.appendChild(el('button', {
+              class: 'account-menu-remove', type: 'button', 'aria-label': `Forget ${label} on this computer`,
+              title: 'Forget this account on this computer',
+              onclick: (event) => { event.stopPropagation(); void removeSavedAccount(account).then(render); }
+            }, iconEl('x')));
+          }
+          content.appendChild(row);
+        });
+      }
+
       content.appendChild(el('div', { class: 'account-menu-divider', role: 'separator' }));
-      const methods = el('div', { class: 'account-menu-methods', hidden: true },
-        el('button', {
-          class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-add-window',
-          onclick: () => { closePopover(false); void startLogin({ addAccount: accounts.length > 0 }); }
-        }, iconEl('login'), el('span', { text: 'Sign-in window' })),
-        el('button', {
-          class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-add-cookies',
-          onclick: () => {
-            closePopover(false);
-            openSettings('connection');
-            window.setTimeout(() => {
-              const field = document.querySelector('.cookie-field');
-              if (field) { field.focus(); field.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
-            }, 80);
-          }
-        }, iconEl('login'), el('span', { text: 'Use cookies' }))
-      );
-      content.appendChild(el('button', {
-        class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-add',
-        'aria-expanded': 'false',
-        onclick: (event) => {
-          methods.hidden = !methods.hidden;
-          event.currentTarget.setAttribute('aria-expanded', String(!methods.hidden));
-        }
-      }, iconEl('plus'), el('span', { text: accounts.length ? 'Add account' : 'Sign in' })));
+      const methods = el('div', { class: 'account-menu-methods', hidden: !addOpen },
+        action('account-add-window', 'login', 'Sign-in window', () => { closePopover(false); void startLogin({ addAccount: accounts.length > 0 }); }),
+        action('account-add-cookies', 'copy', 'Paste cookies', () => {
+          closePopover(false);
+          openSettings('connection');
+          window.setTimeout(() => {
+            const field = document.querySelector('.cookie-field');
+            if (field) { field.focus(); field.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+          }, 80);
+        }));
+      content.appendChild(action('account-add', current ? 'plus' : 'login', current ? 'Add another account' : 'Sign in', (event) => {
+        addOpen = !addOpen;
+        methods.hidden = !addOpen;
+        event.currentTarget.setAttribute('aria-expanded', String(addOpen));
+      }, { expanded: addOpen }));
       content.appendChild(methods);
-      content.appendChild(el('button', {
-        class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-settings',
-        onclick: () => { closePopover(false); openSettings('connection'); }
-      }, iconEl('settings'), el('span', { text: 'Settings' })));
-      content.appendChild(el('button', {
-        class: 'account-menu-action', type: 'button', 'data-popover-action': 'account-help',
-        onclick: () => { closePopover(false); document.querySelector('[data-action="help"]')?.click(); }
-      }, iconEl('help'), el('span', { text: 'Help & shortcuts (F1)' })));
-      if (state.authenticated || accounts.some((a) => a.current)) {
-        content.appendChild(el('div', { class: 'account-menu-divider', role: 'separator' }));
-        content.appendChild(el('button', {
-          class: 'account-menu-action is-danger', type: 'button', 'data-popover-action': 'account-signout',
-          onclick: () => {
-            if (anyGenerationRunning() || state.remoteBusy) {
-              toast('Finish or stop the running generations before signing out.', 'warning');
-              return;
-            }
-            closePopover(false);
-            void logoutAccount();
-          }
-        }, iconEl('logout'), el('span', { text: 'Sign out' })));
+      content.appendChild(el('div', { class: 'account-menu-divider', role: 'separator' }));
+      content.appendChild(action('account-settings', 'settings', 'Settings', () => { closePopover(false); openSettings('connection'); }));
+      content.appendChild(action('account-help', 'help', 'Help & shortcuts (F1)', () => { closePopover(false); document.querySelector('[data-action="help"]')?.click(); }));
+      if (current) {
+        content.appendChild(action('account-signout', 'logout', accountTaskRunning('signout') ? 'Signing out…' : 'Sign out', () => {
+          void logoutAccount().then((ok) => { if (ok) closePopover(false); });
+        }, { danger: true }));
+      }
+      if (hadFocus && !content.contains(document.activeElement)) {
+        content.querySelector('[data-popover-action]:not([disabled])')?.focus();
       }
     };
     render();
@@ -8753,6 +9088,8 @@ You can start with a more structured option: one script, short captions, and a c
   function openAccountMenu() {
     if (!els.accountButton) return;
     if (activePopover && activePopover.trigger === els.accountButton) { closePopover(); return; }
+    // A finished step or old error is not news the next time the menu opens.
+    if (state.accountTask && !accountTaskRunning()) state.accountTask = null;
     const content = buildAccountMenu();
     openPopover(els.accountButton, { title: 'Accounts', content, menu: true, role: 'menu' });
     void API.getAccounts?.().then((result) => {
@@ -8765,9 +9102,17 @@ You can start with a more structured option: one script, short captions, and a c
   }
 
   async function logoutAccount() {
-    if (state.loginPending) return;
+    if (state.loginPending || state.accountBusy) return false;
+    if (anyGenerationRunning() || state.remoteBusy) {
+      failAccountTask('signout', 'Finish or stop the running generations before signing out.', 'Not signed out');
+      return false;
+    }
+    state.accountBusy = true;
+    const step = (text) => setAccountTask({ kind: 'signout', step: text });
     try {
+      step('Signing out of arena.ai…');
       await API.logout();
+      step("Clearing this computer's session…");
       state.authenticated = false;
       state.email = '';
       state.fullName = '';
@@ -8787,10 +9132,16 @@ You can start with a more structured option: one script, short captions, and a c
       renderWelcomeState();
       updateAllUI();
       await loadStatus({ quiet: true });
-      state.settingsRerender?.();
-      toast("Logout completed; local saved cookies file deleted.", 'success');
+      setAccountTask(null);
+      toast('The saved session on this computer was deleted.', 'success', 'Signed out');
+      return true;
     } catch (error) {
-      toast(errorMessage(error), 'error', "Logout not performed");
+      failAccountTask('signout', errorMessage(error), 'Logout not performed');
+      return false;
+    } finally {
+      state.accountBusy = false;
+      updateAccountUI();
+      state.settingsRerender?.();
     }
   }
 
@@ -8977,6 +9328,8 @@ You can start with a more structured option: one script, short captions, and a c
         el('span', { class: 'status-dot ' + (state.authenticated ? 'is-online' : 'is-pending'), 'aria-hidden': 'true' })
       );
       wrap.appendChild(account);
+      const task = state.accountTask;
+      if (task && task.kind !== 'cookie') wrap.appendChild(accountTaskLine(task));
 
       const actions = el('div', { class: 'setting-actions' });
       if (!state.authenticated) {
@@ -8987,7 +9340,8 @@ You can start with a more structured option: one script, short captions, and a c
           { variant: 'primary', disabled: state.loginPending || Boolean(state.serverError) || state.networkOffline }
         ));
       } else {
-        actions.appendChild(settingsActionButton('Log out', 'logout', async () => { await logoutAccount(); refreshPanel(); }));
+        actions.appendChild(settingsActionButton(accountTaskRunning('signout') ? 'Signing out…' : 'Log out', 'logout',
+          async () => { await logoutAccount(); refreshPanel(); }, { disabled: Boolean(state.accountBusy) }));
       }
       actions.appendChild(settingsActionButton('Open arena.ai window', 'external', async () => {
         if (state.engineOpen) await hideEngine(); else await showEngine();
@@ -9000,13 +9354,16 @@ You can start with a more structured option: one script, short captions, and a c
         wrap.appendChild(el('p', { class: 'modal-copy', text: 'On arena.ai in your browser: DevTools → Application → Cookies → arena.ai. Copy the arena-auth-prod-v1 lines as name=value pairs and paste them here.' + (state.authenticated ? ' The new account becomes current; your saved accounts stay in the account menu.' : '') }));
         const cookieField = el('textarea', { class: 'input mono cookie-field', rows: '3', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
           'aria-label': 'Arena cookies', placeholder: 'arena-auth-prod-v1.0=…; arena-auth-prod-v1.1=…' });
-        const importButton = settingsActionButton(state.authenticated ? 'Add account with cookies' : 'Sign in with cookies', 'login', async () => {
+        const checking = accountTaskRunning('cookie');
+        const importButton = settingsActionButton(checking ? 'Checking cookies…' : state.authenticated ? 'Add account with cookies' : 'Sign in with cookies', 'login', async () => {
           const cookie = cookieField.value.trim();
           cookieField.value = '';
           if (!cookie) { toast('Paste the cookies first.', 'warning'); return; }
           await loginWithCookie(cookie);
-        }, { disabled: state.loginPending || Boolean(state.serverError) || state.networkOffline });
+        }, { disabled: state.loginPending || state.accountBusy || Boolean(state.serverError) || state.networkOffline });
+        if (checking) cookieField.disabled = true;
         wrap.append(cookieField, el('div', { class: 'setting-actions', style: { marginTop: '8px' } }, importButton));
+        if (task?.kind === 'cookie') wrap.appendChild(accountTaskLine(task));
         wrap.appendChild(el('p', { class: 'field-help', text: 'Cookies give full access to your account — never share them. They are stored only on this computer.' }));
       }
       if (state.serverError) {
@@ -9649,7 +10006,7 @@ You can start with a more structured option: one script, short captions, and a c
       wrap.appendChild(el('p', { class: 'about-sub', text: state.appVersion ? `Version ${state.appVersion}` : 'Desktop client' }));
       wrap.appendChild(el('p', { class: 'modal-copy', text: 'Unofficial desktop client for arena.ai. Not affiliated with Arena.' }));
       wrap.appendChild(el('div', { class: 'setting-actions' },
-        settingsActionButton('GitHub', 'external', async () => { window.open('https://github.com/PlayzAe/arena.ai-desktop', '_blank', 'noopener'); }),
+        settingsActionButton('GitHub', 'external', async () => { window.open('https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework', '_blank', 'noopener'); }),
         settingsActionButton('Terms of Use', 'external', async () => { window.open('https://help.arena.ai/articles/5629909088-terms-of-use', '_blank', 'noopener'); }),
         settingsActionButton('Privacy Policy', 'external', async () => { window.open('https://help.arena.ai/articles/3765052346-privacy-policy', '_blank', 'noopener'); })
       ));
@@ -9770,27 +10127,47 @@ You can start with a more structured option: one script, short captions, and a c
 
       wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Quick diagnostics' }));
       const diagList = el('div', { class: 'diag-list' });
-      const testNames = ['Arena.ai connection', 'Account health', 'Encryption (DPAPI)', 'Workspace access', 'Update server (GitHub)'];
-      testNames.forEach(name => {
-        diagList.appendChild(el('div', { class: 'diag-row diag-pending' },
-          el('span', { class: 'diag-dot' }),
-          el('span', { class: 'diag-name', text: name }),
-          el('span', { class: 'diag-ms' })
-        ));
-      });
+      const testNames = ['Arena.ai connection', 'Arena.ai service status', 'Account health', 'Encryption (DPAPI)', 'Workspace access', 'Update server (GitHub)'];
+      // rows are matched by name, so a check added on the server cannot shift the others
+      const diagRow = (name) => {
+        let row = [...diagList.children].find((node) => node.dataset.name === name);
+        if (!row) {
+          row = el('div', { class: 'diag-row diag-pending', dataset: { name } },
+            el('span', { class: 'diag-dot' }),
+            el('span', { class: 'diag-text' },
+              el('span', { class: 'diag-name', text: name }),
+              el('span', { class: 'diag-detail' })),
+            el('span', { class: 'diag-ms' })
+          );
+          diagList.appendChild(row);
+        }
+        return row;
+      };
+      testNames.forEach(diagRow);
       const runBtn = settingsActionButton('Run all tests', 'play', async () => {
         runBtn.disabled = true;
-        diagList.querySelectorAll('.diag-row').forEach(r => { r.className = 'diag-row diag-running'; r.querySelector('.diag-ms').textContent = ''; });
+        diagList.querySelectorAll('.diag-row').forEach(r => {
+          r.className = 'diag-row diag-running';
+          r.querySelector('.diag-ms').textContent = '';
+          r.querySelector('.diag-detail').textContent = '';
+          r.title = '';
+        });
         try {
           const data = await API.diagnosticsRun();
-          const rows = diagList.querySelectorAll('.diag-row');
-          (data?.results || []).forEach((r, i) => {
-            if (!rows[i]) return;
-            rows[i].className = 'diag-row ' + (r.ok === true ? 'diag-pass' : r.ok === false ? 'diag-fail' : 'diag-skip');
-            rows[i].querySelector('.diag-ms').textContent = r.ok === null ? (r.detail || '—') : r.ms + 'ms';
-            if (r.detail && r.ok === false) rows[i].title = r.detail;
+          (data?.results || []).forEach((r) => {
+            if (!r || !r.name) return;
+            const row = diagRow(r.name);
+            row.className = 'diag-row ' + (r.ok === true ? 'diag-pass' : r.ok === false ? 'diag-fail' : 'diag-skip');
+            row.querySelector('.diag-ms').textContent = r.ok === null || r.ok === undefined ? '—' : r.ms + 'ms';
+            row.querySelector('.diag-detail').textContent = r.detail || '';
+            row.title = r.detail || '';
           });
-        } catch { diagList.querySelectorAll('.diag-row').forEach(r => { r.className = 'diag-row diag-fail'; }); }
+        } catch (err) {
+          diagList.querySelectorAll('.diag-row').forEach(r => {
+            r.className = 'diag-row diag-fail';
+            r.querySelector('.diag-detail').textContent = 'The checks did not run. Try again.';
+          });
+        }
         runBtn.disabled = false;
       });
       const diagActions = el('div', { class: 'setting-actions' });
@@ -11173,6 +11550,9 @@ You can start with a more structured option: one script, short captions, and a c
     els.workspacePanelTopButton = $('#workspacePanelTopButton');
     els.engineTopButton = $('#engineTopButton');
     els.connectionBanner = $('#connectionBanner');
+    els.arenaStatusBanner = $('#arenaStatusBanner');
+    els.arenaStatusTitle = $('#arenaStatusTitle');
+    els.arenaStatusText = $('#arenaStatusText');
     els.bannerTitle = $('#bannerTitle');
     els.bannerText = $('#bannerText');
     els.bannerRetry = $('#bannerRetry');
@@ -11237,6 +11617,8 @@ You can start with a more structured option: one script, short captions, and a c
     els.workspacePanelClose = $('#workspacePanelClose');
     els.workspaceTree = $('#workspaceTree');
     els.workspaceOpenButton = $('#workspaceOpenButton');
+    els.workspaceRunButton = $('#workspaceRunButton');
+    els.workspaceRunStatus = $('#workspaceRunStatus');
     els.workspaceRefreshButton = $('#workspaceRefreshButton');
     els.connectorsPane = $('#connectorsPane');
     els.connectorList = $('#connectorList');
@@ -11401,11 +11783,17 @@ You can start with a more structured option: one script, short captions, and a c
     });
     els.accountButton?.addEventListener('click', () => openAccountMenu());
     els.bannerRetry?.addEventListener('click', () => { void retryConnection(); });
+    // Hide lasts until status.arena.ai says something new
+    $('#arenaStatusHide')?.addEventListener('click', () => {
+      state.arenaStatusHidden = els.arenaStatusBanner?.dataset.key || '';
+      updateConnectionUI();
+    });
     els.demoExitBtn?.addEventListener('click', () => { window.location.href = window.location.pathname; });
     els.bannerDemo?.addEventListener('click', () => { /* Navigation to ?demo=1 is the explicit opt-in. */ });
 
     els.workspaceButton?.addEventListener('click', () => openWorkspacePopover(els.workspaceButton));
     els.workspaceOpenButton?.addEventListener('click', () => { void openWorkspaceFolder(state.workspacePanelRoot || state.workspace); });
+    els.workspaceRunButton?.addEventListener('click', () => { void startRunLocal(); });
     els.workspaceRefreshButton?.addEventListener('click', async () => {
       els.workspaceRefreshButton.classList.add('is-spinning');
       try { await loadWorkspaceTree('.', { force: true }); }

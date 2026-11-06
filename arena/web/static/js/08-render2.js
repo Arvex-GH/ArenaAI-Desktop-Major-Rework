@@ -614,7 +614,11 @@
   }
 
   function renderUnattachedPermissions(renderedIds) {
-    const remaining = state.pendingPermissions.filter((permission) => !permission.id || !renderedIds.has(String(permission.id)));
+    // Only this chat's approvals: another chat's request waits in that chat
+    // (the sidebar badge still counts it) instead of showing up here.
+    const here = state.activeChatId ? String(state.activeChatId) : '';
+    const remaining = state.pendingPermissions.filter((permission) => (!permission.id || !renderedIds.has(String(permission.id)))
+      && (!permission.chatId || String(permission.chatId) === here));
     if (!remaining.length) return null;
     const section = el('section', { class: 'message-turn', 'aria-label': "Pending approval" });
     section.appendChild(el('div', { class: 'activity-head' },
