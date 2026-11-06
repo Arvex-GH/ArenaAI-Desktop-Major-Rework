@@ -37,8 +37,8 @@ like before and keeps its data in `%USERPROFILE%\.arena-personal`. Add an empty
 
 ## Updating
 
-The app checks the release feed of the official upstream repo
-(`PlayzAe/arena.ai-desktop`) at startup and every 6 hours.
+The app checks the release feed of this repo
+(`Arvex-GH/ArenaAI-Desktop-Major-Rework`) at startup and every 6 hours.
 
 ```
 Arena Desktop 1.6.1 is available      ← dialog, not a browser link
@@ -114,7 +114,7 @@ The tag must match `arena/version.py`; the workflow fails otherwise.
 
 ### Changing the update feed
 
-The feed defaults to `PlayzAe/arena.ai-desktop`. To point a build somewhere else
+The feed defaults to `Arvex-GH/ArenaAI-Desktop-Major-Rework`. To point a build elsewhere
 without rebuilding, set it in `%USERPROFILE%\.arena-personal\config.json`:
 
 ```json

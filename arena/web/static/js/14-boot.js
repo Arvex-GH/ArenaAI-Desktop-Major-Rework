@@ -31,6 +31,9 @@
     els.workspacePanelTopButton = $('#workspacePanelTopButton');
     els.engineTopButton = $('#engineTopButton');
     els.connectionBanner = $('#connectionBanner');
+    els.arenaStatusBanner = $('#arenaStatusBanner');
+    els.arenaStatusTitle = $('#arenaStatusTitle');
+    els.arenaStatusText = $('#arenaStatusText');
     els.bannerTitle = $('#bannerTitle');
     els.bannerText = $('#bannerText');
     els.bannerRetry = $('#bannerRetry');
@@ -95,6 +98,8 @@
     els.workspacePanelClose = $('#workspacePanelClose');
     els.workspaceTree = $('#workspaceTree');
     els.workspaceOpenButton = $('#workspaceOpenButton');
+    els.workspaceRunButton = $('#workspaceRunButton');
+    els.workspaceRunStatus = $('#workspaceRunStatus');
     els.workspaceRefreshButton = $('#workspaceRefreshButton');
     els.connectorsPane = $('#connectorsPane');
     els.connectorList = $('#connectorList');
@@ -259,11 +264,17 @@
     });
     els.accountButton?.addEventListener('click', () => openAccountMenu());
     els.bannerRetry?.addEventListener('click', () => { void retryConnection(); });
+    // Hide lasts until status.arena.ai says something new
+    $('#arenaStatusHide')?.addEventListener('click', () => {
+      state.arenaStatusHidden = els.arenaStatusBanner?.dataset.key || '';
+      updateConnectionUI();
+    });
     els.demoExitBtn?.addEventListener('click', () => { window.location.href = window.location.pathname; });
     els.bannerDemo?.addEventListener('click', () => { /* Navigation to ?demo=1 is the explicit opt-in. */ });
 
     els.workspaceButton?.addEventListener('click', () => openWorkspacePopover(els.workspaceButton));
     els.workspaceOpenButton?.addEventListener('click', () => { void openWorkspaceFolder(state.workspacePanelRoot || state.workspace); });
+    els.workspaceRunButton?.addEventListener('click', () => { void startRunLocal(); });
     els.workspaceRefreshButton?.addEventListener('click', async () => {
       els.workspaceRefreshButton.classList.add('is-spinning');
       try { await loadWorkspaceTree('.', { force: true }); }

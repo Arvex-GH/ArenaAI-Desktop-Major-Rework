@@ -10,8 +10,8 @@
 </p>
 
 <div align="center">
-  <a href="https://github.com/PlayzAe/arena.ai-desktop/stargazers"><img src="https://img.shields.io/github/stars/PlayzAe/arena.ai-desktop?style=flat-square&color=crimson" alt="GitHub stars" /></a>
-  <a href="https://github.com/PlayzAe/arena.ai-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/PlayzAe/arena.ai-desktop?style=flat-square" alt="Latest release" /></a>
+  <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
+  <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
   <img src="https://img.shields.io/badge/version-1.6.0-brightgreen?style=flat-square" alt="v1.6.0" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
@@ -61,6 +61,19 @@ See [INSTALLER.md](INSTALLER.md).
 
 The Workspace/Connectors panel is removed for this rework. Choosing a folder
 still works from the composer chip and Settings → Folder.
+
+### Reliability fixes from 1.5.1
+
+- **Chats stay apart.** A reply keeps the folder it started in, opening a chat switches back to its folder, and an approval request shows only in its own chat.
+- **No double sends.** When the connection drops after arena.ai took a message, the app reads the reply from arena.ai's copy of the chat instead of sending the prompt again. Sending twice used up arena.ai's per-chat token limit.
+- **Clear errors.** A full arena.ai session, an "I'm not a robot" check and an arena.ai outage (from status.arena.ai) are named as such. Text chats continue in a fresh session when one fills up.
+- **Run on this PC.** The ▶ button in the Workspace panel installs a Code-mode project's packages, starts its dev server, shows the address and stops it on request. Dev servers the agent starts show their address in the chat.
+- Cleaner text between tool steps, and Refresh from Arena fixes replies that were cut off or glued together.
+- **Account menu.** The menu shows who is signed in, then the saved accounts to switch to. Switching, signing out and signing in with cookies show each step as it happens.
+- **Old chats read like new ones.** Chats from before 1.5 show their tool calls as rows with their output, instead of raw tags, and Code-mode steps keep their output.
+- **Chats stay in place.** Opening or importing a chat no longer moves it to the top of the list.
+- **Previews open in the app.** The Preview button on a live site opens the app's preview window. Before, an error sent it to the web browser instead. Closing the window only hides it.
+- **arena.ai outages are shown.** The app reads status.arena.ai. When arena.ai reports trouble, a bar at the top names the problem and links to the status page. While arena.ai fails, the sign-in check no longer says your session expired. Settings → About → Quick diagnostics has a new "Arena.ai service status" row, and failed checks now show why. The encryption check no longer always fails.
 
 ### Previous: v1.5.0
 
@@ -162,11 +175,11 @@ The typewriter animation ("asking Terry", "beam searching", etc.) now reliably s
 </details>
 
 > [!NOTE]
-> Report issues on the [issues page](https://github.com/PlayzAe/arena.ai-desktop/issues).
+> Report issues on the [issues page](https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/issues).
 
 ## Download
 
-Every build is on the [releases page](https://github.com/PlayzAe/arena.ai-desktop/releases/latest).
+Every build is on the [releases page](https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest).
 
 | Platform | Download | Notes |
 | --- | --- | --- |
@@ -350,4 +363,4 @@ Released under the [MIT License](LICENSE). Not affiliated with Arena AI Inc.
 
 DMs open — `@playzae`. For bugs and features: [GitHub Issues](../../issues).
 
-[![Star History Chart](https://app.repohistory.com/api/svg?repo=PlayzAe/arena.ai-desktop&type=Date&background=0D1117&color=f8d862)](https://app.repohistory.com/star-history)
+[![Star History Chart](https://app.repohistory.com/api/svg?repo=Arvex-GH/ArenaAI-Desktop-Major-Rework&type=Date&background=0D1117&color=f8d862)](https://app.repohistory.com/star-history)

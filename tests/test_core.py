@@ -3,6 +3,7 @@ agent tools, workspace mirroring, engine stream ordering and the Flask API."""
 
 import json
 import queue
+import re
 import sys
 import threading
 import time
@@ -513,9 +514,20 @@ class FakeClient:
         pass
 
 
+_STREAM_LINE = re.compile(r"^[ab][0-9a-k]:")
+
+
 class FakeResp:
-    def __init__(self, lines=(), status=200, text=""):
-        self.status_code, self._lines, self._text, self.error = status, list(lines), text, None
+    def __init__(self, lines=(), status=200, text="", finish=True):
+        lines = list(lines)
+        # Real arena streams end every lane with a finish record (ad:/bd:);
+        # the app treats a stream without one as cut off. finish=False
+        # simulates a stream that broke before arena finished.
+        streamed = [line for line in lines if _STREAM_LINE.match(line)]
+        if finish and status == 200 and streamed and not any(line[1:3] == "d:" for line in streamed):
+            for lane in sorted({line[0] for line in streamed}):
+                lines.append(lane + 'd:{"finishReason":"stop"}')
+        self.status_code, self._lines, self._text, self.error = status, lines, text, None
         self.headers = {}
 
     def iter_text(self):
@@ -535,6 +547,8 @@ def web(tmp_path, monkeypatch):
     cfg = {"pacing": False}
     monkeypatch.setattr(appmod, "load_config", lambda: dict(cfg))
     monkeypatch.setattr(appmod, "save_config", lambda c: cfg.update(c))
+    # status.arena.ai is read only by tests that ask for it (no network)
+    monkeypatch.setattr(appmod, "_STATUS_CACHE", {"at": float("inf"), "note": ""})
     catalog = [
         {"id": "max-router", "name": "Arena Max", "arena": "text", "org": "boss-bandit",
          "provider": "boss-bandit", "is_router": True, "user_selectable": True,

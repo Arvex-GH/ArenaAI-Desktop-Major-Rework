@@ -145,6 +145,9 @@
     getWorkspace() { return this.request('/api/workspace'); },
     setWorkspace(path) { return this.request('/api/workspace/set', { method: 'POST', body: { path } }); },
     clearWorkspace() { return this.request('/api/workspace/set', { method: 'POST', body: { clear: true } }); },
+    runLocal(path) { return this.request('/api/workspace/run-local', { method: 'POST', body: { path } }); },
+    runLocalState(id) { return this.request(`/api/workspace/run-local/${encodeURIComponent(id)}`); },
+    stopRunLocal(id) { return this.request(`/api/workspace/run-local/${encodeURIComponent(id)}`, { method: 'DELETE' }); },
     async uploadAttachment(file, kind, modality) {
       const form = new FormData();
       form.append('file', file, file.name);

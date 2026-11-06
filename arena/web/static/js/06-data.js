@@ -124,6 +124,8 @@
           || (status.accounts.find((a) => a.current) || {}).id || null;
       }
       state.permissionCount = status.pending_permissions;
+      state.arenaStatus = status.arena_status;
+      state.arenaUnavailable = status.arena_unavailable;
       if (status.workspace) state.workspace = status.workspace;
       state.workspaceChosen = Boolean(status.workspace_chosen);
       if (status.app_version) {

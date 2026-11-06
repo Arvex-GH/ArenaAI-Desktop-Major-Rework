@@ -79,6 +79,20 @@ This is the same category of software as third-party email clients (Thunderbird 
 
 ---
 
+## Session 4 (2026-11-06, night) — v1.5.1 reliability fixes + backend split
+
+- **Chat folder bleed** — a reply keeps the folder it started with (`_tl.workspace` pin in `_sse_wrap`); the chat saves `workspace`; opening a chat switches back to its folder. Approval cards show only in their own chat; Stop/done settles a chat's pending approvals.
+- **No duplicate sends** — a stream that broke after HTTP 200 is never re-sent (that doubled arena session usage and caused the real HTTP 400 "token usage limit"). `_recover_reply` reads the reply from arena's copy (`text_replace` event) and only accepts a reply to the prompt it sent. Finished-but-empty replies still retry.
+- **Cut-off detection** — a stream without arena's finish record (`ad:`) is flagged `_unfinished`. Test `FakeResp` now appends finish records like real arena (`finish=False` simulates a break).
+- **Errors named** — `session_full` (text/tool chats continue in a fresh session with a digest; Code chats explain), human check ("I'm not a robot") incl. a send held by an open check, status.arena.ai incident notices on failures.
+- **Text** — paragraph breaks between tool steps (live stream + history); refresh merge fills cut-off replies in place and repairs replies glued by older merges.
+- **Dev servers** — local agent's background servers surface their URL as a preview card; Stop ends the reply's servers; workspace panel ▶ "Run on this PC" (`/api/workspace/run-local`: install + dev script, URL, Stop). e2b sandbox links (`3000-<id>.e2b.app`) become previews.
+- Backend split: see Architecture below. engine.py's page JavaScript moved to `arena/engine_js.py`.
+- **Account menu** (`buildAccountMenu` in `11-ui.js`): the signed-in account on top, "Switch to" list, "Add another account" (sign-in window or paste cookies), then Settings, Help, Sign out. Switch, sign-out and cookie import run through `setAccountTask()`: each step shows in the menu, the Settings → Account panel (`accountTaskLine`) and the sidebar (`aria-busy`); errors show inline when the menu or settings are open, else as a toast.
+- **Old chats** (`05-state.js`): `legacyToolActivities` turns `<tool>` tags in old replies into tool rows, `legacyToolResults` attaches the "Tool results:" turns as their output, `backfillToolStep` reads command/path back from old step summaries, `userWordsAfterInjection` shows the user's question that old refreshes saved behind the guide/memory text. Sandbox `run` rows show the command as the call. New Code-mode chats save each sandbox step's output (`_sandbox_output_text`, `sandbox_done.output`).
+- **Chats jumping to "Recent"** — the refresh on open re-saved text fixes (paragraph breaks) as activity. `_save_chat(touch=False, stamp=...)`: refreshes never bump; imports and refreshes take arena.ai's own time (`history_sync.last_activity`, `_synced_stamp`).
+- **Windows** — site preview window: `open_preview` raised `NameError: webview` (previews fell back to the browser); it now opens, and closing only hides it. arena.ai window close also drops the stay-on-top pin. The reported freeze when closing the arena.ai window was NOT reproduced (3 open/close cycles via `/api/engine/show` + WM_CLOSE, clean and signed-in profiles, main window exits in 2.5 s): exact steps still needed.
+
 ## Pre-existing Test Failure
 
 **`test_agent_calls_mcp_tool_with_schema_coerced_json`** — `fake.calls` is empty (`[]`), meaning the agent loop never dispatches the MCP tool call. Confirmed pre-existing by running on stashed (unmodified) code — same failure. This is a bug in the agent loop's MCP tool routing logic, not related to any changes this session made. The test ran for 3.8 hours before timing out.
@@ -123,11 +137,23 @@ Even after typewriter window expires (1800ms), streaming text may not render inc
 arena/
 ├── desktop.py          # PyInstaller entry: pywebview + Flask, WebView2
 ├── web/
-│   ├── app.py          # Flask backend (6800+ lines), SSE streaming, all API endpoints
-│   │   - _API_TOKEN    # Per-launch random token, injected via <meta> tag
-│   │   - /api/chat     # POST, SSE streaming for all modes
-│   │   - _sse_wrap()   # Exception-safe SSE generator wrapper
-│   │   - _line_events()# SSE stream parser, returns {"a": text, "b": text}
+│   ├── app.py          # Loader only: runs server/*.py in order inside its own namespace
+│   ├── server/         # Flask backend split by topic, every file <= 1,500 lines
+│   │   ├── core.py         # imports, Flask app, _API_TOKEN, chat store, catalog, memory
+│   │   ├── accounts.py     # accounts, sign-in/out, settings, mode routes
+│   │   ├── chats.py        # chat list/load/refresh/compact, diagnostics, questions
+│   │   ├── library.py      # search/export/fork, Elo, automations, delete/archive, vote
+│   │   ├── stream.py       # _sse_wrap() (per-chat folder pin), sends, sandbox mirror, _line_events()
+│   │   ├── turns.py        # pacing, _turn, failover, gateway, reply recovery, _turn_auto
+│   │   ├── arena_agent.py  # genuine Arena Agent bridge + sandbox file mirror
+│   │   ├── local_agent.py  # checkpoints, sub-agents, _agent_run, dev-server links
+│   │   ├── send.py         # attachments, /api/chat
+│   │   ├── workspace.py    # files, terminal, permissions, stop, workspace, Run on this PC
+│   │   └── connectors.py   # arena + MCP connectors, run_server
+│   │   (One shared namespace on purpose: tests patch arena.web.app.<name> and that
+│   │    must reach every part. New part = add it to PARTS in app.py AND to
+│   │    hiddenimports in arena-cli.spec; tests/test_v151_fixes.py checks both
+│   │    and the 1,500-line limit.)
 │   ├── static/
 │   │   ├── app.js      # Concatenated bundle (11,300+ lines from 14 parts)
 │   │   ├── index.html
