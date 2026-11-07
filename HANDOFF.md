@@ -435,3 +435,30 @@ suite.
 - New check: the typewriter branch must contain no `markdownNode`
   (`tests/js/thinking_blocks.js` → 19 checks).
 - Version 1.5.10.
+
+## Session 19 (2026-11-07) — 1.5.11: the marker parser, rewritten from a battle
+
+- **Reported with a screenshot** (battle, one question): lane A gave no answer,
+  lane B printed `~~~Hi Urja, …` as prose and cut `Used: **abo**` / `ut 207 GB`.
+- **Lane A cause:** kimi wrote `~~~command` before every call and never a closing
+  `~~~`. Under the old rule any second marker closed the first block, so call
+  #2's marker was eaten as call #1's closer, call #3 opened a block that never
+  closed, and the tail was hidden — the answer. The footnote's "29 chars" is the
+  *visible* length: the sentence before the first call. The answer was there.
+- **Lane B causes:** (1) the closing marker glued to the answer
+  (`~~~Hi Urja…`) is not a marker *line* under the old regex, so the tildes
+  printed; (2) row positions were measured by re-parsing `raw.slice(0, at)` and
+  taking its visible length, which hides differently from the whole reply — the
+  cut landed two characters inside "about".
+- **Fix:** `MARKER_RE` + `readMarker` treat the marker as a token at line start
+  with a *known* kind open / bare `~~~` close; a kind marker while open closes the
+  previous call at its own tool tag; a closer glued to prose keeps the words; an
+  unfenced call at end of turn hides the call only (streaming still hides to the
+  end); `lastClose` is recorded even on a line that also carries a marker;
+  `offsetMapper(hidden)` measures places with the same ranges the text was built
+  from. Guide: close every call with its own `~~~` line before the answer.
+- **Tests:** `tests/js/thinking_blocks.js` grew to **36 checks** (glued closer,
+  three unfenced calls then the answer, in-flight pending, empty call, fence in a
+  file body, stray marker, cut-on-a-word); `permission_rows.js` 14; suite
+  **416 passed, 1 skipped**.
+- Version 1.5.11.

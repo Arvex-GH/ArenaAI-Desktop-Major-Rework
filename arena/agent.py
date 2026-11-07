@@ -66,7 +66,7 @@ Put a marker line in front of every tool call and a bare `~~~` after it, so the 
 ENTIRE FILE CONTENT
 </content></tool>
 ~~~
-Markers, one per call: `~~~command` (run_cmd, stop_cmd), `~~~write` (write_file), `~~~edit` (edit_file), `~~~read` (read_file, read_files), `~~~search` (search), `~~~list` (ls), `~~~delete` (delete), `~~~plan` (propose_plan), `~~~todos` (set_todos), `~~~ask` (ask_user), and `~~~tool` for a connector tool. Keep the marker on its own line, and never put a bare `~~~` line inside content you write.
+Markers, one per call: `~~~command` (run_cmd, stop_cmd), `~~~write` (write_file), `~~~edit` (edit_file), `~~~read` (read_file, read_files), `~~~search` (search), `~~~list` (ls), `~~~delete` (delete), `~~~plan` (propose_plan), `~~~todos` (set_todos), `~~~ask` (ask_user), and `~~~tool` for a connector tool. Keep the marker on its own line, and never put a bare `~~~` line inside content you write. Close every call with its own `~~~` line straight after the tag, before you write a word of the answer: an unclosed call and a closing `~~~` glued to the next sentence (`~~~Hi, your PC has one drive`) both make the interface guess where the call ended, and a guess can hide the answer.
 <tool name="edit_file"><path>index.html</path><old_text>exact text to replace</old_text><new_text>replacement</new_text></tool>
 <tool name="mkdir"><path>assets/img</path></tool>
 <tool name="delete"><path>old_notes.txt</path></tool>

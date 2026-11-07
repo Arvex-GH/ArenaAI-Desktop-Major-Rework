@@ -1,7 +1,7 @@
-// The model's out-loud thinking goes in <thinking> blocks. They must never reach
-// the answer text: the content belongs in a collapsed block at the position it
-// happened, and an unclosed block must stay hidden while it streams (1.5.8 and
-// earlier showed all of it as reply prose).
+// The model's out-loud thinking goes in <thinking> blocks, and its calls are
+// fenced with "~~~" markers. Neither may leak into the answer: a thought gets a
+// collapsed block where it happened, a call gets a row, and the prose in between
+// survives — every word of it, on the right side of the row.
 //
 // Usage: node tests/js/thinking_blocks.js
 const fs = require("fs");
@@ -30,25 +30,44 @@ function constant(name) {
   return `const ${name} = ${m[1]};`;
 }
 
+// A const whose value spans lines (an object literal): from "const X = {" to the
+// matching close brace.
+function block(name) {
+  const start = render.indexOf(`const ${name} = {`);
+  if (start < 0) throw new Error(`missing object ${name}`);
+  let depth = 0, i = render.indexOf("{", start);
+  for (; i < render.length; i += 1) {
+    if (render[i] === "{") depth += 1;
+    else if (render[i] === "}") { depth -= 1; if (!depth) break; }
+  }
+  return render.slice(start, i + 2);
+}
+
 const body = [
+  block("MARKER_LABELS"),
+  constant("MARKER_RE"),
+  constant("TOOL_TAG_CLOSE"),
   constant("THINKING_OPEN"),
   constant("THINKING_CLOSE"),
-  constant("STEP_MARKER_LINE"),
-  constant("TOOL_TAG_CLOSE"),
-  "function markerLabel() { return 'tool'; }",
+  "function markerLabel(kind) { return kind ? MARKER_LABELS[kind] || kind : 'Working'; }",
   "function markerDetail() { return ''; }",
+  grab("readMarker"),
   grab("readThinking"),
   grab("stripThinkingTail"),
+  grab("offsetMapper"),
   grab("readToolStream"),
   "exports.readToolStream = readToolStream;",
+  "exports.offsetMapper = offsetMapper;",
 ].join("\n");
 
 const api = {};
 new Function("exports", body)(api);
-const { readToolStream } = api;
+const { readToolStream, offsetMapper } = api;
 
 const checks = [];
 const check = (name, ok) => checks.push([name, !!ok]);
+
+/* ---- thoughts ---------------------------------------------------------- */
 
 const closed = readToolStream("<thinking>The disk is 1 TB.\nPlan: report it.</thinking>The C: drive has 660 GB.", false);
 check("thinking leaves the answer", closed.text.trim() === "The C: drive has 660 GB.");
@@ -70,24 +89,92 @@ check("positions are recorded", two.thinking[0].at === 0 && two.thinking[1].at >
 const plain = readToolStream("just an answer", false);
 check("a reply without thinking is untouched", plain.text === "just an answer" && plain.thinking.length === 0);
 
-const withTool = readToolStream("~~~command\n<tool name=\"run_cmd\"><cmd>dir</cmd></tool>\n~~~\n<thinking>x</thinking>done", false);
-check("tool markers and thinking coexist", withTool.text.trim() === "done" && withTool.thinking.length === 1);
+/* ---- markers ----------------------------------------------------------- */
 
-// Wiring: the card hands the blocks to the flow, keeps them in place, and does
-// not type out a placeholder on top of a thought that is still arriving.
+const TOOL = (name) => `<tool name="run_cmd"><cmd>${name}</cmd></tool>`;
+
+// The screenshot: the closing marker glued to the answer, which printed its own
+// tildes and the sentence on one line.
+const glued = readToolStream(
+  `I'll check the disk space on your drive.\n~~~command\n${TOOL("wmic logicaldisk")}\n~~~Hi Urja, your PC has one drive.\n\n**Used:** about 207 GB`,
+  false);
+check("a glued closing marker is hidden", !glued.text.includes("~~~"));
+check("the words after a glued marker are the answer",
+  glued.text.includes("Hi Urja, your PC has one drive."));
+check("the answer keeps its paragraphs", /Used:\*\* about 207 GB/.test(glued.text) || glued.text.includes("about 207 GB"));
+check("a finished call is not a pending row", glued.pending === null);
+
+// The screenshot, other lane: three calls, none of them fenced off, then the
+// answer. The next opening marker used to be eaten as the previous closer, and
+// the last block then hid the answer to the end of the text.
+const unfenced = readToolStream([
+  "Let me check your disk space.",
+  "~~~command", TOOL("wmic logicaldisk get caption"), "",
+  "~~~command", TOOL("powershell Get-CimInstance Win32_LogicalDisk"), "",
+  "~~~command", TOOL("powershell Get-CimInstance Win32_Log"), "",
+  "Your PC has one drive, C:, with about 453 GB free.",
+].join("\n"), false);
+check("an unfenced call does not eat the next one", unfenced.text.includes("Let me check your disk space."));
+check("the last answer survives an unfenced call",
+  unfenced.text.includes("Your PC has one drive, C:, with about 453 GB free."));
+check("no tool markup reaches the answer", !/<tool|<\/tool>/.test(unfenced.text));
+check("an unfenced turn adds no phantom row", unfenced.pending === null);
+
+// While streaming, an unfenced call is still pending: the row has to open.
+const streaming = readToolStream("~~~command\n" + TOOL("dir").slice(0, 20), true);
+check("a call in flight is pending while it streams", streaming.pending !== null && streaming.pending.kind === "command");
+check("an in-flight call hides to the end", !streaming.text.includes("<tool"));
+
+// A marker with nothing after it never ran.
+const empty = readToolStream("~~~command\n", false);
+check("an empty call is marked unfinished", empty.pending !== null && empty.pending.unfinished === true);
+
+// A "~~~" fence inside a file body must not end the call.
+const fencedFile = readToolStream(
+  "~~~write\n<tool name=\"write_file\"><path>a.md</path><content>~~~\ntext\n~~~</content></tool>\n~~~\nDone.",
+  false);
+check("a fence inside a file body does not end the call", fencedFile.text.trim() === "Done.");
+
+// Ordinary prose keeps its tildes only when they are not a marker.
+const stray = readToolStream("About 660 GB total.\n~~~\nDone.", false);
+check("a stray marker line is hidden", stray.text.includes("About 660 GB total.")
+  && stray.text.trim().endsWith("Done.") && !stray.text.includes("~~~"));
+
+/* ---- placement --------------------------------------------------------- */
+
+const raw = [
+  "First words.",
+  "~~~command", TOOL("dir"), "~~~",
+  "After the call: about 207 GB free.",
+  "<thinking>A note to self.</thinking>",
+  "Last words.",
+].join("\n");
+const placed = readToolStream(raw, false);
+const hiddenAt = offsetMapper(placed.hidden);
+const markerAt = raw.indexOf("~~~command");
+check("a call's place is measured in visible characters",
+  placed.text.slice(0, hiddenAt(markerAt)).endsWith("First words.\n"));
+check("the cut never lands inside a word", placed.text.slice(hiddenAt(markerAt)).trimStart()
+  .startsWith("After the call: about 207 GB free."));
+check("hidden ranges never overlap the visible text", hiddenAt(raw.length) === placed.text.length);
+
+/* ---- wiring ------------------------------------------------------------ */
+
 check("the card passes its thoughts to the flow", /lane\.thinking = view\.thinking;/.test(render));
 check("a live thought suppresses the placeholder", /const thinkingLive = view\.thinking\.some/.test(render)
   && /const showTypewriter = lane\.streaming && \(!visibleText \|\| inTypewriterWindow\) && !thinkingLive;/.test(render));
 check("rows and thoughts are sorted together", /const bySource = /.test(render)
   && /placed\.slice\(\)\.sort\(bySource\)/.test(render));
+check("a thought renders as a collapsed block", /class: `reasoning thinking-block/.test(render));
+check("no thought is hoisted above the text", !/thinking\.forEach\(\(block\) => nodes\.unshift/.test(render));
+check("rows are placed with the same hiding as the text", /offsetMapper\(readToolStream\(raw, Boolean\(lane\.streaming\)\)\.hidden\)/.test(render));
+
 // While the placeholder stands in for the prose, the prose itself must not be
 // poured into the card as well — that printed the first sentence twice.
 const typewriterBranch = render.slice(render.indexOf("if (showTypewriter) {"),
   render.indexOf("placed.sort((a, b) => {"));
 check("the placeholder hides the prose it stands for", /return nodes;/.test(typewriterBranch)
   && !/markdownNode/.test(typewriterBranch));
-check("a thought renders as a collapsed block", /class: `reasoning thinking-block/.test(render));
-check("no thought is hoisted above the text", !/thinking\.forEach\(\(block\) => nodes\.unshift/.test(render));
 
 const css = src("arena/web/static/style.css");
 check("thought blocks are styled", /\.thinking-block \{/.test(css) && /\.thinking-block\.is-live/.test(css));
@@ -96,6 +183,7 @@ check("thought blocks are styled", /\.thinking-block \{/.test(css) && /\.thinkin
 // ever happens.
 const guide = src("arena/agent.py");
 check("the prompt asks for <thinking>", /Think in a `<thinking>` block/.test(guide));
+check("the prompt asks for the closing marker", /close the call with `~~~`|closing `~~~`/.test(guide) || /`~~~` after it/.test(guide));
 
 let failed = 0;
 for (const [name, ok] of checks) {

@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.10-brightgreen?style=flat-square" alt="v1.5.10" />
+  <img src="https://img.shields.io/badge/version-1.5.11-brightgreen?style=flat-square" alt="v1.5.11" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.10](#whats-new-in-v1510)
+- [What's new in v1.5.11](#whats-new-in-v1511)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,12 +44,41 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.10
+## What's new in v1.5.11
 
-> 1.5.8 was tagged but never published: its build failed in the test step on
-> Windows. 1.5.9 carried the fix; 1.5.10 follows four minutes later because the
-> rewrite made the answer print twice while the placeholder was up. Same release,
-> nothing else changed.
+> 1.5.8 was tagged but never published (its build failed in the test step on
+> Windows); 1.5.9 carried the fix and 1.5.10 stopped the answer printing twice
+> while the placeholder was up. 1.5.11 is the first release with the marker
+> parser below.
+
+### The answer that vanished, and the `~~~` that printed itself
+
+A battle with two agents exposed the marker parser. On one side the model fenced
+its calls with `~~~command` but **never wrote the closing `~~~`**: the next
+call's opening marker was eaten as the previous call's closer, and the last call
+then hid everything after it — the answer included. The card showed three
+commands, no reply, and "Response received · 29 chars": the length of the
+sentence it managed to say before the first call.
+
+On the other side the model glued the closing marker to the answer —
+`~~~Hi Urja, your PC has one drive…` — which is not a marker line by the old
+rules, so the tildes printed themselves into the chat. The same turn cut a
+sentence in half (`Used: abo` … `ut 207 GB`) because a row's place in the answer
+was measured by re-parsing the text up to that row, which hides things
+differently than the whole reply does.
+
+The rules are now:
+
+- a marker is a token at the start of a line: `~~~` plus a known kind **opens**
+  a call, a bare `~~~` **closes** one (only once the call's tag has closed);
+- a kind marker while a call is open closes that call at its own tool tag and
+  starts the next one — models that never fence their calls cannot eat them;
+- a closing marker glued to prose (`~~~Hi Urja…`) hides the call and the tildes
+  and keeps the words;
+- a call left unfenced when the turn ends hides the call, **not** the answer
+  after it;
+- a row's place is measured with the same hiding the text went through
+  (`offsetMapper`), so a sentence is never cut in the middle of a word.
 
 ### The first sentence, printed twice
 
