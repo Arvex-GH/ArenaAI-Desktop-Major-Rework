@@ -731,7 +731,42 @@ waiting on the row they belong to.
 The lesson recorded here: a receipt that restates a row is worse than noise when
 it hides the row it stands in for.
 
-## The 1.5.10 release
+## The 1.5.11 release
+
+### The marker parser, rewritten by two lanes in one battle
+
+A battle screenshot showed both failures at once. Lane A (kimi) wrote
+`~~~command` before each call and **no closing `~~~` at all**: under the old
+rule any second marker closed the first block, so call #2's opening marker was
+consumed as call #1's closer, call #3 opened a block that never closed, and the
+tail — the answer — was hidden to the end of the text. The footnote read
+"Response received · 29 chars", which is the visible length of the single
+sentence said before the first call: the answer existed, the parser had eaten it.
+Lane B (sonnet) glued its closing marker to the answer (`~~~Hi Urja, your PC has
+one drive…`); the old rule wanted the marker alone on a line, so the tildes and
+the sentence printed as prose. The same lane cut a sentence in half
+(`Used: abo` … `ut 207 GB`), because a row's position was measured by re-parsing
+the raw text up to that row and taking the visible length — and a prefix hides
+differently from the whole reply.
+
+What the parser does now:
+
+| Reply | Old behaviour | Now |
+| --- | --- | --- |
+| `~~~command` … `~~~` | hidden | hidden |
+| `~~~command` … `~~~` *(next call, no closer)* | next marker eaten as closer | previous call closes at its own tool tag, next opens |
+| `~~~command` … *(turn ends, never closed)* | hidden to the end — answer lost | hides the call only; the answer stays |
+| `~~~Hi Urja…` *(closer glued to prose)* | tildes print into the chat | call and tildes hidden, words kept |
+| a fence `~~~` inside a written file | ignored while the tag is open | ignored while the tag is open, and the line's `</tool>` still counts |
+
+Positions come from `offsetMapper(hidden)`: the same ranges the visible text was
+built from, so a row's cut is always on a character the user can see, never two
+characters into a word.
+
+The agent guide also got firmer: close every call with its own `~~~` line before
+writing a word of the answer.
+
+`tests/js/thinking_blocks.js` reproduces both lanes' replies (36 checks).
 
 ### The sentence the placeholder and the card both printed
 

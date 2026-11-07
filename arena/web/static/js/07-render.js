@@ -924,12 +924,14 @@
     const raw = String(lane.text || '');
     const waitingId = lane.streaming && laneAwaitsApproval(lane) ? currentToolActivity(lane)?.id : null;
     const offset = (value) => (Number.isFinite(value) ? value : null);
+    // Places are measured with the same hiding the text above went through.
+    const visibleAt = offsetMapper(readToolStream(raw, Boolean(lane.streaming)).hidden);
     const placed = list.map((activity, index) => ({
       kind: 'activity', activity, index, at: offset(activity.at),
-      pos: Number.isFinite(activity.at) ? readToolStream(raw.slice(0, activity.at), false).text.length : null
+      pos: Number.isFinite(activity.at) ? visibleAt(activity.at) : null
     })).concat(thinking.map((block, index) => ({
       kind: 'thinking', block, index: list.length + index, at: offset(block.at),
-      pos: readToolStream(raw.slice(0, block.at), false).text.length
+      pos: visibleAt(block.at)
     })));
     const bySource = (a, b) => {
       if (a.at === null && b.at === null) return a.index - b.index;
@@ -1232,7 +1234,6 @@
      That one line arrives before the block does, so the app can hide the call
      from its first character instead of printing a file body into the chat and
      tidying up afterwards. Markers are display only: the tags still run. */
-  const STEP_MARKER_LINE = /^[ \t]*~~~([A-Za-z][\w-]*)?[ \t]*$/;
   const TOOL_TAG_CLOSE = /<\/(?:tool|invoke)\s*>/i;
 
   const MARKER_LABELS = {
@@ -1258,13 +1259,31 @@
     return '';
   }
 
+  /* A marker is "~~~" plus an optional kind. Models do not always give it a
+     line of its own — `~~~Hi, your PC has one drive…` is a closing marker glued
+     to the answer, and that glued line used to print its own tildes into the
+     chat. The marker is a token that may sit at the start of a line of prose. */
+  const MARKER_RE = /^[ \t]*(~{3,})[ \t]*([A-Za-z][\w-]*)?/;
+
+  function readMarker(lineText) {
+    const match = MARKER_RE.exec(lineText);
+    if (!match) return null;
+    const word = (match[2] || '').toLowerCase();
+    const kind = word && Object.prototype.hasOwnProperty.call(MARKER_LABELS, word) ? word : null;
+    // An unknown word after "~~~" is prose, not a kind: "~~~Hi Urja" is a
+    // closing marker followed by the sentence "Hi Urja …".
+    const tokenEnd = kind ? match[0].length : match[1].length;
+    return { kind, tokenEnd, rest: lineText.slice(tokenEnd).trim() };
+  }
+
   /* Walks the reply line by line: everything between a marker and its closing
      "~~~" is hidden. A closing marker only counts once the call's own tag has
      closed, so a "~~~" fence inside a file being written cannot end it early. */
   /* The model's out-loud thinking is wrapped in <thinking> blocks. They are not
      the answer: the content goes to a collapsed block (streamed while open) and
      never to the words the user reads. An unclosed block is hidden to the end of
-     the text — a half-streamed tag must not leak into the reply either. */
+     the text while it streams — a half-arrived tag must not leak into the reply
+     either. */
   const THINKING_OPEN = /<thinking\b[^>]*>/i;
   const THINKING_CLOSE = '</thinking>';
 
@@ -1297,11 +1316,31 @@
     return text;
   }
 
+  /* Where every visible character came from. Hiding is computed on the whole
+     reply, so a call's place in the answer has to be measured the same way —
+     slicing the raw text instead put the cut two characters inside a word. */
+  function offsetMapper(ranges) {
+    const sorted = (ranges || []).slice().sort((a, b) => a[0] - b[0]);
+    return (offset) => {
+      const limit = Math.max(0, Number(offset) || 0);
+      let shown = 0;
+      let cursor = 0;
+      sorted.forEach(([from, to]) => {
+        const start = Math.max(cursor, Math.min(from, limit));
+        shown += Math.max(0, start - cursor);
+        cursor = Math.max(cursor, Math.min(to, limit));
+      });
+      return shown + Math.max(0, limit - cursor);
+    };
+  }
+
   function readToolStream(raw, streaming) {
     const text = String(raw || '');
     const thinking = readThinking(text);
     const hasMarkers = text.includes('~~~');
-    if (!hasMarkers && !thinking.length) return { text: stripThinkingTail(text), pending: null, thinking };
+    if (!hasMarkers && !thinking.length) {
+      return { text: stripThinkingTail(text), pending: null, thinking, hidden: [] };
+    }
     const lines = [];
     let start = 0;
     for (let i = 0; i <= text.length; i += 1) {
@@ -1311,42 +1350,86 @@
       }
     }
     const hidden = thinking.map((block) => [block.at, block.end]);
-    let open = null;
-    let sawClose = false;
-    lines.forEach((line) => {
-      const match = STEP_MARKER_LINE.exec(line.text);
-      if (match) {
-        if (!open) {
-          open = { kind: (match[1] || '').toLowerCase(), start: line.start };
-          sawClose = false;
-        } else if (sawClose) {
-          hidden.push([open.start, line.end]);
-          open = null;
-          sawClose = false;
-        }
-        return;
-      }
-      if (open && TOOL_TAG_CLOSE.test(line.text)) sawClose = true;
-    });
+    let open = null;          // { kind, start, lastClose }
+    let sawClose = false;     // the call's own tag has closed inside this block
     let pending = null;
+
+    const closeBlock = (endOffset) => {
+      hidden.push([open.start, Math.max(open.start, endOffset)]);
+      open = null;
+      sawClose = false;
+    };
+
+    lines.forEach((line) => {
+      const marker = readMarker(line.text);
+      if (marker) {
+        if (marker.kind) {
+          // A kind opens a block. Models that never write the closing "~~~" must
+          // not have their next call eaten as one: the old block ends at its own
+          // tool tag and the new one starts here.
+          if (open) closeBlock(open.lastClose === null ? line.start : open.lastClose);
+          open = { kind: marker.kind, start: line.start, lastClose: null };
+          sawClose = false;
+          return;
+        }
+        if (!open) {
+          // A stray "~~~" in prose: only the tildes go.
+          hidden.push([line.start, line.start + marker.tokenEnd]);
+          return;
+        }
+        if (sawClose) {
+          // The closing marker, alone or glued to the words that follow it.
+          // The call is hidden from its opening marker through these tildes;
+          // the words after them are the answer.
+          closeBlock(line.start + marker.tokenEnd);
+          return;
+        }
+        // Otherwise it is a fence inside the body being written: leave it
+        // hidden, but the line may still carry the call's closing tag.
+      }
+      if (open) {
+        const close = TOOL_TAG_CLOSE.exec(line.text);
+        if (close) {
+          sawClose = true;
+          open.lastClose = line.start + close.index + close[0].length;
+        }
+      }
+    });
+
     if (open) {
-      pending = {
-        kind: open.kind,
-        label: markerLabel(open.kind),
-        detail: markerDetail(open.kind, text.slice(open.start)),
-        unfinished: !streaming
-      };
-      hidden.push([open.start, text.length]);
+      if (streaming) {
+        pending = {
+          kind: open.kind,
+          label: markerLabel(open.kind),
+          detail: markerDetail(open.kind, text.slice(open.start)),
+          unfinished: false
+        };
+        hidden.push([open.start, text.length]);
+      } else if (open.lastClose === null) {
+        // The marker arrived and nothing followed: the call never ran.
+        pending = {
+          kind: open.kind,
+          label: markerLabel(open.kind),
+          detail: markerDetail(open.kind, text.slice(open.start)),
+          unfinished: true
+        };
+        hidden.push([open.start, text.length]);
+      } else {
+        // The turn is over and the model never wrote the closing fence. Hide the
+        // call, not the answer that follows it — that answer used to vanish.
+        hidden.push([open.start, open.lastClose]);
+      }
     }
+
+    hidden.sort((a, b) => a[0] - b[0]);
     let visible = '';
     let pos = 0;
-    hidden.sort((a, b) => a[0] - b[0]);
     hidden.forEach(([from, to]) => {
       if (from > pos) visible += text.slice(pos, from);
       pos = Math.max(pos, to);
     });
     visible += text.slice(pos);
-    return { text: stripThinkingTail(visible), pending, thinking };
+    return { text: stripThinkingTail(visible), pending, thinking, hidden };
   }
 
   function stripToolMarkup(raw) {
