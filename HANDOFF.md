@@ -275,3 +275,22 @@ suite.
 - Deferred: the installer still unpacks ~27 MB from a OneFile exe at every
   launch (≈2 s here, measured as part of the 4 s silent run) — a OneDir build is
   the next speed lever, not this release.
+
+## Session 10 (2026-11-07) — v1.5.4 published
+
+- **Tag:** `v1.5.4` on `0b669b0` (merge of #14), workflow green, release published
+  `Arena-Desktop-Setup-1.5.4.exe` + `Arena-Desktop-1.5.4.exe`,
+  **28,621,059 bytes each, `sha256:437d85aad4c46c6af45844f7f45dfe5d8c9f92ee784c075b348e86c538feb517`**.
+- **Feed check** (`updater.fetch_latest('stable')`): 1.5.4, Setup asset picked
+  (28,621,059 B, kind `installer`), `is_allowed_url` true, 1.5.3 sees the update,
+  1.5.4 does not see one to itself. Notes replaced with
+  `gh release edit v1.5.4 --title … --notes-file …`.
+- **The in-app updater stays silent by design** (`--setup --update --silent --pid`):
+  a user who updates from Settings never sees the setup window, so the 1.5.3
+  freeze only ever hit the double-click path. Testing the fixed window means
+  running `Arena-Desktop-Setup-1.5.4.exe` itself.
+- **Known follow-up, not in this release:** install mode over a *running* copy
+  fails on the locked `Arena-Desktop.exe` and shows up in the window as an access
+  error. Update mode handles it (`--pid` waits for the app to exit); instal mode
+  should detect the running app, offer to close it, or switch to update mode.
+- 411 tests pass.
