@@ -24,7 +24,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '1.5.13',
+        app_version: '1.5.14',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -229,12 +229,12 @@
       const wanted = new URLSearchParams(window.location.search).get('update') === '1';
       if (wanted) {
         return {
-          enabled: true, current: '1.5.12', latest: '1.5.13', update: true, demo: true,
+          enabled: true, current: '1.5.13', latest: '1.5.14', update: true, demo: true,
           url: 'https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases',
           published_at: new Date(Date.now() - 86400000 * 2).toISOString(),
           notes: 'What changed in this build:\n\n· The sidebar is quieter: one New chat row, no oversized button.\n· Update flow rebuilt: the app downloads the new build, replaces itself and restarts.\n· Fixed lane answers being clipped when two models answered at once.\n· Chat titles are written by Arena and no longer overwritten locally.',
           installer: { name: 'Arena-Desktop-Setup-1.6.1.exe', size: 84 * 1024 * 1024, kind: 'installer' },
-          can_install: true, install_mode: 'helper', installed_version: '1.5.13'
+          can_install: true, install_mode: 'helper', installed_version: '1.5.14'
         };
       }
       return { enabled: true, current: 'demo', latest: null, update: false, url: null, demo: true };
