@@ -24,7 +24,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '1.5.3',
+        app_version: '1.5.4',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -234,7 +234,7 @@
           published_at: new Date(Date.now() - 86400000 * 2).toISOString(),
           notes: 'What changed in this build:\n\n· The sidebar is quieter: one New chat row, no oversized button.\n· Update flow rebuilt: the app downloads the new build, replaces itself and restarts.\n· Fixed lane answers being clipped when two models answered at once.\n· Chat titles are written by Arena and no longer overwritten locally.',
           installer: { name: 'Arena-Desktop-Setup-1.6.1.exe', size: 84 * 1024 * 1024, kind: 'installer' },
-          can_install: true, install_mode: 'helper', installed_version: '1.5.3'
+          can_install: true, install_mode: 'helper', installed_version: '1.5.4'
         };
       }
       return { enabled: true, current: 'demo', latest: null, update: false, url: null, demo: true };

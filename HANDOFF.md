@@ -248,3 +248,30 @@ Two bugs reported against 1.5.2.
 - **Why 1.5.2 users are not stranded:** its updater runs the download with `--setup --update --silent`, so the name-based detection was only ever needed for the double-click path.
 - Notes were replaced after publish with `gh release edit v1.5.3 --notes-file …` — `--generate-notes` alone only lists PR titles.
 - 398 tests pass; docs/REWORK.md carries the 1.5.3 table beside the 1.5.2 one.
+
+## Session 9 (2026-11-07) — 1.5.4: the installer window and bypass permissions
+
+Both bugs came from running the shipped 1.5.3 on the user's own PC through the
+`ArenaConnectMCP` bridge (Supabase queue → `arena_bridge_wait`), not from the
+suite.
+
+- **The installer froze on "Starting…".** Diagnosis on the real machine: the
+  window process was alive and pumping (`Responding=True`, title *Arena Desktop
+  Setup*), `--setup --silent` on the same file installed in **4 s** and
+  registered Start-menu + Apps & features, and the WebView2 user-data folder
+  showed a fully initialised browser — so the core and the runtime were fine and
+  only the window was stuck. Cause: `arena/setup/ui.py` kept the window in a
+  public `SetupApi.window`; pywebview walks every public attribute of `js_api`
+  to build the page bridge, reached the WinForms form/WebView2 COM objects and
+  deadlocked the pump. `arena/desktop.py`'s `JsBridge` already documents the rule
+  and keeps `_window`, which is why only setup ever froze. Fix: `_window`, a
+  twelve-second `_bridge_watchdog` that installs from Python if the page never
+  calls the bridge, and `%USERPROFILE%\.arena-personal\setup.log`.
+- **`KeyError: 'bypassPermissions'` on every prompt in bypass mode.**
+  `arena/agent.py`'s `MODE_NOTES` was missing the `bypassPermissions` entry and
+  `local_agent.py` indexed it directly. Fix: the note is there, `agent.mode_note()`
+  falls back instead of raising, the call site uses `.get`, and
+  `tests/test_v154_fixes.py` asserts `permissions.MODES ⊆ MODE_NOTES`.
+- Deferred: the installer still unpacks ~27 MB from a OneFile exe at every
+  launch (≈2 s here, measured as part of the 4 s silent run) — a OneDir build is
+  the next speed lever, not this release.

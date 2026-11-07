@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.3-brightgreen?style=flat-square" alt="v1.5.3" />
+  <img src="https://img.shields.io/badge/version-1.5.4-brightgreen?style=flat-square" alt="v1.5.4" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.3](#whats-new-in-v153)
+- [What's new in v1.5.4](#whats-new-in-v154)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,7 +44,35 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.3
+## What's new in v1.5.4
+
+### Bypass permissions stops killing the reply
+
+With *Bypass permissions* selected, every message died before the model was
+called: **KeyError: 'bypassPermissions'**. The agent guide knew four of the five
+permission modes, and the fifth — the one whose whole point is "run it now" —
+was the missing one, so the turn crashed while it was still being built. The
+mode is in the guide now, an unknown mode falls back to the default text
+instead of raising, and a test keeps `permissions.MODES` and the guide in step.
+
+### The Setup window no longer freezes
+
+1.5.3's installer opened its window, printed "Starting…", and then hung until
+Windows greyed it out — the install never began. pywebview builds a page's
+bridge by walking every public attribute of the `js_api` object; the setup
+window kept its window reference in a public `window` attribute, so the walk
+went from the bridge into the WinForms form and the WebView2 objects behind it
+and deadlocked the message pump. The app itself already knew this rule (its
+bridge documents it and keeps `_window`), which is why only the installer froze.
+The reference is private now, and two safety nets came with it: a watchdog that
+starts the install from Python if the page has not called the bridge within
+twelve seconds, and `%USERPROFILE%\.arena-personal\setup.log`, so a setup
+window that ever misbehaves leaves a trace.
+
+### Previous: v1.5.3 — the Setup file installs
+
+<details>
+<summary>1.5.3: the double-clicked Setup file installs, and a failed reply explains itself</summary>
 
 ### The Setup download installs
 
@@ -69,6 +97,8 @@ message with *Copy details* beside it, and the full stack goes to
 `%USERPROFILE%\.arena-personal\desktop.log`. Two unguarded calls into the
 WebView2 bridge that could kill an Agent turn before its first character now
 read as "the arena.ai window is not ready" instead.
+
+</details>
 
 ### Previous: v1.5.2 — the rework itself
 

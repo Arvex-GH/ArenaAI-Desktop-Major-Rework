@@ -587,7 +587,7 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
                     "connectors": sorted({item['server'] for item in mcp_tools.values()})})
     mcp_hash = hashlib.sha1(mcp_guide.encode("utf-8")).hexdigest()[:12] if mcp_guide else None
     delegate_section = agent.delegate_guide(_delegate_models()) if conv.get("allow_delegate") else ""
-    session_guide = agent.guide(root, permissions.MODES[mode], agent.MODE_NOTES[mode], dual,
+    session_guide = agent.guide(root, permissions.MODES.get(mode, mode), agent.mode_note(mode), dual,
                                 extra_tools=mcp_guide, delegate=delegate_section)
     # Re-sent if the reply has to move to a fresh arena.ai session midway
     # (arena.ai's per-session token limit): the new session must learn the tools.
