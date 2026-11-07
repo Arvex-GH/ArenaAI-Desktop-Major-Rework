@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.7-brightgreen?style=flat-square" alt="v1.5.7" />
+  <img src="https://img.shields.io/badge/version-1.5.8-brightgreen?style=flat-square" alt="v1.5.8" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.7](#whats-new-in-v157)
+- [What's new in v1.5.8](#whats-new-in-v158)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,7 +44,38 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.7
+## What's new in v1.5.8
+
+### The model thinks in a block, not in your answer
+
+Agent turns used to end with the model narrating its own process into the reply —
+*writing out loud*, as it were: *"We now have the disk layout. Let's write a
+concise breakdown…"*, sitting above the breakdown it was describing. Plans,
+self-checks and notes like *"let me double-check that"* are not the answer, and
+reading them back as if they were was noise.
+
+Those thoughts are wrapped in a `<thinking>` block now and streamed inside a
+collapsed **Thought** line, at the point in the turn where they happened —
+between the paragraph above and the paragraph below, never hoisted to the top of
+the card. While a block is still arriving it stays open with a caret so you can
+watch it think; the moment it closes it folds to one line. A half-arrived
+`<thinki` never flashes as text.
+
+### "Exploring solutions…" belongs where the words will be
+
+The placeholder that stands in for a reply used to hang at the top of the card
+for the whole turn. An agent that ran six commands sat under a line still saying
+*exploring solutions…* — text about a moment that had already passed, above work
+that was happening now.
+
+The rows come first now and the placeholder sits at the bottom, under the last
+row, where the next words will actually appear. When the model writes, it is
+replaced by the text; between calls it simply marks that the turn is still going.
+
+### Previous: v1.5.7 — commands visible while they run
+
+<details>
+<summary>1.5.7: the rows stream under the placeholder instead of appearing when the turn ends</summary>
 
 ### The command you are waiting on is on screen
 
@@ -56,6 +87,8 @@ commands went quiet.
 
 The work is drawn while the placeholder types now: the rows stream under it, the
 running one open, exactly as they do once prose arrives.
+
+</details>
 
 ### Previous: v1.5.6 — one verdict per command
 

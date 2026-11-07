@@ -1,4 +1,4 @@
 """Single source of truth for the application version."""
 
-APP_VERSION = "1.5.7"
+APP_VERSION = "1.5.8"
 VERSION_TUPLE = tuple(int(part) for part in APP_VERSION.split(".") if part.isdigit())

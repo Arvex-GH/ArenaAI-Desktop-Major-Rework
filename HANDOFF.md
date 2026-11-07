@@ -375,3 +375,41 @@ suite.
 - Still pending with the browser gone: a fresh `docs/screenshots/chat/tool-done.png`
   (it still shows the removed `Allowed … allowed` line) and a shot of a running
   row under the "Thinking…" placeholder.
+
+## Session 16 (2026-11-07) — 1.5.8: the placeholder moves below the rows
+
+- **Reported with a screenshot:** a turn with two finished commands still carried
+  *exploring solutions…* at the top of the card — text describing a moment that
+  had passed, above work that was happening.
+- **Fix:** the card is now built in the order things happen: flow rows, then the
+  call being written, then the typewriter placeholder — so it sits under the last
+  row, where the next words will appear, and only ever stands for prose that has
+  not arrived.
+- `renderLaneFlow(lane, visibleText, showTypewriter)` is called unconditionally
+  once, instead of in two branches; the caret logic moved into the `else` of the
+  placeholder.
+- `tests/js/permission_rows.js` now checks the order as well (14 checks).
+- Version 1.5.8.
+
+## Session 17 (2026-11-07) — 1.5.8: thoughts in a block, where they happened
+
+- **Reported with a screenshot:** the model wrote its plan into the answer —
+  *"We now have the disk layout. Let's write a concise breakdown…"* — above the
+  breakdown it was introducing. Thoughts must not be prose in the reply and must
+  not be hoisted to the top of the card.
+- **Prompt:** `arena/agent.py` now tells the model to plan inside
+  `<thinking>…</thinking>`, keep everything outside the block as the reply, and
+  close every block (with a worked example).
+- **Parser:** `readThinking` collects blocks with offsets and an `open` flag;
+  `readToolStream` folds them into the existing `hidden` ranges (an unclosed
+  block hides to the end of the text) and strips trailing partial tags through a
+  new `stripThinkingTail` — the early-return path for marker-free replies had to
+  go through it too, or `<thinki` flashed as text.
+- **Render:** `renderThinkingNode` → `<details class="reasoning thinking-block">`,
+  summary *Thinking* (open, caret) / *Thought*; `renderLaneFlow` sorts rows and
+  thoughts together by source offset and pours the text between them; a live
+  thought suppresses the typewriter placeholder.
+- **Tests:** new `tests/js/thinking_blocks.js` (18 checks) wired into pytest via
+  `tests/test_permission_rows.py`; suite at **416 passed, 1 skipped**;
+  `tests/js/permission_rows.js` still 14 checks.
+- Version 1.5.8.

@@ -970,6 +970,20 @@ svg { display: block; }
 .reasoning summary:hover { color: #c0cbc3; }
 .reasoning-content { padding: 0 12px 10px 22px; color: #959f99; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* A thought the model said out loud: quiet, in place, opened while it writes. */
+.thinking-block { margin: 0 0 8px; border-color: #303634; background: #212423; }
+.thinking-block > summary { padding: 5px 9px; font-style: italic; }
+.thinking-block > summary::before { content: "\2026"; }
+.thinking-block[open] > summary::before { content: "\203A"; }
+.thinking-block.is-live > summary { color: #8b958f; }
+.thinking-block.is-live > summary::after {
+  content: "";
+  width: 5px; height: 5px; margin-left: 2px;
+  border-radius: 50%; background: var(--accent);
+  animation: caret 1s steps(2, start) infinite;
+}
+.thinking-block .reasoning-content { color: #8b958f; font-style: italic; }
+
 .stream-cursor { display: inline-block; width: 5px; height: 14px; margin-left: 2px; vertical-align: -2px; background: var(--accent); border-radius: 1px; animation: caret 1s steps(2, start) infinite; }
 @keyframes caret { 0%, 50% { opacity: 1; } 50.1%, 100% { opacity: 0; } }
 .answer-footnote { display: flex; align-items: center; gap: 7px; margin-top: 12px; color: #6e7772; font-size: 10px; }
