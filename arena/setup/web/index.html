@@ -351,8 +351,18 @@
 
   const bridge = () => (window.pywebview && window.pywebview.api) || null;
 
+  // The bar only ever moves forward inside one run: a percentage that drops is
+  // read as a restart, and the only restart is a new install. resetBar() is the
+  // one place that puts it back to zero.
+  let shownPct = 0;
+
+  function resetBar() {
+    shownPct = 0;
+  }
+
   function setProgress(pct) {
-    const value = Math.max(0, Math.min(100, Math.round(pct)));
+    const value = Math.max(shownPct, Math.max(0, Math.min(100, Math.round(pct))));
+    shownPct = value;
     els.fill.style.width = value + "%";
     els.statusPct.textContent = value + "%";
     els.track.setAttribute("aria-valuenow", String(value));
@@ -480,6 +490,7 @@
 
   function el0() {
     els.buttons.replaceChildren();
+    resetBar();
     setProgress(0);
     setStatus("Starting");
     els.tagline.textContent = mode === "update"
@@ -489,6 +500,7 @@
 
   function renderConfirm() {
     els.shell.dataset.state = "confirm";
+    resetBar();
     setProgress(0);
     setStatus("Ready when you are");
     els.tagline.textContent = "Arena Desktop will be removed from this PC. Your chats, accounts and settings stay unless you tick the box below.";
@@ -537,7 +549,7 @@
 
   // Browser preview only (no pywebview): animate so the screen can be reviewed.
   function simulate() {
-    els.version.textContent = "\u00b7 1.5.17";
+    els.version.textContent = "\u00b7 1.5.18";
     const steps = [
       [0.06, "Preparing"], [0.18, "Copying the application \u2014 12 of 84 MB"],
       [0.52, "Copying the application \u2014 44 of 84 MB"], [0.78, "Creating shortcuts \u2014 start menu"],

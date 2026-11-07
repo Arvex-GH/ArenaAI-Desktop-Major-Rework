@@ -117,6 +117,8 @@ def api_update_download():
         return jsonify({"ok": False, "error": "This release has no Windows build attached.",
                         "url": info.get("url")}), 409
     job = _updater.JOB.start_download({"version": info.get("latest"), "installer": info["installer"]})
+    if job.get("phase") == "installing":
+        return jsonify({"ok": False, "error": "The update is already being installed."}), 409
     return jsonify({"ok": True, "job": job, "mode": info.get("install_mode")})
 
 
@@ -174,6 +176,9 @@ def api_update_install():
     if not target.exists():
         return jsonify({"ok": False, "error": "The downloaded file disappeared. Please download it again."}), 409
 
+    # Claim the job before anything starts, so a second click (or a stale dialog
+    # in another tab) cannot begin a download of the file being installed.
+    _updater.JOB.update(phase="installing", pct=100)
     name = (job.get("name") or "").lower()
     if "setup" in name or "installer" in name:
         started = _updater.launch_installer(target, os.getpid())
