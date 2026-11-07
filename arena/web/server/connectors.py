@@ -334,6 +334,23 @@ def api_connectors_reload():
     return jsonify(CONNECTORS.list())
 
 
+@app.route("/api/connectors/startup")
+def api_connectors_startup():
+    """Progress of the launch-time connect. Polling it starts the run."""
+    try:
+        return jsonify(CONNECTORS.start_startup_connect())
+    except Exception as e:
+        return _connector_error(e)
+
+
+@app.route("/api/connectors/startup/retry", methods=["POST"])
+def api_connectors_startup_retry():
+    try:
+        return jsonify(CONNECTORS.start_startup_connect(force=True))
+    except Exception as e:
+        return _connector_error(e)
+
+
 @app.route("/api/connectors/config/open", methods=["POST"])
 def api_connectors_config_open():
     try:
@@ -461,8 +478,20 @@ def api_media_save():
     return jsonify({"ok": True, "path": str(target), "folder": str(folder)})
 
 
+def start_connector_warmup(delay: float = 1.0) -> None:
+    """Connect the local MCP servers in the background as the app opens."""
+    def run():
+        time.sleep(max(0.0, delay))
+        try:
+            CONNECTORS.start_startup_connect()
+        except Exception:
+            LOG.exception("MCP warm-up failed")
+    threading.Thread(target=run, daemon=True, name="mcp-warmup").start()
+
+
 def run_server(port: int = 5000, open_browser: bool = True):
     """Start the Flask server and optionally open browser."""
     if open_browser:
         threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{port}")).start()
+    start_connector_warmup()
     app.run(host="127.0.0.1", port=port, debug=False, threaded=True)

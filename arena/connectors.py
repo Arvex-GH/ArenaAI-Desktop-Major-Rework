@@ -16,6 +16,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -300,6 +301,14 @@ def build_preset_entry(preset_id: str, workspace: Path, values: Optional[Dict[st
     raise ValueError(f"Unknown official connector: {preset_id}")
 
 
+STARTUP_TIMEOUT = 90.0
+
+
+def _startup_label(server: Dict[str, Any]) -> str:
+    description = " ".join(str(server.get("description") or "").split())
+    return description[:120] if description else str(server.get("name") or "MCP server")
+
+
 class ConnectorManager:
     def __init__(self, workspace_provider: Callable[[], Path], config_path: Optional[Path] = None):
         self._workspace_provider = workspace_provider
@@ -308,6 +317,20 @@ class ConnectorManager:
         self._signatures: Dict[str, str] = {}
         self._errors: Dict[str, str] = {}
         self._lock = threading.RLock()
+        # One attempt per server at a time, without freezing the whole manager:
+        # a 90 s npx download at launch must not block the panel or a turn that
+        # is asking about a different server.
+        self._connect_locks: Dict[str, threading.Lock] = {}
+        # Launch-time connect: the app opens every enabled local MCP server by
+        # itself, and the start-up screen watches the list instead of the user
+        # hunting for Connect in a panel.
+        self._startup_lock = threading.RLock()
+        self._startup_items: List[Dict[str, Any]] = []
+        self._startup_phase = "idle"          # idle | connecting | done
+        self._startup_error: Optional[str] = None
+        self._startup_thread: Optional[threading.Thread] = None
+        self._startup_started_at: Optional[float] = None
+        self._startup_finished_at: Optional[float] = None
 
     @property
     def config_path(self) -> Path:
@@ -391,6 +414,14 @@ class ConnectorManager:
             "server_info": client.server_info if client else {},
         }
 
+    def _name_lock(self, name: str) -> threading.Lock:
+        with self._lock:
+            lock = self._connect_locks.get(name)
+            if lock is None:
+                lock = threading.Lock()
+                self._connect_locks[name] = lock
+            return lock
+
     def connect(self, name: str, timeout: float = 45.0) -> Dict[str, Any]:
         servers = self._servers()
         server = servers.get(name)
@@ -404,23 +435,39 @@ class ConnectorManager:
                 return self._summary(server)
         if not server.get("command"):
             raise ValueError("STDIO connector has no command")
+        signature = self._signature(server)
         with self._lock:
             existing = self._clients.get(name)
             if existing and existing.process and existing.process.poll() is None \
-                    and self._signatures.get(name) == self._signature(server):
+                    and self._signatures.get(name) == signature:
                 return self._summary(server)
-            self.disconnect(name)
+        # Spawning is slow (npx may download); hold only this server's lock.
+        guard = self._name_lock(name)
+        if not guard.acquire(timeout=max(1.0, min(timeout, 300.0))):
+            with self._lock:
+                self._errors[name] = "Another attempt to connect this connector is still running."
+            return self._summary(server)
+        try:
+            with self._lock:
+                existing = self._clients.get(name)
+                if existing and existing.process and existing.process.poll() is None \
+                        and self._signatures.get(name) == signature:
+                    return self._summary(server)
+                self.disconnect(name)
             command = [expand_env_value(server["command"]), *[expand_env_value(arg) for arg in server.get("args", [])]]
             cwd = expand_env_value(server["cwd"]) if server.get("cwd") else str(self._workspace_provider())
             client = McpStdioClient(command=command, env=expand_env(server.get("env")), cwd=cwd)
             ok = client.start(timeout=timeout)
-            if ok:
-                self._clients[name] = client
-                self._signatures[name] = self._signature(server)
-                self._errors.pop(name, None)
-            else:
-                self._errors[name] = client.last_error or "MCP server did not start"
+            with self._lock:
+                if ok:
+                    self._clients[name] = client
+                    self._signatures[name] = signature
+                    self._errors.pop(name, None)
+                else:
+                    self._errors[name] = client.last_error or "MCP server did not start"
             return self._summary(server)
+        finally:
+            guard.release()
 
     def disconnect(self, name: str) -> None:
         client = self._clients.pop(name, None)
@@ -485,6 +532,116 @@ class ConnectorManager:
     def install_preset(self, preset_id: str, values: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         name, entry = build_preset_entry(preset_id, self._workspace_provider(), values or {})
         return self.add_entry(name, entry, overwrite=False)
+
+    # -- launch-time connect ------------------------------------------------
+    def _startup_plan(self) -> List[Dict[str, Any]]:
+        try:
+            servers = self._servers()
+        except ValueError as e:
+            with self._startup_lock:
+                self._startup_error = str(e)
+            return []
+        plan: List[Dict[str, Any]] = []
+        for server in servers.values():
+            if not server.get("enabled"):
+                continue
+            command_parts = []
+            if server.get("command"):
+                command_parts = [server["command"], *server.get("args", [])]
+            elif server.get("url"):
+                command_parts = [server["url"]]
+            plan.append({
+                "id": server["name"],
+                "name": server["name"],
+                "label": server["name"],
+                "detail": _startup_label(server) if server.get("description") else _mask_command_display(command_parts),
+                "transport": server["transport"],
+                "status": "queued",
+                "error": None,
+                "tools": 0,
+            })
+        return plan
+
+    def _set_startup(self, name: str, **fields: Any) -> None:
+        with self._startup_lock:
+            for item in self._startup_items:
+                if item["id"] == name:
+                    item.update(fields)
+                    break
+
+    def startup_snapshot(self) -> Dict[str, Any]:
+        with self._startup_lock:
+            items = [dict(item) for item in self._startup_items]
+            phase = self._startup_phase
+            error = self._startup_error
+            started = self._startup_started_at
+            finished = self._startup_finished_at
+        total = len(items)
+        connected = sum(1 for item in items if item["status"] == "connected")
+        failed = sum(1 for item in items if item["status"] in ("error", "unsupported"))
+        done = connected + failed
+        end = finished or time.time()
+        return {
+            "ok": error is None,
+            "phase": phase,
+            "error": error,
+            "total": total,
+            "done": done,
+            "connected": connected,
+            "failed": failed,
+            "pending": total - done,
+            "items": items,
+            "elapsed": round(end - started, 1) if started else 0.0,
+        }
+
+    def start_startup_connect(self, force: bool = False) -> Dict[str, Any]:
+        """Connect every enabled local MCP server once, in the background.
+
+        Idempotent: a second call while the run is in flight (or after it
+        finished) only reports the state.  ``force`` re-runs it, which is what
+        the Retry button on the start-up screen uses.
+        """
+        with self._startup_lock:
+            if self._startup_thread is not None and self._startup_thread.is_alive():
+                return self.startup_snapshot()
+            if self._startup_phase == "done" and not force:
+                return self.startup_snapshot()
+            self._startup_error = None
+            plan = self._startup_plan()
+            self._startup_items = plan
+            self._startup_started_at = time.time()
+            self._startup_finished_at = None if plan else time.time()
+            self._startup_phase = "connecting" if plan else "done"
+            if not plan:
+                return self.startup_snapshot()
+            self._startup_thread = threading.Thread(
+                target=self._run_startup, args=(plan,), daemon=True, name="mcp-startup")
+            self._startup_thread.start()
+        return self.startup_snapshot()
+
+    def _run_startup(self, plan: List[Dict[str, Any]]) -> None:
+        try:
+            for item in plan:
+                if item.get("transport") != "stdio":
+                    self._set_startup(item["id"], status="unsupported",
+                                      error="Remote HTTP/SSE MCP transport is not supported in this version")
+                    continue
+                self._set_startup(item["id"], status="connecting")
+                try:
+                    summary = self.connect(item["id"], timeout=STARTUP_TIMEOUT)
+                except Exception as e:  # a broken entry must not stop the others
+                    self._set_startup(item["id"], status="error", error=str(e))
+                    continue
+                if summary.get("running"):
+                    self._set_startup(item["id"], status="connected",
+                                      tools=int(summary.get("tools_count") or 0))
+                else:
+                    self._set_startup(item["id"], status="error",
+                                      error=summary.get("error") or "MCP server did not start")
+        finally:
+            with self._startup_lock:
+                self._startup_phase = "done"
+                self._startup_finished_at = time.time()
 
     def ensure_started(self, timeout: float = 30.0) -> Dict[str, Dict[str, Any]]:
         try:

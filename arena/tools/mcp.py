@@ -16,6 +16,27 @@ from pathlib import Path
 from arena.tools.base import BaseTool
 
 
+def windowless_spawn_kwargs(nt: Optional[bool] = None) -> Dict[str, Any]:
+    """Popen arguments that keep an MCP server out of sight on Windows.
+
+    MCP servers are background processes: the app talks to them over pipes and
+    nobody ever types into them. Without this, ``cmd.exe /c npx …`` opens a
+    console window per server at every launch — three of them for three
+    connectors — and the user has to close windows to tidy up.
+    """
+    is_nt = os.name == "nt" if nt is None else bool(nt)
+    if not is_nt:
+        return {}
+    kwargs: Dict[str, Any] = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    startupinfo = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo is not None:
+        info = startupinfo()
+        info.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        info.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = info
+    return kwargs
+
+
 class McpStdioClient:
     """Lightweight STDIO client for MCP servers implementing JSON-RPC 2.0."""
 
@@ -64,6 +85,7 @@ class McpStdioClient:
                 bufsize=1,
                 cwd=self.cwd,
                 env=self.env,
+                **windowless_spawn_kwargs(),
             )
             self._running = True
             self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)

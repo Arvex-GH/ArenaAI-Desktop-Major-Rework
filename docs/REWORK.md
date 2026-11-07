@@ -731,7 +731,68 @@ waiting on the row they belong to.
 The lesson recorded here: a receipt that restates a row is worse than noise when
 it hides the row it stands in for.
 
-## The 1.5.11 release
+## The 1.5.12 release
+
+### Three terminals, and a panel nobody can see
+
+Reported from the installed app: *"if I open the app, terminals are popping up
+and the MCPs aren't connected by themselves."* Both halves had the same root.
+
+`McpStdioClient.start()` called `subprocess.Popen` with no `creationflags`, so on
+Windows each server — most of them `cmd.exe /c npx …` shims — got its own console
+window. And nothing ever connected them at launch: the only callers of
+`ensure_started()` were the agent turn paths, so a connector woke up when a turn
+needed its tools, or when the user found Connect in the right bar. With the panel
+hidden, the practical answer was "ask the AI something and hope it needs one".
+
+Fixes:
+
+- `windowless_spawn_kwargs()` — `CREATE_NO_WINDOW` plus a `STARTUPINFO` with
+  `SW_HIDE`: the servers are pipes and background threads, never windows;
+- `ConnectorManager.start_startup_connect()` runs the whole list in one daemon
+  thread, recording `queued → connecting → connected | error` per server and
+  staying idempotent (a second call reports, `force=True` re-runs);
+- `connect()` no longer holds the manager lock while spawning. It used to, which
+  meant a 90-second `npx` download froze the connectors panel and every other
+  server's request; now only that server's own lock is held;
+- `GET /api/connectors/startup` reports the run and starts it if it has not begun,
+  `POST …/startup/retry` re-runs it; `start_connector_warmup()` starts it as the
+  Flask server comes up (both from `run_server` and from the desktop window);
+- `startStartupScreen()` draws it: *Opening Arena Desktop* → the local server,
+  then a **Connectors** stage with one row per MCP, a progress bar, the tool count
+  when a server is up, the error when it is not, a Retry button in that case, and
+  *Continue in the background* (or Esc) so nothing can trap the user. It closes
+  itself 900 ms after the last connector. If the local server never answers it
+  gives up after ~18 s and says so instead of spinning forever.
+
+The connectors panel is refreshed when the run ends, so the right bar shows
+*connected* rather than *stopped* — if it is ever shown again.
+
+### The account switcher, back where it can be reached
+
+The left rail carried a pop-up with every saved account and a one-click switch.
+Removing the rail removed the only way to change accounts without signing out and
+pasting cookies. Settings → **Account** has the list now: avatar, name, address,
+the *Current* chip, **Switch**, **Forget** (which only forgets the saved session
+here), **Add another account** (the sign-in window opens for the new one and the
+current session stays), and *Sign in again* for an expired one. The switching
+itself is the same `switchToAccount()` the pop-up used — same store, same routes,
+no second implementation to drift.
+
+### Tests
+
+- `tests/test_startup_connect.py` — 12 checks: the hidden-spawn arguments, the
+  arguments reaching `Popen`, one run over every enabled server (disabled and
+  remote entries skipped), a broken entry not stopping the others, run-once and
+  forced retry, and an **end-to-end** run against a real STDIO MCP server written
+  for the test (initialize → tools/list → `mcp__fake__ping` in the tool map).
+- `tests/js/startup_screen.js` — 25 source checks over the screen, its route and
+  the Settings list.
+- `tests/js/startup_screen_dom.js` — jsdom, with `index.html` and `app.js` and a
+  stubbed local API: the screen renders, names a failing connector with its
+  error, offers Retry, dismisses; Settings lists the three accounts, marks the
+  current one and moves the mark on Switch. 17 checks, skipped where jsdom is
+  absent (CI needs no npm).
 
 ### The marker parser, rewritten by two lanes in one battle
 
