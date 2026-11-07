@@ -420,3 +420,18 @@ suite.
   converting a copy of the tree to CRLF. Fix: a `src()` reader that normalises
   line endings; verified LF and CRLF. Tag deleted (no release was ever created);
   version bumped to 1.5.9.
+
+## Session 18 (2026-11-07) — 1.5.9 shipped, 1.5.10 for the doubled sentence
+
+- **1.5.9 published:** `Arena-Desktop-Setup-1.5.9.exe` /
+  `Arena-Desktop-1.5.9.exe`, **28,624,721 bytes**,
+  `sha256:a608f83ea8b9ef10ef13caa22e58b811793bdaaa4d9e36d91a19d9b98c5fe36e`;
+  feed offers it to 1.5.8, not to itself; the failed `v1.5.8` tag was deleted.
+- **Then found while reading the shipped code:** `renderLaneFlow`'s typewriter
+  branch poured the prose into the card *and* left the placeholder up, so during
+  the 1.8 s window at the start of a turn the opening sentence printed twice.
+  The branch now returns after the rows and thoughts; text-pouring only happens
+  when the placeholder is down.
+- New check: the typewriter branch must contain no `markdownNode`
+  (`tests/js/thinking_blocks.js` → 19 checks).
+- Version 1.5.10.
