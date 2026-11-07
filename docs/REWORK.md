@@ -696,6 +696,41 @@ capture that runs in a real window.
 `v1.5.6` is published: 28,622,084 bytes, `sha256:aa4e57e6…2c620`, and the feed
 the in-app updater reads offers it to 1.5.5 and not to itself.
 
+## The 1.5.7 release
+
+### The rows that were there all along, behind the placeholder
+
+Removing the `Allowed …` receipts in 1.5.6 exposed a bug that had been sitting
+under them since the typewriter was added: **while a turn had no prose, the card
+rendered the "Thinking…" placeholder and nothing else.** The rows were in
+`lane.activities` the whole time; they simply were not drawn.
+
+```js
+const showTypewriter = lane.streaming && (!visibleText || inTypewriterWindow);
+...
+if (showTypewriter) {
+  card.appendChild(typewriter);            // and nothing else
+} else {
+  renderLaneFlow(lane, visibleText, false).forEach((node) => card.appendChild(node));
+}
+```
+
+An agent turn that only calls tools writes little or no prose, so `visibleText`
+stayed empty, `showTypewriter` stayed true, and every command row was held back
+until `lane.streaming` turned false — at the end of the turn, or the moment the
+user pressed Stop. The "Allowed …" line rendered *outside* the flow, which is why
+the commands still looked visible in 1.5.5: the app was showing a receipt of the
+approval, not the row of the command. Taking the receipt away left the placeholder
+alone on screen, and the commands looked new-hidden.
+
+`renderLaneFlow(lane, visibleText, true)` runs in the typewriter branch now: the
+placeholder holds the prose back, and the rows are drawn under it — the one being
+run open with its live output, the finished ones folded to a line, approvals
+waiting on the row they belong to.
+
+The lesson recorded here: a receipt that restates a row is worse than noise when
+it hides the row it stands in for.
+
 ## Still to come
 
 - **Session list presentation.** Grouping (today / this week / older), the way a

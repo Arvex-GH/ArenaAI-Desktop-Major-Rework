@@ -51,6 +51,10 @@ check("refusal is rendered on the row",
 check("no Allowed/Declined receipts left", !/text: allowed \? 'Allowed' : 'Declined'/.test(render));
 check("red tag in the stylesheet",
       /\.tool-reject \{[^}]*color: var\(--red\)/.test(css));
+// A running command is not hidden behind the "Thinking…" placeholder: the rows
+// are drawn while the typewriter holds the prose back.
+check("calls stay visible while the placeholder types",
+      /if \(showTypewriter\) \{[\s\S]*?renderLaneFlow\(lane, visibleText, true\)/.test(render));
 
 let failed = 0;
 for (const [name, ok] of checks) {
