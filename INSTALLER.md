@@ -6,8 +6,8 @@ The release publishes that one binary under two names, and the name decides
 what a double-click does.
 
 ```
-Arena-Desktop-Setup-1.5.7.exe    ← double-click: installs (no admin rights)
-Arena-Desktop-1.5.7.exe          ← double-click: runs, installs nothing
+Arena-Desktop-Setup-1.5.8.exe    ← double-click: installs (no admin rights)
+Arena-Desktop-1.5.8.exe          ← double-click: runs, installs nothing
 ```
 
 Both files are the same bytes; `-Setup-` in the file name is the switch. A
@@ -59,7 +59,7 @@ The app checks the release feed of this repo
 (`Arvex-GH/ArenaAI-Desktop-Major-Rework`) at startup and every 6 hours.
 
 ```
-Arena Desktop 1.5.7 is available      ← dialog, not a browser link
+Arena Desktop 1.5.8 is available      ← dialog, not a browser link
 [Later]  [Download and install]
 ```
 
@@ -128,7 +128,7 @@ Push a tag to publish a release the updater can see:
 
 ```bash
 # bump arena/version.py first, then
-git tag v1.5.7 && git push origin v1.5.7
+git tag v1.5.8 && git push origin v1.5.8
 ```
 
 The tag must match `arena/version.py`; the workflow fails otherwise.

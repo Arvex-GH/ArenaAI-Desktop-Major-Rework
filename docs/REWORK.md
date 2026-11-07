@@ -731,6 +731,74 @@ waiting on the row they belong to.
 The lesson recorded here: a receipt that restates a row is worse than noise when
 it hides the row it stands in for.
 
+## The 1.5.8 release
+
+### The placeholder's address
+
+1.5.7 put the tool rows back, and left the other half of the same mistake
+standing: the card still began with the typewriter placeholder — *exploring
+solutions…*, *asking terry…* — and kept it at the top for the whole turn, above
+whatever the turn was doing.
+
+A screenshot of a running turn made it plain: two finished commands, and a line
+above them describing a moment that had already passed.
+
+The card is built in the order things happen now:
+
+1. the rows, as they arrive — the running one open, finished ones folded;
+2. the call currently being written, if any;
+3. the placeholder, **under the last row**, where the next words will appear.
+
+The placeholder therefore only ever stands for prose that has not arrived yet. It
+disappears the moment text does, and between calls it simply marks that the turn
+is still going — at the bottom, where the eye already is, instead of pinned to the
+top like a heading.
+
+`tests/js/permission_rows.js` checks the order (the flow is drawn whatever the
+placeholder is doing, and the placeholder is appended after it), so the two
+halves of this bug — rows hidden, placeholder misplaced — cannot come back
+separately.
+
+### Thoughts are not the answer
+
+The same complaint, in prose. Agent turns ended with the model *thinking out
+loud* in the reply — *"We now have the disk layout. Let's write a concise
+breakdown…"* — a sentence about a moment that had already passed, printed above
+the breakdown it described. The user's rule: the model's thoughts belong in a
+thought block, in place, never as words in the answer and never lifted to the top
+of the card.
+
+The instruction is in the system prompt (`arena/agent.py`): plan inside
+`<thinking>…</thinking>`, treat everything outside the block as the reply, and
+close every block. The renderer then does the rest:
+
+- `readThinking(text)` finds the blocks, with their offsets, and marks the last
+  one `open` while it has no `</thinking>`;
+- `readToolStream` adds every block — **including an unclosed tail** — to the
+  same `hidden` ranges it already builds for `~~~` markers, so a thought cannot
+  leak into `visibleText` at any point in the stream. Trailing partial tags
+  (`<thi`, `<thinki`, `</thinkin`, an unterminated `<thinking …`) are stripped
+  separately, because `readThinking` cannot see a tag that has not closed;
+- `laneView` returns `{text, pending, thinking}`, and `renderThinkingNode` draws
+  `<details class="reasoning thinking-block">` with the summary *Thinking* (open,
+  caret, live) or *Thought* (folded);
+- `renderLaneFlow` merges rows and thoughts into one list ordered by where they
+  sit in the reply — `readToolStream(raw.slice(0, block.at), false).text.length`
+  — and pours the visible text between them, so the thought lands exactly where
+  it happened;
+- while a thought is still open, the typewriter placeholder is suppressed
+  (`!thinkingLive`): the live content is the thought, and a placeholder on top of
+  it would only restate it in shorter words.
+
+`tests/js/thinking_blocks.js` (18 checks) covers the parser end to end — closed
+block, unclosed block, partial tag, two blocks in order, positions, coexistence
+with `~~~` markers, the prompt rule itself — plus the card wiring and the
+stylesheet; `tests/test_permission_rows.py` runs it under pytest when node is
+present.
+
+**Unchanged:** the server-side `reasoning` events keep their own folded details.
+Those are the provider's own reasoning stream; `<thinking>` is the model's text.
+
 ## Still to come
 
 - **Session list presentation.** Grouping (today / this week / older), the way a

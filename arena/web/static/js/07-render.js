@@ -902,32 +902,54 @@
     return renderToolRow(activity, lane.streaming, activity.id === waitingId);
   }
 
+  /* A thought the model said out loud: one collapsed line, opened while it is
+     still being written. It sits where it happened, between the words above it
+     and the words below it. */
+  function renderThinkingNode(block) {
+    const details = el('details', { class: `reasoning thinking-block${block.open ? ' is-live' : ''}` },
+      el('summary', { text: block.open ? 'Thinking' : 'Thought' }),
+      el('div', { class: 'reasoning-content', text: block.body.trim() })
+    );
+    if (block.open) details.setAttribute('open', '');
+    return details;
+  }
+
   /* The answer and the work it did, in the order they happened: text, then the
-     call it made, then the text that followed. Nothing is hoisted to the top. */
+     call it made, then the text that followed. Nothing is hoisted to the top and
+     nothing is pushed to the bottom: rows, thoughts and words keep their places. */
   function renderLaneFlow(lane, visibleText, showTypewriter) {
     const nodes = [];
     const list = Array.isArray(lane.activities) ? lane.activities : [];
-    if (showTypewriter) {
-      // The words are hidden behind the typewriter for a moment; the calls it
-      // already made are not, so a command still opens while it runs.
-      const waitingId = lane.streaming && laneAwaitsApproval(lane) ? currentToolActivity(lane)?.id : null;
-      list.forEach((activity) => nodes.push(renderActivityNode(activity, lane, waitingId)));
-      return nodes;
-    }
-    if (!list.length) {
-      if (visibleText) nodes.push(markdownNode(visibleText));
-      return nodes;
-    }
+    const thinking = Array.isArray(lane.thinking) ? lane.thinking : [];
     const raw = String(lane.text || '');
     const waitingId = lane.streaming && laneAwaitsApproval(lane) ? currentToolActivity(lane)?.id : null;
-    const placed = list.map((activity, index) => {
-      const at = Number.isFinite(activity.at) ? activity.at : null;
-      const pos = at === null ? null : readToolStream(raw.slice(0, at), false).text.length;
-      return { activity, index, pos };
-    });
-    // Known positions keep their places; anything without one goes to the end
-    // in the order it arrived.
-    placed.sort((a, b) => {
+    const offset = (value) => (Number.isFinite(value) ? value : null);
+    const placed = list.map((activity, index) => ({
+      kind: 'activity', activity, index, at: offset(activity.at),
+      pos: Number.isFinite(activity.at) ? readToolStream(raw.slice(0, activity.at), false).text.length : null
+    })).concat(thinking.map((block, index) => ({
+      kind: 'thinking', block, index: list.length + index, at: offset(block.at),
+      pos: readToolStream(raw.slice(0, block.at), false).text.length
+    })));
+    const bySource = (a, b) => {
+      if (a.at === null && b.at === null) return a.index - b.index;
+      if (a.at === null) return 1;
+      if (b.at === null) return -1;
+      return a.at - b.at || a.index - b.index;
+    };
+    const node = (item) => (item.kind === 'thinking'
+      ? renderThinkingNode(item.block)
+      : renderActivityNode(item.activity, lane, waitingId));
+    if (showTypewriter && !visibleText) {
+      // The words are hidden behind the typewriter for a moment; the calls and
+      // thoughts it already had are not, so a command still opens while it runs.
+      placed.slice().sort(bySource).forEach((item) => nodes.push(node(item)));
+      return nodes;
+    }
+    if (showTypewriter) placed.sort(bySource);
+    else placed.sort((a, b) => {
+      // Known positions keep their places; anything without one goes last, in
+      // the order it arrived.
       if (a.pos === null && b.pos === null) return a.index - b.index;
       if (a.pos === null) return 1;
       if (b.pos === null) return -1;
@@ -940,7 +962,7 @@
         if (piece.trim()) nodes.push(markdownNode(piece));
         cursor = Math.max(cursor, item.pos);
       }
-      nodes.push(renderActivityNode(item.activity, lane, waitingId));
+      nodes.push(node(item));
     });
     const rest = visibleText.slice(cursor);
     if (rest.trim()) nodes.push(markdownNode(rest));
@@ -1238,9 +1260,47 @@
   /* Walks the reply line by line: everything between a marker and its closing
      "~~~" is hidden. A closing marker only counts once the call's own tag has
      closed, so a "~~~" fence inside a file being written cannot end it early. */
+  /* The model's out-loud thinking is wrapped in <thinking> blocks. They are not
+     the answer: the content goes to a collapsed block (streamed while open) and
+     never to the words the user reads. An unclosed block is hidden to the end of
+     the text — a half-streamed tag must not leak into the reply either. */
+  const THINKING_OPEN = /<thinking\b[^>]*>/i;
+  const THINKING_CLOSE = '</thinking>';
+
+  function readThinking(text) {
+    const found = [];
+    const open = /<thinking\b[^>]*>/gi;
+    let match;
+    while ((match = open.exec(text))) {
+      const from = match.index;
+      const start = from + match[0].length;
+      const closeAt = text.indexOf(THINKING_CLOSE, start);
+      const closed = closeAt !== -1;
+      const to = closed ? closeAt : text.length;
+      found.push({ at: from, body: text.slice(start, to), open: !closed,
+                   end: closed ? closeAt + THINKING_CLOSE.length : text.length });
+      open.lastIndex = found[found.length - 1].end;
+    }
+    return found;
+  }
+
+  /* A tag that is still arriving ("<thi", "<thinki", "</thinkin") must not flash
+     as text. Anything from the last "<" on is dropped while it is still a prefix
+     of a thinking tag, or a thinking tag whose ">" has not arrived yet. */
+  function stripThinkingTail(text) {
+    const tail = text.match(/<[^<>]*$/);
+    if (!tail) return text;
+    const rest = tail[0].toLowerCase();
+    if ('<thinking'.startsWith(rest) || '</thinking'.startsWith(rest)
+        || /^<\/?thinking\b/.test(rest)) return text.slice(0, tail.index);
+    return text;
+  }
+
   function readToolStream(raw, streaming) {
     const text = String(raw || '');
-    if (!text.includes('~~~')) return { text, pending: null };
+    const thinking = readThinking(text);
+    const hasMarkers = text.includes('~~~');
+    if (!hasMarkers && !thinking.length) return { text: stripThinkingTail(text), pending: null, thinking };
     const lines = [];
     let start = 0;
     for (let i = 0; i <= text.length; i += 1) {
@@ -1249,7 +1309,7 @@
         start = i + 1;
       }
     }
-    const hidden = [];
+    const hidden = thinking.map((block) => [block.at, block.end]);
     let open = null;
     let sawClose = false;
     lines.forEach((line) => {
@@ -1279,12 +1339,13 @@
     }
     let visible = '';
     let pos = 0;
+    hidden.sort((a, b) => a[0] - b[0]);
     hidden.forEach(([from, to]) => {
       if (from > pos) visible += text.slice(pos, from);
       pos = Math.max(pos, to);
     });
     visible += text.slice(pos);
-    return { text: visible, pending };
+    return { text: stripThinkingTail(visible), pending, thinking };
   }
 
   function stripToolMarkup(raw) {
@@ -1308,7 +1369,7 @@
       || (lane.permissions || []).length > 0;
     let text = read.text;
     if (hadTools && text.includes('<')) text = stripToolMarkup(text);
-    return { text, pending: read.pending };
+    return { text, pending: read.pending, thinking: read.thinking || [] };
   }
 
   function visibleLaneText(lane) {
@@ -1442,42 +1503,47 @@
     }
 
     const view = laneView(lane);
+    lane.thinking = view.thinking;
     const visibleText = view.text;
     const inTypewriterWindow = lane.typewriterUntil && Date.now() < lane.typewriterUntil;
-    const showTypewriter = lane.streaming && (!visibleText || inTypewriterWindow);
+    // A thought that is still arriving is the live content: the placeholder would
+    // only repeat it in shorter words.
+    const thinkingLive = view.thinking.some((block) => block.open);
+    const showTypewriter = lane.streaming && (!visibleText || inTypewriterWindow) && !thinkingLive;
     if (!lane.streaming) dropLaneTypewriter(lane);
+
+    // Reuse one typewriter per lane: every stream event re-renders the card, and
+    // a fresh element would restart (and never finish) its phrase.
+    let typewriter = null;
     if (showTypewriter) {
-      // Reuse one typewriter per lane: every stream event re-renders the
-      // card, and a fresh element would restart (and never finish) its phrase.
-      let typewriter = _laneTypewriters.get(lane);
+      typewriter = _laneTypewriters.get(lane);
       if (!typewriter || typewriter._dead) {
         typewriter = createThinkingTypewriter();
         _laneTypewriters.set(lane, typewriter);
       }
-      card.appendChild(typewriter);
-      // The words are behind the placeholder for a moment; the work is not.
-      // While a turn has no prose yet (only calls), the typewriter used to be
-      // the whole card, so a running command was invisible until the turn ended
-      // or the user pressed Stop and the rows appeared all at once.
-      renderLaneFlow(lane, visibleText, true).forEach((node) => card.appendChild(node));
       if (inTypewriterWindow && visibleText) {
         const remaining = lane.typewriterUntil - Date.now();
         setTimeout(() => { lane.typewriterUntil = 0; scheduleChatRender(); }, remaining);
       }
-    } else {
-      const flow = renderLaneFlow(lane, visibleText, false);
-      flow.forEach((node) => card.appendChild(node));
-      if (lane.streaming && visibleText && !view.pending) {
-        // The caret belongs at the end of the sentence being written, not
-        // below the tool row that followed it.
-        const last = flow[flow.length - 1];
-        const cursor = el('span', { class: 'stream-cursor', 'aria-hidden': 'true' });
-        if (last && last.classList.contains('markdown')) last.appendChild(cursor);
-      }
     }
-    // The call being written sits at the end of the flow, whatever the
-    // thinking placeholder above it is doing.
+
+    // The work is drawn first, always: rows are facts about the turn and the
+    // placeholder may never hold them back (1.5.6 hid every command behind it
+    // until the turn ended). The placeholder hides prose only, and it sits where
+    // the next words will appear — under the last row — instead of hanging at
+    // the top of the card while commands run beneath it.
+    const flow = renderLaneFlow(lane, visibleText, showTypewriter);
+    flow.forEach((node) => card.appendChild(node));
     if (view.pending) card.appendChild(renderPendingTool(view.pending));
+    if (typewriter) {
+      card.appendChild(typewriter);
+    } else if (lane.streaming && visibleText && !view.pending) {
+      // The caret belongs at the end of the sentence being written, not below
+      // the tool row that followed it.
+      const last = flow[flow.length - 1];
+      const cursor = el('span', { class: 'stream-cursor', 'aria-hidden': 'true' });
+      if (last && last.classList.contains('markdown')) last.appendChild(cursor);
+    }
     if (Array.isArray(lane.permissions)) {
       lane.permissions.forEach((permission) => {
         if (!permission.status || permission.status === 'pending') return;

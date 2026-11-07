@@ -52,9 +52,14 @@ check("no Allowed/Declined receipts left", !/text: allowed \? 'Allowed' : 'Decli
 check("red tag in the stylesheet",
       /\.tool-reject \{[^}]*color: var\(--red\)/.test(css));
 // A running command is not hidden behind the "Thinking…" placeholder: the rows
-// are drawn while the typewriter holds the prose back.
-check("calls stay visible while the placeholder types",
-      /if \(showTypewriter\) \{[\s\S]*?renderLaneFlow\(lane, visibleText, true\)/.test(render));
+// are drawn while the typewriter holds the prose back, and the placeholder sits
+// after them (where the next words will appear) instead of at the top.
+const flowAt = render.indexOf("const flow = renderLaneFlow(lane, visibleText, showTypewriter);");
+const typewriterAt = render.indexOf("card.appendChild(typewriter);");
+check("flow is drawn whatever the placeholder is doing",
+      flowAt > 0 && /const flow = renderLaneFlow\(lane, visibleText, showTypewriter\);/.test(render));
+check("placeholder comes after the rows",
+      flowAt > 0 && typewriterAt > flowAt);
 
 let failed = 0;
 for (const [name, ok] of checks) {
