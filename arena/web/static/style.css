@@ -3328,6 +3328,14 @@ body.is-resizing-y, body.is-resizing-y * { cursor: ns-resize !important; }
   color: var(--muted-dim); font-size: 10px; letter-spacing: .04em;
   opacity: .8; transition: opacity 160ms ease-out;
 }
+/* The one verdict a thread needs to keep: this command never ran. It sits behind
+   the command, in the same 10px line, and never on a row of its own. */
+.tool-reject {
+  flex: 0 0 auto; margin-left: 9px;
+  color: var(--red); font-size: 10px; letter-spacing: .04em;
+  opacity: .9;
+}
+.tool-row.is-err .tool-line.is-rejected .tool-name { color: var(--text-soft); }
 .tool-row:hover .tool-meta { opacity: 1; }
 .tool-row.is-err .tool-meta { color: var(--red); opacity: .85; }
 .tool-row.is-run .tool-meta { color: var(--text-soft); opacity: .9; }

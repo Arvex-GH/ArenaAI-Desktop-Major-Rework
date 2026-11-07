@@ -319,3 +319,20 @@ suite.
   back four arrivals — at load, late on window, late on document, never — and
   `tests/test_setup_page_bridge.py` runs it when node + jsdom exist, else skips.
 - Bumped to 1.5.5 everywhere; released after the merge.
+
+## Session 12 (2026-11-07) — 1.5.6: no echo for granted approvals
+
+- **Reported from the running app** (screenshot of a real turn): every approved
+  command left a second silver line `Allowed <command> allowed` under the command
+  row that already carried the command and `exit 0`.
+- **Fix:** granted approvals render nothing; a refusal renders as a red
+  `rejected by user` on the command's own row (`rejectionText()` reads the
+  `denied by the user` status the local agent already streams); `stopped` and
+  `expired` keep a quiet `not run: …`; plan/safety blocks keep their own wording.
+  `laneShowsRejection()` prevents a refusal from appearing twice.
+- **Tests:** `tests/js/permission_rows.js` + `tests/test_permission_rows.py`
+  (12 checks; extracts the pure helpers from the render source, then asserts the
+  receipt, the card loop, the row and the stylesheet).
+- Bumped to 1.5.6. `docs/screenshots/chat/tool-done.png` still shows the removed
+  line — the sandbox has no browser any more (playwright's CDN is not reachable),
+  so the replacement shot is pending.
