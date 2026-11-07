@@ -432,11 +432,12 @@ svg { display: block; }
 
 .sidebar-foot {
   flex: 0 0 auto;
-  padding: 6px 10px 10px;
+  padding: 8px 10px 10px;
   border-top: 1px solid var(--line-soft);
 }
-.sidebar-tools { display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 0 2px 8px; }
-.sidebar-tools .icon-button { color: var(--text-soft); }
+/* One plain row at the very bottom: everything else lives inside it. */
+.rail-row-settings { width: 100%; }
+.rail-row-settings .rail-icon { color: var(--muted); }
 
 .icon-button {
   display: inline-grid;
@@ -493,18 +494,6 @@ svg { display: block; }
 .account-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--muted-dim); }
 .account-dot.is-online { background: var(--green); box-shadow: 0 0 0 3px rgba(125, 209, 148, .08); }
 .account-dot.is-error { background: var(--red); }
-.sidebar-legal { display: flex; gap: 10px; flex-wrap: wrap; padding: 6px 5px 0; }
-.sidebar-legal button {
-  padding: 0;
-  color: #737b77;
-  background: none;
-  border: 0;
-  font-size: 9.75px;
-  line-height: 1.5;
-  text-decoration: none;
-}
-.sidebar-legal button:hover { color: var(--text-soft); text-decoration: underline; text-underline-offset: 2px; }
-
 .app.sidebar-collapsed .brand-copy,
 .app.sidebar-collapsed .rail-label,
 .app.sidebar-collapsed .rail-key,
@@ -512,10 +501,8 @@ svg { display: block; }
 .app.sidebar-collapsed .rail-rule,
 .app.sidebar-collapsed .recents-title > span:not(.icon):not([data-icon]),
 .app.sidebar-collapsed .recents-title .recents-count,
-.app.sidebar-collapsed .sidebar-legal,
 .app.sidebar-collapsed .account-copy,
 .app.sidebar-collapsed .account-dot,
-.app.sidebar-collapsed .sidebar-tools .icon-button:last-child,
 .app.sidebar-collapsed .chat-search { display: none; }
 .app.sidebar-collapsed .sidebar-head { justify-content: center; padding: 0; flex-direction: column; min-height: 76px; gap: 6px; }
 .app.sidebar-collapsed .brand-mark { width: 28px; height: 28px; }
@@ -531,7 +518,6 @@ svg { display: block; }
 .app.sidebar-collapsed .chat-group-note,
 .app.sidebar-collapsed .sidebar-empty,
 .app.sidebar-collapsed .sidebar-skeleton { display: none; }
-.app.sidebar-collapsed .sidebar-tools { display: grid; grid-template-columns: 1fr 1fr; justify-items: center; gap: 2px; padding-bottom: 8px; }
 .app.sidebar-collapsed .account-button { justify-content: center; padding: 5px 0; }
 .app.sidebar-collapsed .sidebar-foot { padding: 8px 8px 10px; }
 
@@ -2210,10 +2196,8 @@ textarea.input { height: auto; min-height: 74px; resize: vertical; line-height: 
   .app[data-dock="open"] .rail-row-soon::after,
   .app[data-dock="open"] .recents-title > span:not(.icon):not([data-icon]),
   .app[data-dock="open"] .recents-title .recents-count,
-  .app[data-dock="open"] .sidebar-legal,
   .app[data-dock="open"] .account-copy,
   .app[data-dock="open"] .account-dot,
-  .app[data-dock="open"] .sidebar-tools .icon-button:last-child { display: none; }
   .app[data-dock="open"] .sidebar-head { justify-content: center; padding: 0; flex-direction: column; min-height: 76px; gap: 6px; }
   .app[data-dock="open"] .rail-row { justify-content: center; padding: 8px; }
   .app[data-dock="open"] .sidebar-primary { padding: 2px 8px 7px; }
@@ -2222,7 +2206,6 @@ textarea.input { height: auto; min-height: 74px; resize: vertical; line-height: 
   .app[data-dock="open"] .recents-title { justify-content: center; padding: 4px; }
   .app[data-dock="open"] .chat-search { display: none; }
   .app[data-dock="open"] .chat-row { display: none; }
-  .app[data-dock="open"] .sidebar-tools { display: grid; grid-template-columns: 1fr 1fr; justify-items: center; gap: 2px; }
   .app[data-dock="open"] .account-button { justify-content: center; padding: 5px 0; }
   .app[data-dock="open"] .sidebar-foot { padding: 8px 8px 10px; }
   .topbar-engine .button-label { display: none; }
@@ -2252,7 +2235,6 @@ textarea.input { height: auto; min-height: 74px; resize: vertical; line-height: 
     border-left-color: #49504e;
     box-shadow: -24px 0 64px rgba(0, 0, 0, .42);
   }
-  .app.sidebar-collapsed .sidebar-tools .icon-button:last-child { display: inline-grid; }
   .sidebar {
     position: fixed;
     z-index: 110;
@@ -2269,7 +2251,6 @@ textarea.input { height: auto; min-height: 74px; resize: vertical; line-height: 
   .app.sidebar-collapsed .rail-label,
   .app.sidebar-collapsed .rail-key,
   .app.sidebar-collapsed .recents-title .recents-count,
-  .app.sidebar-collapsed .sidebar-legal,
   .app.sidebar-collapsed .account-copy,
   .app.sidebar-collapsed .account-dot,
   .app.sidebar-collapsed .chat-search { display: flex; }
@@ -2285,7 +2266,6 @@ textarea.input { height: auto; min-height: 74px; resize: vertical; line-height: 
 .chat-group-title { display: flex; }
   .app.sidebar-collapsed .chat-group-note,
   .app.sidebar-collapsed .sidebar-empty { display: block; }
-  .app.sidebar-collapsed .sidebar-tools { display: flex; justify-content: space-between; }
   .app.sidebar-collapsed .account-button { justify-content: flex-start; padding: 5px 5px 5px 4px; }
   .app.sidebar-collapsed .sidebar-foot { padding: 8px 12px 11px; }
   .collapse-button { display: none; }
@@ -2447,7 +2427,6 @@ textarea.input { height: auto; min-height: 74px; resize: vertical; line-height: 
 .composer-hint { color: #8d9790; }
 .hint-secondary { color: #7f8982; }
 .status-bar { color: #8a948d; }
-.sidebar-legal button { color: #858f88; }
 .chat-row-meta, .source-url, .media-title { color: #8d9890; }
 .answer-footnote { color: #8d9890; }
 .popover-subtitle, .popover-note, .field-help, .setting-desc { color: #98a29b; }
@@ -2763,14 +2742,6 @@ textarea.input { height: auto; min-height: 74px; resize: vertical; line-height: 
    and a two-card Workspace panel modelled on the reference. ===== */
 .composer-hint, .status-bar { display: none !important; }
 .composer-shell { padding-bottom: 12px; }
-.sidebar-legal { gap: 12px; padding: 8px 5px 0; }
-.sidebar-legal a {
-  color: #8f8d87;
-  font-size: 11px;
-  line-height: 1.45;
-  text-decoration: none;
-}
-.sidebar-legal a:hover { color: #f5f4f0; text-decoration: underline; text-underline-offset: 2px; }
 
 .workspace-panel {
   background: #262624;

@@ -128,26 +128,38 @@ A calm rail, 252px wide, in the app's own voice. Captured from this build:
  ⌕  Search                    Ctrl+K
  ▤  Projects
  ◈  Artifacts
- ⚙  Customize
  ─────────────────────────────────────
  CHATS                             ⟳
    Landing page for a photo studio
    Check approach to tests
    ...
  ─────────────────────────────────────
- Terms  Privacy  Cookies
+ ⚙  Settings
 ```
 
 - **New chat is a row**, same height as its neighbours, plus glyph and label. It
   is the first thing in the list, not a call to action filling the rail.
-- **The five rows keep their names** — New, Search, Projects, Artifacts,
-  Customize — so the shape matches the reference without pretending the app has
-  features it does not:
+- **Four rows, then a floor.** New, Search, Projects, Artifacts in the rail's
+  own body — so the shape matches the reference without pretending the app has
+  features it does not — and one plain *Settings* row at the very bottom, cut
+  off by a hairline:
   - *Search* opens the chat filter that already existed.
   - *Projects* opens the folder chooser (`data-action="workspace"`).
   - *Artifacts* is wired but has nothing to show until the workspace panel
     returns; it says so instead of doing nothing quietly.
-  - *Customize* opens Settings.
+  - *Settings* at the bottom opens the settings dialog. There is no *Customize*
+    row any more, no avatar block, and no row of three footer icons: the
+    account, permissions, folder, memory, gateways, components and the legal
+    documents all live behind that one row.
+
+![The bottom of the rail: one Settings row](screenshots/sidebar/rail-settings-row.png)
+
+The account came back with it. It had been cut out of the rail while this
+rework was in progress; now it is the first thing the settings dialog shows —
+avatar, name, sign-in state, *Log out* and *Open arena.ai window* — instead of a
+block in the sidebar that grew a menu of its own. The document links moved from
+the rail's floor into **Settings → About**, next to *GitHub*, so the legal text
+is not the last thing the eye lands on when it looks for settings.
 - **The Models row is gone.** Choosing a model belongs to the composer, where
   you already pick a model per message. (The count that lived in the rail is
   now only in the composer's picker.)
@@ -155,17 +167,17 @@ A calm rail, 252px wide, in the app's own voice. Captured from this build:
   letterspaced micro-caps line; chat titles are the only 13px text; metadata
   drops to 10px and only appears on the row you are pointing at.
 - **Hairlines instead of borders and shadows.** One 1px rule between the rail
-  and the thread, one above the footer, nothing else.
+  and the thread, one above the Settings row, nothing else.
 - **The wordmark is a serif**, the same voice as the setup window, so the app
   and its installer read as one product. The "Desktop" tag lost its pill.
 - **The rail header is 52px**, matching the topbar, so the two share one
   horizontal line across the window.
 - **The collapse control works.** It had been drawing nothing: icon spans that
   were written straight into `index.html` (no `.icon` class) had no box, so the
-  panel glyph collapsed to zero width — the same reason the footer's globe,
-  settings and help buttons looked empty. One `:where([data-icon])` rule gives
-  every icon span a box without touching component rules, and the control now
-  flips between `panel-left` and `panel-right` as the rail opens and closes.
+  panel glyph collapsed to zero width — the same reason the footer icon buttons
+  of that build looked empty. One `:where([data-icon])` rule gives every icon
+  span a box without touching component rules, and the control now flips
+  between `panel-left` and `panel-right` as the rail opens and closes.
 - **Collapsed, the same rows keep their icons.** Nothing is re-invented for the
   76px state:
 
@@ -327,9 +339,6 @@ If a reply stops mid-call, the pending line stays and reads `stopped` instead of
 
 ## Still to come
 
-- **The account block returns.** Sign-in state, avatar and the account menu are
-  out of the rail for now; they come back with the session work and a design
-  that fits the new rows.
 - **Session list presentation.** Grouping (today / this week / older), the way a
   chat row shows mode and age, and the behaviour of the list while a chat is
   open. Deferred on purpose: the rail had to be right first.

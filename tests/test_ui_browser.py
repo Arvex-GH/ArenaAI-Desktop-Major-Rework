@@ -565,13 +565,13 @@ def test_v462_ui_cleanup_and_workspace_cards(site):
         # management remains inside the Workspace panel.
         assert page.locator('#connectorsNavBtn').count() == 0
 
-        legal = page.locator('.sidebar-legal a')
-        assert [legal.nth(i).inner_text() for i in range(legal.count())] == [
-            'Terms of Use', 'Privacy Policy', 'Cookies'
-        ]
-        assert 'terms-of-use' in (legal.nth(0).get_attribute('href') or '')
-        assert 'privacy-policy' in (legal.nth(1).get_attribute('href') or '')
-        assert 'cookie-policy' in (legal.nth(2).get_attribute('href') or '')
+        # The rail ends in one plain Settings row; the documents moved into
+        # Settings -> About, so nothing legal is left in the sidebar.
+        assert page.locator('.sidebar-legal').count() == 0
+        assert page.locator('.sidebar-tools').count() == 0
+        settings_row = page.locator('.sidebar-foot .rail-row-settings')
+        assert settings_row.count() == 1
+        assert settings_row.inner_text().strip() == 'Settings'
 
         if not page.locator('#workspacePanel').is_visible():
             page.locator('#workspacePanelNavBtn').click()

@@ -785,7 +785,8 @@
       wrap.appendChild(el('div', { class: 'setting-actions' },
         settingsActionButton('GitHub', 'external', async () => { window.open('https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework', '_blank', 'noopener'); }),
         settingsActionButton('Terms of Use', 'external', async () => { window.open('https://help.arena.ai/articles/5629909088-terms-of-use', '_blank', 'noopener'); }),
-        settingsActionButton('Privacy Policy', 'external', async () => { window.open('https://help.arena.ai/articles/3765052346-privacy-policy', '_blank', 'noopener'); })
+        settingsActionButton('Privacy Policy', 'external', async () => { window.open('https://help.arena.ai/articles/3765052346-privacy-policy', '_blank', 'noopener'); }),
+        settingsActionButton('Cookie Policy', 'external', async () => { window.open('https://help.arena.ai/articles/1820405001-lmarena-cookie-policy', '_blank', 'noopener'); })
       ));
 
       wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'App' }));
