@@ -411,6 +411,34 @@ server-side on upload — and on the two assets carrying the same digest, which
 proves the installer and the portable build are the same bytes. The download and
 verify path itself is covered by `tests/test_installer.py`.
 
+### 1.5.3, the day after
+
+Two reports against 1.5.2, both fixed the same day — the installer never ran,
+and an internal error explained nothing. The tag is the same ritual:
+
+| step | result for 1.5.3 |
+|---|---|
+| tag | `v1.5.3` on `752fdec`, the merge commit of the fix PR |
+| tag vs `arena/version.py` | `1.5.3` = `1.5.3` |
+| test suite (before PyInstaller) | passed — 398 tests |
+| assets | `Arena-Desktop-Setup-1.5.3.exe` and `Arena-Desktop-1.5.3.exe`, 28,617,973 bytes each |
+| digests | both `sha256:ddd58f13b299ba833906ccb02c04cae93b2634d7353e619655d9b63743fc32b3` |
+| release | <https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/tag/v1.5.3> |
+
+And read back the way the app reads it:
+
+```
+feed version: 1.5.3 | title: Arena Desktop 1.5.3 | prerelease: False
+picked asset: Arena-Desktop-Setup-1.5.3.exe 28617973 installer
+digest: sha256:ddd58f13b299ba833906ccb02c04cae93b2634d7353e619655d9b63743fc32b3
+1.5.2 sees update: True | 1.5.3 sees update: False
+```
+
+Worth noting for anyone on the broken 1.5.2: its updater already worked, because
+it runs the downloaded file with `--setup --update --silent` — an explicit flag
+that never depended on the file's name. So 1.5.2 installs itself properly when
+it takes 1.5.3, and only the double-click path had to be fixed.
+
 ## When a reply fails
 
 A crash anywhere inside a reply used to arrive as one sentence — *The app hit an
