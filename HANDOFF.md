@@ -522,6 +522,25 @@ suite.
   `startup_screen_dom.js` → 20 (presets named, Off row, tool counts).
 - Version 1.5.13.
 
+## Session 30 (2026-11-07) — 1.5.18 released
+
+- **Published:** tag `v1.5.18` on merge commit **`e6de527`** (PR #35), run
+  `42414598016` **success**.
+- **Assets:** `Arena-Desktop-Setup-1.5.18.exe` and `Arena-Desktop-1.5.18.exe`,
+  28,655,362 bytes each,
+  `sha256:b8e4e292ba86c94cc4d556016930d253726cbee0be34a8aa128932528457e054`.
+- **Contains** 1.5.17 (the 200 px folder icon in Chat options) and 1.5.18 (the
+  update dialog firing its primary button twice, forward-only progress, the calm
+  "already current" answer) on top of 1.5.16.
+- **Feed check:** `updater.fetch_latest('stable')` → 1.5.18, installer with the
+  digest above, `is_allowed_url` True, `is_newer` True against both 1.5.17 and
+  1.5.16.
+- **Watch on the owner's machine:** the update from 1.5.16 → 1.5.18 is the test
+  of the fix — the bar should climb once to 100% and the app should close, be
+  replaced and restart by itself, with no red error. If an error still appears,
+  its exact text is what matters: `/api/update/*` messages are shown verbatim in
+  the dialog and every setup step is logged to `%USERPROFILE%\.arena-personal\setup.log`.
+
 ## Session 29 (2026-11-07) — merged, NOT released: the update button fired twice
 
 - **Reported:** *"fix the update installer … it always gives up an error saying
