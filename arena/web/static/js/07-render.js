@@ -1546,22 +1546,11 @@
       class: `message-assistant assistant-lane${lane.streaming ? ' is-streaming' : ''}`,
       'aria-label': `${lane.modelName || (key === 'b' ? "Model B" : "Model A")}, response`
     });
-    const avatarColor = safeColor(lane.modelColor) || '#bdd3c1';
-    const laneLogo = modelIconNode({
-      name: lane.modelName, org: lane.modelOrg, color: lane.modelColor,
-      icon_url: getModel(lane.modelId)?.icon_url || ''
-    });
-    const avatar = laneLogo
-      ? el('span', { class: 'model-avatar has-logo', 'aria-hidden': 'true' }, laneLogo)
-      : el('span', {
-        class: 'model-avatar',
-        style: { background: avatarColor, color: '#1d221e' },
-        'aria-hidden': 'true',
-        text: initialLetters(lane.modelName || (key === 'b' ? 'Model B' : 'Model A'))
-      });
+    // No avatar: the answer is not a person, and the model's name already says
+    // which one it is. The icon stays in the model picker, where choosing needs
+    // something to aim at.
     const label = lane.modelOrg || (lane.modelName ? '' : (key === 'b' ? "Model B" : "Model A"));
     const head = el('div', { class: 'assistant-head' },
-      avatar,
       el('div', { class: 'assistant-id' },
         el('span', { class: 'model-name', title: lane.modelName || '', text: lane.modelName || (key === 'b' ? "Model B" : "Model A") }),
         totalLanes > 1 ? el('span', { class: 'lane-badge', text: key.toUpperCase() }) : null,

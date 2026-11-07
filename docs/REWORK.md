@@ -731,7 +731,31 @@ waiting on the row they belong to.
 The lesson recorded here: a receipt that restates a row is worse than noise when
 it hides the row it stands in for.
 
-## The 1.5.13 release
+## Unreleased (merged, not tagged)
+
+### The answer is not a box, and it is not a person
+
+Reported with a screenshot of a running turn: the reply sat inside an outlined
+card — while it streamed, `is-streaming` darkened `border-color` on a lane whose
+base border was already only *transparent*, so the box appeared exactly when the
+turn was live — and a light green square with the model's initial stood in front
+of the name.
+
+Only the user's own prompt is outlined now. A lane carries no border in any state:
+`.assistant-lane` is `border: 0` with a transparent background, the
+`is-streaming` border rules are gone, and a battle keeps a faint surface
+(`.lanes-2 .assistant-lane`) so two columns still read as two answers without an
+outline around either.
+
+The avatar is gone from the answer head — the model's name already says which
+model replied, and the copy button and the *Thinking…* label stay where they
+were. The icon stays in the model picker (`.model-avatar` in `11-ui.js`), where
+choosing a model by sight is the point.
+
+`tests/js/answer_surface.js` pins it down: the rule blocks, the render source,
+and — with jsdom installed — the resolved cascade (`border-top-width: 0px` on a
+streaming lane, `1px solid` on the prompt bubble). 15 checks, wired into pytest by
+`tests/test_answer_surface.py`.
 
 ### The presets were never a separate mechanism
 

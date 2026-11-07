@@ -521,3 +521,22 @@ suite.
   never started, or instantly done when all are off); `startup_screen.js` → 28;
   `startup_screen_dom.js` → 20 (presets named, Off row, tool counts).
 - Version 1.5.13.
+
+## Session 22 (2026-11-07) — merged, NOT released: no outline around answers, no avatar
+
+- **Asked:** "remove that outline for the ai. only my prompt should be outlined.
+  and also remove that ai icons. but don't build release yet. only fix and merge."
+- **Cause of the outline:** `.assistant-lane` only had a *transparent* border in
+  single-lane mode, but `.assistant-lane.is-streaming { border-color: … }` painted
+  it the moment a turn went live — so the box appeared exactly while it streamed.
+- **Fix:** `.assistant-lane` is `border: 0` and transparent in every state; both
+  `is-streaming` border rules deleted; a battle keeps `.lanes-2
+  .assistant-lane { background: … }` so the columns still separate, without a
+  border. `.user-bubble` (the prompt) keeps its `1px solid` outline.
+- **Avatar:** `renderAssistantLane()` no longer builds `.model-avatar`; the head
+  keeps the model name, the *Thinking…* label and the copy button. The picker in
+  `11-ui.js` keeps its icons.
+- **Tests:** `tests/js/answer_surface.js` — 15 checks (rule blocks, render source,
+  and the resolved cascade in jsdom: `0px`/`none` on a streaming lane, `1px solid`
+  on the prompt) + `tests/test_answer_surface.py`.
+- **No version bump, no tag, no release** — merged only, as asked.

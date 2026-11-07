@@ -827,15 +827,18 @@ svg { display: block; }
 .lane-grid { display: grid; gap: 12px; margin-top: 15px; }
 .lane-grid.lanes-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
 .lane-grid.lanes-1 { grid-template-columns: minmax(0, 1fr); }
+/* An answer is not a box. Only the user's own prompt is outlined; a reply sits
+   on the page like text, streaming or not. In a battle the two columns keep a
+   faint surface so they still read as two answers — never a border. */
 .assistant-lane {
   min-width: 0;
   padding: 15px 16px 14px;
-  background: rgba(36, 39, 40, .75);
-  border: 1px solid #333838;
+  background: transparent;
+  border: 0;
   border-radius: var(--radius-md);
 }
-.lanes-1 .assistant-lane { padding: 0; background: transparent; border-color: transparent; }
-.assistant-lane.is-streaming { border-color: #414946; }
+.lanes-1 .assistant-lane { padding: 0; }
+.lanes-2 .assistant-lane { background: rgba(36, 39, 40, .55); }
 .message-assistant { min-width: 0; }
 .assistant-head { display: flex; align-items: center; gap: 8px; min-height: 26px; margin-bottom: 10px; }
 .model-avatar {
@@ -2794,8 +2797,7 @@ textarea.input { height: auto; min-height: 74px; resize: vertical; line-height: 
 
 /* Message surfaces in Arena neutrals */
 .message-user .message-bubble, .user-bubble { background: #353532; }
-.assistant-lane { background: transparent; }
-.assistant-lane.is-streaming { border-color: #454441; }
+.assistant-lane { background: transparent; border: 0; }
 .status-bar { border-top-color: transparent; color: #83817c; }
 .popover, .modal-card { background: #2d2d2b; border-color: #454441; }
 ::selection { background: rgba(245, 244, 240, .22); }
