@@ -1,7 +1,7 @@
 # Arena Desktop — Session Handoff
 
 **Date:** 2026-11-07
-**Version:** 1.5.16
+**Version:** 1.5.17
 **Status:** Desktop app working — Flask + pywebview/WebView2, full web UI, 306/307 tests pass
 
 ---
@@ -521,6 +521,29 @@ suite.
   never started, or instantly done when all are off); `startup_screen.js` → 28;
   `startup_screen_dom.js` → 20 (presets named, Off row, tool counts).
 - Version 1.5.13.
+
+## Session 28 (2026-11-07) — merged, NOT released: the Chat options folder was 200 px
+
+- **Reported** right after 1.5.16 shipped, with a screenshot: *"the open in
+  explorer and select folder buttons are way to scaled up"* — the Folder row's
+  glyph filled the panel.
+- **Cause:** `composerMenuLine()` wraps its leading icon in `span.cm-line-icon`,
+  which had no CSS. `.icon` stayed `display: inline`, and width/height do not
+  apply to inline boxes — so `.icon svg { width: 100% }` resolved against the
+  row. The chevron was fine because it is a direct flex child sized by
+  `.cm-line > .icon`.
+- **Fix:** `.cm-line-icon { display: inline-flex }` (blockifies the child) plus
+  explicit `.cm-line svg { 14px }` and `.cm-pill svg { 12px }` in `style.css`.
+  Nothing else in the panel changed.
+- **Test that would have caught it:** `composer_menu_dom.js` now injects the real
+  `style.css` into the jsdom page, opens the panel and asserts every `svg` in it
+  computes to ≤ 16 px (21 icons, max 14 px). Against the 1.5.16 stylesheet it
+  reports `100%` — verified by running the same probe with `git show
+  HEAD:style.css`.
+- **Version 1.5.17**, merged; release on the owner's word.
+- **Lesson:** markup-correct is not screen-correct. Any new container that holds
+  an `iconEl()` must give it a box (`display: inline-flex`) or measure it —
+  prefer both.
 
 ## Session 27 (2026-11-07) — 1.5.16 released
 

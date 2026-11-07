@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.16-brightgreen?style=flat-square" alt="v1.5.16" />
+  <img src="https://img.shields.io/badge/version-1.5.17-brightgreen?style=flat-square" alt="v1.5.17" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.16](#whats-new-in-v1516)
+- [What's new in v1.5.17](#whats-new-in-v1517)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,7 +44,31 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.16
+## What's new in v1.5.17
+
+### The folder in Chat options is a folder again
+
+Reported from the installed 1.5.16: *"the open in explorer and select folder
+buttons are way to scaled up"* — with a screenshot of a 200 px folder glyph
+filling the panel.
+
+The Folder row in Chat options wraps its icon in a `span.cm-line-icon`, and
+`.icon` is a plain `display: inline` span: width and height are ignored on inline
+boxes, so the `svg` inside — which is `width: 100%` — resolved against the row
+instead of the icon. Eighteen pixels became two hundred.
+
+Icons inside the panel now have their own box and an explicit size: `.cm-line svg`
+and `.cm-pill svg` are 14 px and 12 px, and `.cm-line-icon` is an `inline-flex`
+so its child is blockified and the 18 px width actually applies. Nothing else in
+the panel moved.
+
+The harness measures it now instead of trusting the markup: `composer_menu_dom.js`
+injects the real stylesheet into jsdom, opens the panel and asserts that every one
+of its 21 icons computes to a glyph size (≤ 16 px) — the check that would have
+caught this before it shipped. Against the 1.5.16 stylesheet it fails with
+`100%`; against this one it reads `max 14px`.
+
+### Previous: v1.5.16 — a run of tool calls is one line you can open
 
 ### A run of tool calls is one line you can open
 

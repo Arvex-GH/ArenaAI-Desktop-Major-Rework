@@ -18,8 +18,12 @@ try {
 }
 
 const ROOT = path.resolve(__dirname, "..", "..");
-const html = fs.readFileSync(path.join(ROOT, "arena/web/static/index.html"), "utf8")
+const pageHtml = fs.readFileSync(path.join(ROOT, "arena/web/static/index.html"), "utf8")
   .replace(/<script[\s\S]*?<\/script>/g, "");
+// The stylesheet goes in as well: a menu that is right by markup can still be
+// wrong on screen, and that is exactly how the Folder row shipped with a 200 px
+// folder icon (an <svg viewBox> with no width takes the width of its container).
+const html = pageHtml.replace("</head>", `<style>${fs.readFileSync(path.join(ROOT, "arena/web/static/style.css"), "utf8")}</style></head>`);
 const appjs = fs.readFileSync(path.join(ROOT, "arena/web/static/app.js"), "utf8");
 const css = fs.readFileSync(path.join(ROOT, "arena/web/static/style.css"), "utf8");
 
@@ -194,6 +198,30 @@ async function main() {
     check("…and no 'Agent for new chats' in it",
       !/Agent for new chats/.test(doc.querySelector("#settings-panel")?.textContent || ""));
   }
+
+  /* ---- nothing in the menu is drawn at picture size --------------------- */
+
+  // Measured, not assumed: every glyph in the panel must come out at glyph size.
+  menuButton.click();
+  await sleep(150);
+  const svgs = Array.from(doc.querySelectorAll(".composer-menu svg"));
+  const sizes = svgs.map((svg) => {
+    const box = window.getComputedStyle(svg);
+    return [parseFloat(box.width) || 0, parseFloat(box.height) || 0];
+  });
+  const oversized = svgs
+    .map((svg, i) => [svg.parentElement?.className || "?", sizes[i]])
+    .filter(([, [w, h]]) => Math.max(w, h) > 16 || Math.max(w, h) === 0);
+  check("every icon in the panel is glyph-sized", svgs.length >= 8 && oversized.length === 0,
+    oversized.length ? JSON.stringify(oversized) : `${svgs.length} icons, max ${Math.max(...sizes.map(([w, h]) => Math.max(w, h)))}px`);
+
+  const lineIcons = Array.from(doc.querySelectorAll(".cm-line svg"));
+  check("the folder is 14 px in the Folder row", lineIcons.length >= 2
+    && lineIcons.every((svg) => parseFloat(window.getComputedStyle(svg).width) === 14),
+    JSON.stringify(lineIcons.map((svg) => window.getComputedStyle(svg).width)));
+
+  doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await sleep(60);
 
   check("no uncaught errors", errors.length === 0, errors.join(" | "));
 

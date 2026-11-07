@@ -1250,6 +1250,60 @@ folding never touches `collapsedActivities` / `expandedActivities` — a group i
 view, not a record — and that a group holding a pending approval cannot be
 folded at all.
 
+## 1.5.17
+
+One report after 1.5.16 shipped, with a screenshot: *"the open in explorer and
+select folder buttons are way to scaled up"* — the Folder row of Chat options
+drew its folder glyph about 200 px wide, filling the panel.
+
+### An inline span has no width
+
+`composerMenuLine()` puts the leading icon in a wrapper:
+
+```html
+<button class="cm-line">
+  <span class="cm-line-icon"><span class="icon"><svg viewBox="0 0 24 24">…</svg></span></span>
+  …
+</button>
+```
+
+The global icon rules are `.icon { width: 18px; height: 18px; }` and
+`.icon svg { width: 100%; height: 100%; }`. Both are correct — **as long as
+`.icon` is a flex item**, which it is everywhere else in the app. Inside the new
+wrapper it was not: `span.cm-line-icon` had no rule at all, so it was an ordinary
+inline box, `.icon` inside it stayed `display: inline` too, and width and height
+simply do not apply to inline boxes. The `svg`'s `width: 100%` then resolved
+against the nearest block — the row — and the glyph grew to the width of the
+panel. The chevron beside it was fine because it is a direct child of the flex
+button and was sized by `.cm-line > .icon`.
+
+The fix is a box and a size, not a smaller picture:
+
+```css
+.cm-line svg { width: 14px; height: 14px; flex: 0 0 auto; }
+.cm-line-icon,
+.cm-line > .icon { display: inline-flex; flex: 0 0 auto; color: var(--muted-dim); }
+.cm-pill svg { width: 12px; height: 12px; flex: 0 0 auto; }
+```
+
+`inline-flex` on the wrapper blockifies its child, so the 18 px `.icon` applies
+again, and the explicit `svg` size means a future wrapper cannot reintroduce the
+same bug.
+
+### Measured, not assumed
+
+This one was found by the owner's eyes, not by a test, because every harness
+checked markup and source and none checked a computed size. `composer_menu_dom.js`
+now injects `style.css` into the jsdom document, opens the panel and walks every
+`svg` in it:
+
+```js
+const oversized = svgs.filter(([w, h]) => Math.max(w, h) > 16 || Math.max(w, h) === 0);
+```
+
+21 icons, none larger than 14 px. Run against the 1.5.16 stylesheet the same check
+reports `100%` — the bug, reproduced in a unit test.
+
 ## Still to come
 
 - **Session list presentation.** Grouping (today / this week / older), the way a

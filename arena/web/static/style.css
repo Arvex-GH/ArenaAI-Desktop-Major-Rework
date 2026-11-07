@@ -1596,7 +1596,13 @@ mark.find-hit-current { background: #d9a441; color: #1b1a17; }
 }
 .cm-line:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, .06); }
 .cm-line:disabled { opacity: .45; cursor: not-allowed; }
-.cm-line > .icon { width: 14px; height: 14px; flex: 0 0 auto; color: var(--muted-dim); }
+/* Every icon inside a line is a glyph, never a picture: without an explicit
+   size an <svg viewBox> takes the width its flex container gives it, which is
+   how the folder in the Folder row came out 200 px wide. */
+.cm-line svg { width: 14px; height: 14px; flex: 0 0 auto; }
+.cm-line-icon,
+.cm-line > .icon { display: inline-flex; flex: 0 0 auto; color: var(--muted-dim); }
+.cm-pill svg { width: 12px; height: 12px; flex: 0 0 auto; }
 .cm-line-copy, .cm-switch-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
 .cm-line-label { font-size: 12px; }
 .cm-line-detail {
