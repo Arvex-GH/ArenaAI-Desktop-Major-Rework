@@ -80,6 +80,12 @@ check("a live thought suppresses the placeholder", /const thinkingLive = view\.t
   && /const showTypewriter = lane\.streaming && \(!visibleText \|\| inTypewriterWindow\) && !thinkingLive;/.test(render));
 check("rows and thoughts are sorted together", /const bySource = /.test(render)
   && /placed\.slice\(\)\.sort\(bySource\)/.test(render));
+// While the placeholder stands in for the prose, the prose itself must not be
+// poured into the card as well — that printed the first sentence twice.
+const typewriterBranch = render.slice(render.indexOf("if (showTypewriter) {"),
+  render.indexOf("placed.sort((a, b) => {"));
+check("the placeholder hides the prose it stands for", /return nodes;/.test(typewriterBranch)
+  && !/markdownNode/.test(typewriterBranch));
 check("a thought renders as a collapsed block", /class: `reasoning thinking-block/.test(render));
 check("no thought is hoisted above the text", !/thinking\.forEach\(\(block\) => nodes\.unshift/.test(render));
 

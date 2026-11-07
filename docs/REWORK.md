@@ -731,7 +731,20 @@ waiting on the row they belong to.
 The lesson recorded here: a receipt that restates a row is worse than noise when
 it hides the row it stands in for.
 
-## The 1.5.9 release
+## The 1.5.10 release
+
+### The sentence the placeholder and the card both printed
+
+`showTypewriter` is true in two situations: no prose yet, or inside the 1.8 s
+window at the start of a turn when the placeholder types the opening words in.
+The branch drew the rows either way, which is what 1.5.7 fixed — but the 1.5.9
+rewrite that placed thoughts in the flow also let the prose pour into the card in
+that branch. During the window the placeholder therefore had text *and* the card
+had the same text above it.
+
+The branch returns before the text is poured now: placeholder up ⇒ the prose is
+its job and nobody else's. A check in `tests/js/thinking_blocks.js` slices the
+branch and fails if a `markdownNode` appears in it.
 
 ### Why 1.5.8 was never published
 

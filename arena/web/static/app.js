@@ -1174,7 +1174,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '1.5.9',
+        app_version: '1.5.10',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -1379,12 +1379,12 @@
       const wanted = new URLSearchParams(window.location.search).get('update') === '1';
       if (wanted) {
         return {
-          enabled: true, current: '1.5.8', latest: '1.5.9', update: true, demo: true,
+          enabled: true, current: '1.5.9', latest: '1.5.10', update: true, demo: true,
           url: 'https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases',
           published_at: new Date(Date.now() - 86400000 * 2).toISOString(),
           notes: 'What changed in this build:\n\n· The sidebar is quieter: one New chat row, no oversized button.\n· Update flow rebuilt: the app downloads the new build, replaces itself and restarts.\n· Fixed lane answers being clipped when two models answered at once.\n· Chat titles are written by Arena and no longer overwritten locally.',
           installer: { name: 'Arena-Desktop-Setup-1.6.1.exe', size: 84 * 1024 * 1024, kind: 'installer' },
-          can_install: true, install_mode: 'helper', installed_version: '1.5.9'
+          can_install: true, install_mode: 'helper', installed_version: '1.5.10'
         };
       }
       return { enabled: true, current: 'demo', latest: null, update: false, url: null, demo: true };
@@ -4495,14 +4495,15 @@ You can start with a more structured option: one script, short captions, and a c
     const node = (item) => (item.kind === 'thinking'
       ? renderThinkingNode(item.block)
       : renderActivityNode(item.activity, lane, waitingId));
-    if (showTypewriter && !visibleText) {
-      // The words are hidden behind the typewriter for a moment; the calls and
-      // thoughts it already had are not, so a command still opens while it runs.
+    if (showTypewriter) {
+      // The words are hidden behind the placeholder for a moment — it stands in
+      // for them, so pouring them here as well would print the first sentence
+      // twice. The calls and thoughts it already had are not hidden: a command
+      // still opens while it runs, in the order they happened.
       placed.slice().sort(bySource).forEach((item) => nodes.push(node(item)));
       return nodes;
     }
-    if (showTypewriter) placed.sort(bySource);
-    else placed.sort((a, b) => {
+    placed.sort((a, b) => {
       // Known positions keep their places; anything without one goes last, in
       // the order it arrived.
       if (a.pos === null && b.pos === null) return a.index - b.index;

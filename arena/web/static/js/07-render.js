@@ -940,14 +940,15 @@
     const node = (item) => (item.kind === 'thinking'
       ? renderThinkingNode(item.block)
       : renderActivityNode(item.activity, lane, waitingId));
-    if (showTypewriter && !visibleText) {
-      // The words are hidden behind the typewriter for a moment; the calls and
-      // thoughts it already had are not, so a command still opens while it runs.
+    if (showTypewriter) {
+      // The words are hidden behind the placeholder for a moment — it stands in
+      // for them, so pouring them here as well would print the first sentence
+      // twice. The calls and thoughts it already had are not hidden: a command
+      // still opens while it runs, in the order they happened.
       placed.slice().sort(bySource).forEach((item) => nodes.push(node(item)));
       return nodes;
     }
-    if (showTypewriter) placed.sort(bySource);
-    else placed.sort((a, b) => {
+    placed.sort((a, b) => {
       // Known positions keep their places; anything without one goes last, in
       // the order it arrived.
       if (a.pos === null && b.pos === null) return a.index - b.index;
