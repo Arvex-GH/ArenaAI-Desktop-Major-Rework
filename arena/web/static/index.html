@@ -105,14 +105,14 @@
           </button>
         </div>
 
-        <button class="account-button" id="accountButton" type="button" aria-label="Profile and sign-in status">
-          <span class="avatar" id="accountAvatar" aria-hidden="true">AP</span>
-          <span class="account-copy">
-            <span class="account-name" id="accountName">Checking sign-in…</span>
-            <span class="account-state" id="accountState">Local client</span>
-          </span>
-          <span class="account-dot" id="accountDot" aria-hidden="true"></span>
-        </button>
+        <!-- The account block is out while sessions are reworked. The hidden
+             holder keeps the existing wiring alive (see docs/REWORK.md). -->
+        <div class="account-slot" hidden>
+          <span id="accountAvatar"></span>
+          <span id="accountName"></span>
+          <span id="accountState"></span>
+          <span id="accountDot"></span>
+        </div>
 
         <nav class="sidebar-legal" aria-label="Arena documents">
           <a href="https://help.arena.ai/articles/5629909088-terms-of-use" target="_blank" rel="noopener noreferrer">Terms of Use</a>
@@ -284,12 +284,6 @@
                 <span class="chip-label" id="modeLabel">Battle Mode</span>
                 <span data-icon="chevron-down" class="chip-chevron"></span>
               </button>
-              <span class="toolbar-divider" aria-hidden="true"></span>
-              <button class="composer-chip permission-chip" type="button" id="permissionButton" aria-haspopup="listbox" aria-expanded="false">
-                <span data-icon="shield"></span>
-                <span class="chip-label" id="permissionLabel">Ask</span>
-                <span data-icon="chevron-down" class="chip-chevron"></span>
-              </button>
               <label class="composer-chip agent-direct-chip" id="workspaceSyncChip" title="Workspace Sync: connect this chat to the folder selected on this computer">
                 <span class="chip-label">Workspace Sync</span>
                 <span class="switch">
@@ -308,13 +302,20 @@
               </button>
               <span class="pending-permissions-badge" id="pendingPermissionsBadge" hidden></span>
               <div class="toolbar-spacer"></div>
-              <button class="stop-button" type="button" id="stopButton" hidden>
-                <span class="icon" data-icon="stop"></span>
-                <span>Stop</span>
-              </button>
-              <button class="send-button" type="submit" id="sendButton" aria-label="Send message">
-                <span class="icon" data-icon="arrow-up"></span>
-              </button>
+              <div class="send-cluster">
+                <button class="permission-chip send-permission" type="button" id="permissionButton" aria-haspopup="listbox" aria-expanded="false" aria-label="Confirmation mode">
+                  <span data-icon="shield" class="permission-glyph"></span>
+                  <span class="chip-label" id="permissionLabel">Ask</span>
+                </button>
+                <span class="bypass-indicator" id="bypassIndicator" role="status" aria-label="Permission bypass is on" hidden></span>
+                <button class="stop-button" type="button" id="stopButton" hidden>
+                  <span class="icon" data-icon="stop"></span>
+                  <span>Stop</span>
+                </button>
+                <button class="send-button" type="submit" id="sendButton" aria-label="Send message">
+                  <span class="icon" data-icon="arrow-up"></span>
+                </button>
+              </div>
             </div>
           </form>
         </div>

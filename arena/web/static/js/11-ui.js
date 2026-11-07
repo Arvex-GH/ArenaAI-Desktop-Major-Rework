@@ -141,17 +141,28 @@
   function openModePopover(trigger = els.modeButton) {
     if (!trigger) return;
     const list = el('div', { class: 'popover-list', role: 'listbox', 'aria-label': 'Mode' });
-    MODES.forEach((mode) => {
-      list.appendChild(popoverOption({
-        title: mode.title,
-        desc: mode.desc,
-        icon: mode.icon,
-        selected: state.mode === mode.id,
-        onClick: () => {
-          closePopover();
-          void changeMode(mode.id);
-        }
-      }));
+    // Two levels, not four equal choices: Chat is the umbrella, and the shape
+    // inside it (direct, battle, side by side) is the choice that follows.
+    const groups = [
+      { title: 'Chat', ids: ['direct', 'battle', 'side-by-side'] },
+      { title: 'Agent', ids: ['agent'] }
+    ];
+    groups.forEach((group) => {
+      list.appendChild(el('div', { class: 'popover-section', text: group.title, role: 'presentation' }));
+      group.ids.forEach((id) => {
+        const mode = MODES.find((item) => item.id === id);
+        if (!mode) return;
+        list.appendChild(popoverOption({
+          title: mode.title,
+          desc: mode.desc,
+          icon: mode.icon,
+          selected: state.mode === mode.id,
+          onClick: () => {
+            closePopover();
+            void changeMode(mode.id);
+          }
+        }));
+      });
     });
     openPopover(trigger, {
       title: 'Mode',

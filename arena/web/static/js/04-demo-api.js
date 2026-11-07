@@ -791,7 +791,7 @@ You can start with a more structured option: one script, short captions, and a c
     mode: 'direct',
     modality: 'text',
     savedModality: 'auto',
-    layout: { sidebarWidth: 276, workspaceWidth: 332, connectorsShare: 38 },
+    layout: { sidebarWidth: 252, workspaceWidth: 332, connectorsShare: 38 },
     selectionTouched: false,
     // Agent has two honest backends: Arena's native Agent Mode (opens on the
     // site, never a Direct chat) and the local folder-tools loop.
