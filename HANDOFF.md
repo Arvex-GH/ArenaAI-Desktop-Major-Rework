@@ -413,3 +413,10 @@ suite.
   `tests/test_permission_rows.py`; suite at **416 passed, 1 skipped**;
   `tests/js/permission_rows.js` still 14 checks.
 - Version 1.5.8.
+- **Released as 1.5.9, not 1.5.8.** The `v1.5.8` tag's build failed in
+  *Test before building*: the harness pulled its functions out of the source with
+  `const NAME = …;\n` anchors, and the Windows runner checks out CRLF, so it
+  threw `missing constant THINKING_OPEN` before running a check. Reproduced by
+  converting a copy of the tree to CRLF. Fix: a `src()` reader that normalises
+  line endings; verified LF and CRLF. Tag deleted (no release was ever created);
+  version bumped to 1.5.9.

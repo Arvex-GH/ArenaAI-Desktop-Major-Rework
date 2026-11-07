@@ -8,7 +8,10 @@ const fs = require("fs");
 const path = require("path");
 
 const root = path.resolve(__dirname, "..", "..");
-const render = fs.readFileSync(path.join(root, "arena/web/static/js/07-render.js"), "utf8");
+// Windows checkouts can carry CRLF; the anchors below are line-based.
+const src = (file) => fs.readFileSync(path.join(root, file), "utf8").replace(/\r\n/g, "\n");
+
+const render = src("arena/web/static/js/07-render.js");
 
 function grab(name) {
   const start = render.indexOf(`function ${name}(`);
@@ -80,12 +83,12 @@ check("rows and thoughts are sorted together", /const bySource = /.test(render)
 check("a thought renders as a collapsed block", /class: `reasoning thinking-block/.test(render));
 check("no thought is hoisted above the text", !/thinking\.forEach\(\(block\) => nodes\.unshift/.test(render));
 
-const css = fs.readFileSync(path.join(root, "arena/web/static/style.css"), "utf8");
+const css = src("arena/web/static/style.css");
 check("thought blocks are styled", /\.thinking-block \{/.test(css) && /\.thinking-block\.is-live/.test(css));
 
 // The instructions the model is given must ask for the blocks, or none of this
 // ever happens.
-const guide = fs.readFileSync(path.join(root, "arena/agent.py"), "utf8");
+const guide = src("arena/agent.py");
 check("the prompt asks for <thinking>", /Think in a `<thinking>` block/.test(guide));
 
 let failed = 0;
