@@ -470,6 +470,86 @@ Three things changed:
 exception beside it, the traceback in the log, and a dead engine reading as "not
 ready" instead of an internal error.
 
+## The 1.5.4 release
+
+Two bugs, both of them found by using the shipped build on a real PC rather
+than by reading it, and neither of them visible in a screenshot: 1.5.4 changes
+no pixels. The installer window and the chat look exactly as they did in 1.5.3 —
+what changed is that they now do their job.
+
+### The installer that showed "Starting…" and stopped there
+
+1.5.3's double-clicked Setup file opened its window, set the status line to
+*Starting*, and then never moved again. About a minute later Windows greyed the
+window out and called the program *not responding*. The install had not begun:
+`%LOCALAPPDATA%\Programs\Arena Desktop` was never created, and `--setup
+--silent` on the same file installed the app in **four seconds**. So the core
+was fine and the window was the problem.
+
+The window is a pywebview surface over the installer core, and pywebview builds
+a page's JavaScript bridge by walking **every public attribute** of the object
+passed as `js_api` — recursively, because it is building the page's callable
+surface. `SetupApi` kept its window in a public attribute:
+
+```python
+self.window = None      # 1.5.3
+...
+api.window = window     # after create_window
+```
+
+The walk therefore left the bridge, entered the pywebview `Window`, the WinForms
+form and the WebView2 objects behind it, and made cross-thread calls into them
+from the injection thread. The message pump needs the GIL back to paint and to
+answer input; the walk held it while it waited on the window. Deadlock, faded
+title bar, frozen first frame — everything that was reported.
+
+The app itself never had this bug, and its bridge says why in one line:
+`arena/desktop.py`'s `JsBridge` keeps `self._window` and documents that
+*pywebview exposes every public attribute to JS and walks it recursively, so the
+window reference must stay private*. The installer was the one place that forgot.
+
+1.5.4 keeps it private, and adds two nets under it:
+
+- **A watchdog.** If the page has not called the bridge twelve seconds after the
+  window is created, `_bridge_watchdog` starts the same install from Python and
+  closes the window itself. `SetupApi.start()` is idempotent, so a bridge that
+  turns up late can never install twice.
+- **A log.** A windowed exe has no console, which is why the 1.5.3 hang left no
+  trace anywhere. Setup now writes `%USERPROFILE%\.arena-personal\setup.log`
+  and records the window it created and the install it ran.
+
+`tests/test_v154_fixes.py` pins the surface itself: every public, non-callable
+attribute of `SetupApi` must be a plain value, which is exactly the rule the
+walk depends on.
+
+### Bypass permissions, and the missing fifth mode
+
+With *Bypass permissions* selected, every message died before the model was
+called:
+
+```
+The app hit an internal error.
+KeyError: 'bypassPermissions'
+```
+
+`arena/agent.py`'s `MODE_NOTES` — the paragraph in the prompt that tells the
+model how the current permission mode behaves — carried four of the five modes:
+
+```python
+MODE_NOTES = {"plan": …, "default": …, "acceptEdits": …, "auto": …}
+```
+
+and `arena/web/server/local_agent.py` built the session guide with
+`agent.MODE_NOTES[mode]`. Any turn in the fifth mode raised. The mode whose whole
+point is "run everything without asking" was the one that asked for nothing and
+returned a traceback.
+
+The mode has its note now, `agent.mode_note(mode)` falls back to the default
+text instead of raising so a mode added later can never take a turn down with
+it, and the call site reads `permissions.MODES.get(mode, mode)` as the matching
+guard. `tests/test_v154_fixes.py` asserts that every key of
+`permissions.MODES` has a note and that the guide builds for each of them.
+
 ## Still to come
 
 - **Session list presentation.** Grouping (today / this week / older), the way a

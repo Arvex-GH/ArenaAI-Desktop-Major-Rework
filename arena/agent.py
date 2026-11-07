@@ -104,7 +104,20 @@ MODE_NOTES = {
     "default": "The user approves each change and command.",
     "acceptEdits": "File edits run without asking; deletes and commands need approval.",
     "auto": "Work inside the project folder runs without asking; risky commands need approval.",
+    "bypassPermissions": "Bypass permissions is on: everything runs without asking except catastrophic "
+                         "commands, and commands that use shell syntax (&&, |, >, %VAR%) or inline code "
+                         "still ask one by one.",
 }
+
+
+def mode_note(mode: str) -> str:
+    """The note that tells the model how this permission mode behaves.
+
+    Every mode in ``permissions.MODES`` must be covered; a missing key here used
+    to crash the whole turn with ``KeyError`` (1.5.3 shipped without the bypass
+    entry), so unknown or missing modes fall back to the default note instead.
+    """
+    return MODE_NOTES.get(str(mode or ""), MODE_NOTES["default"])
 
 
 READ_ONLY_TOOLS = {"ls", "read_file", "read_files", "search", "ask_user", "propose_plan", "set_todos"}
