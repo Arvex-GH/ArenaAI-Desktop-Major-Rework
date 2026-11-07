@@ -93,11 +93,14 @@ def test_every_enabled_server_connects_by_itself(tmp_path, monkeypatch):
     assert snap["phase"] == "done"
     assert snap["total"] == 2 and snap["done"] == 2
     assert snap["connected"] == 1 and snap["failed"] == 1
+    assert snap["disabled"] == 1
     statuses = {item["id"]: item["status"] for item in snap["items"]}
-    assert statuses == {"alpha": "connected", "beta": "error"}
+    # The switched-off one is listed as Off, not left out silently.
+    assert statuses == {"alpha": "connected", "beta": "error", "off": "disabled"}
     alpha = snap["items"][0]
     assert alpha["label"] == "alpha" and alpha["tools"] == 3
-    assert alpha["detail"] == "Alpha tools"
+    assert alpha["description"] == "Alpha tools"
+    assert alpha["detail"] == "echo a"
     beta = snap["items"][1]
     assert "exited with code 1" in beta["error"]
 
@@ -234,3 +237,53 @@ def test_a_real_server_is_up_and_its_tools_are_registered(tmp_path, monkeypatch)
         assert "mcp__fake__ping" in mgr.tool_map()
     finally:
         mgr.shutdown()
+
+
+# ---------- the app's own presets are ordinary connectors ----------
+
+def test_installed_presets_start_with_the_app_and_keep_their_names(tmp_path, monkeypatch):
+    """Filesystem, Memory and Sequential Thinking install into mcp.json as plain
+    entries, so the launch run must pick them up like any other connector."""
+    mgr = manager(tmp_path, {})
+    mgr.install_preset("filesystem", {"path": str(tmp_path)})
+    mgr.install_preset("memory", {})
+    mgr.install_preset("sequential_thinking", {})
+    called = []
+    monkeypatch.setattr(mgr, "connect", lambda name, timeout=None: (called.append(name), {
+        "name": name, "running": True, "tools_count": 2})[1])
+
+    snap = run_to_end(mgr)
+
+    assert sorted(called) == ["filesystem", "memory", "sequential_thinking"]
+    assert snap["total"] == 3 and snap["connected"] == 3
+    labels = {item["id"]: item["label"] for item in snap["items"]}
+    assert labels == {"filesystem": "Filesystem", "memory": "Memory",
+                      "sequential_thinking": "Sequential Thinking"}
+    for item in snap["items"]:
+        assert item["preset_id"] == item["id"]
+        assert item["enabled"] is True
+
+
+def test_a_switched_off_connector_is_off_not_missing(tmp_path, monkeypatch):
+    mgr = manager(tmp_path, {
+        "filesystem": {"command": "npx", "x-arena-preset": "filesystem"},
+        "memory": {"command": "npx", "x-arena-preset": "memory", "disabled": True},
+    })
+    called = []
+    monkeypatch.setattr(mgr, "connect", lambda name, timeout=None: (called.append(name), {
+        "name": name, "running": True, "tools_count": 1})[1])
+    snap = run_to_end(mgr)
+    assert called == ["filesystem"]
+    by_id = {item["id"]: item for item in snap["items"]}
+    assert by_id["memory"]["status"] == "disabled"
+    assert by_id["memory"]["label"] == "Memory"
+    assert snap["total"] == 1 and snap["disabled"] == 1
+    assert snap["phase"] == "done"
+
+
+def test_all_connectors_off_finishes_instantly(tmp_path):
+    mgr = manager(tmp_path, {"memory": {"command": "npx", "disabled": True}})
+    snap = mgr.start_startup_connect()
+    assert snap["phase"] == "done"
+    assert snap["total"] == 0 and snap["disabled"] == 1
+    assert snap["items"][0]["status"] == "disabled"

@@ -27,6 +27,14 @@ check("it shows a progress bar", /startup-progress-fill/.test(boot) && /aria-val
 check("it names each connector and its state", /status === 'connecting'/.test(boot)
   && /status === 'connected'/.test(boot) && /status === 'error'/.test(boot));
 check("it reports tool counts", /item\.tools \? `\$\{item\.tools\} tool/.test(boot));
+// The app's own presets (Filesystem, Memory, Sequential Thinking) are installed
+// into mcp.json, so they ride the same run — and keep their display names
+// instead of the raw "sequential_thinking".
+check("rows use the connector's display name", /entry = row\(String\(item\.label \|\| item\.name \|\| id\)\)/.test(boot));
+check("a switched-off connector reads Off", /status === 'disabled'\).*entry\.set\('off', 'Off'\)/.test(boot)
+  || /else if \(status === 'disabled'\) entry\.set\('off', 'Off'\)/.test(boot));
+check("the summary counts the switched-off ones", /mcpOff = Number\(snap\.disabled\)/.test(boot)
+  && /switched off/.test(boot));
 check("it closes by itself when done", /window\.setTimeout\(\(\) => \{ if \(!closed\) close\(\); \}, 900\)/.test(boot));
 check("it offers a retry when a connector failed", /API\.retryConnectorStartup\(\)/.test(boot));
 check("it can be dismissed early", /Continue in the background/.test(boot));
@@ -35,7 +43,7 @@ check("demo mode skips it", /if \(state\.demo \|\| startupScreen\) return startu
 check("the one-time setup takes the window instead", /document\.body\.appendChild\(overlay\);\n    dismissStartupScreen\(\);/.test(boot));
 check("the connectors panel refreshes after the run", /void loadConnectors\(\{ silent: true \}\)/.test(boot));
 check("it is styled", /\.startup-overlay \{/.test(css) && /\.startup-progress-fill \{/.test(css)
-  && /\.startup-step\.is-error/.test(css));
+  && /\.startup-step\.is-error/.test(css) && /\.startup-step\.is-off/.test(css));
 
 /* ---- the routes it talks to -------------------------------------------- */
 

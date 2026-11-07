@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.12-brightgreen?style=flat-square" alt="v1.5.12" />
+  <img src="https://img.shields.io/badge/version-1.5.13-brightgreen?style=flat-square" alt="v1.5.13" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.12](#whats-new-in-v1512)
+- [What's new in v1.5.13](#whats-new-in-v1513)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,7 +44,15 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.12
+## What's new in v1.5.13
+
+### The app's own connectors are in that list too
+
+Filesystem, Memory, Sequential Thinking, Time, Fetch, Git — the built-in presets —
+are installed *into* `mcp.json` like any other connector, so they are started by
+the same launch run and appear in the same progress list. They keep their proper
+names there now (*Sequential Thinking*, not `sequential_thinking`), and a preset
+you switched off shows as **Off** instead of quietly vanishing from the list.
 
 ### The app opens its own connectors
 

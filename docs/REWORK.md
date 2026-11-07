@@ -731,7 +731,35 @@ waiting on the row they belong to.
 The lesson recorded here: a receipt that restates a row is worse than noise when
 it hides the row it stands in for.
 
-## The 1.5.12 release
+## The 1.5.13 release
+
+### The presets were never a separate mechanism
+
+Asked after 1.5.12 shipped: *"Not just connectors. The app also has local MCP like
+filesystem, memory or sequential thinking. Is that also started automatically?"*
+
+Yes — and the reason is worth writing down. `official_presets()` is a catalogue of
+*entries*, not a runtime: installing Filesystem or Memory calls `build_preset_entry()`
+and writes a normal `{"command": "npx", "args": [...]}` block into `mcp.json`,
+tagged with `x-arena-preset`. Once installed, a preset is indistinguishable from a
+hand-added connector, so the launch run picks it up for free.
+
+Two things were still wrong for them:
+
+- the row showed the raw id — `sequential_thinking`, underscore and all — because
+  a preset's *display* name only exists in the catalogue, not in `mcp.json`. The
+  plan now maps `preset_id` back to that name (*Sequential Thinking*, *Memory*,
+  *Filesystem*), with the command as the row's tooltip;
+- a connector switched off was simply absent from the list, which read as "the
+  app forgot it". It is now an item with status `disabled`: a quiet **Off** row
+  that takes no part in the progress bar, and the finished line says how many are
+  switched off (`3 connectors connected · 1 switched off`).
+
+`tests/test_startup_connect.py` installs the three presets exactly the way the
+panel does — `install_preset("filesystem")`, `("memory")`, `("sequential_thinking")`
+— and asserts all three are connected by the launch run with the right labels;
+another test asserts a switched-off connector is reported as `disabled`, is never
+started, and does not count towards the progress total.
 
 ### Three terminals, and a panel nobody can see
 

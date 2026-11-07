@@ -535,28 +535,42 @@ class ConnectorManager:
 
     # -- launch-time connect ------------------------------------------------
     def _startup_plan(self) -> List[Dict[str, Any]]:
+        """Every configured connector, in the order it will be connected.
+
+        The app's own presets (Filesystem, Memory, Sequential Thinking, …) are
+        ordinary entries in ``mcp.json`` once installed, so they are here too —
+        with their proper names rather than the raw id. A connector switched off
+        stays in the list as ``disabled``: the screen says "Off" instead of
+        quietly leaving it out.
+        """
         try:
             servers = self._servers()
         except ValueError as e:
             with self._startup_lock:
                 self._startup_error = str(e)
             return []
+        try:
+            preset_names = {p["id"]: p["name"] for p in official_presets(self._workspace_provider())}
+        except Exception:
+            preset_names = {}
         plan: List[Dict[str, Any]] = []
         for server in servers.values():
-            if not server.get("enabled"):
-                continue
             command_parts = []
             if server.get("command"):
                 command_parts = [server["command"], *server.get("args", [])]
             elif server.get("url"):
                 command_parts = [server["url"]]
+            preset_id = server.get("preset_id")
             plan.append({
                 "id": server["name"],
                 "name": server["name"],
-                "label": server["name"],
-                "detail": _startup_label(server) if server.get("description") else _mask_command_display(command_parts),
+                "label": preset_names.get(preset_id) or server["name"],
+                "detail": _mask_command_display(command_parts),
+                "description": _startup_label(server) if server.get("description") else "",
+                "preset_id": preset_id,
+                "enabled": bool(server.get("enabled")),
                 "transport": server["transport"],
-                "status": "queued",
+                "status": "queued" if server.get("enabled") else "disabled",
                 "error": None,
                 "tools": 0,
             })
@@ -576,9 +590,13 @@ class ConnectorManager:
             error = self._startup_error
             started = self._startup_started_at
             finished = self._startup_finished_at
-        total = len(items)
-        connected = sum(1 for item in items if item["status"] == "connected")
-        failed = sum(1 for item in items if item["status"] in ("error", "unsupported"))
+        # Switched-off connectors are shown but are not work: the progress bar
+        # counts what the launch run actually does.
+        work = [item for item in items if item["status"] != "disabled"]
+        total = len(work)
+        connected = sum(1 for item in work if item["status"] == "connected")
+        failed = sum(1 for item in work if item["status"] in ("error", "unsupported"))
+        disabled = sum(1 for item in items if item["status"] == "disabled")
         done = connected + failed
         end = finished or time.time()
         return {
@@ -589,6 +607,7 @@ class ConnectorManager:
             "done": done,
             "connected": connected,
             "failed": failed,
+            "disabled": disabled,
             "pending": total - done,
             "items": items,
             "elapsed": round(end - started, 1) if started else 0.0,
@@ -610,9 +629,10 @@ class ConnectorManager:
             plan = self._startup_plan()
             self._startup_items = plan
             self._startup_started_at = time.time()
-            self._startup_finished_at = None if plan else time.time()
-            self._startup_phase = "connecting" if plan else "done"
-            if not plan:
+            work = [item for item in plan if item["status"] != "disabled"]
+            self._startup_finished_at = None if work else time.time()
+            self._startup_phase = "connecting" if work else "done"
+            if not work:
                 return self.startup_snapshot()
             self._startup_thread = threading.Thread(
                 target=self._run_startup, args=(plan,), daemon=True, name="mcp-startup")
@@ -622,6 +642,8 @@ class ConnectorManager:
     def _run_startup(self, plan: List[Dict[str, Any]]) -> None:
         try:
             for item in plan:
+                if item["status"] == "disabled":
+                    continue
                 if item.get("transport") != "stdio":
                     self._set_startup(item["id"], status="unsupported",
                                       error="Remote HTTP/SSE MCP transport is not supported in this version")

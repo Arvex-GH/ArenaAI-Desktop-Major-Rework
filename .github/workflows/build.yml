@@ -3,7 +3,7 @@ name: Build Windows build
 # Produces the file users download and double-click:
 #   Arena-Desktop-Setup-<version>.exe   ← the installer (same binary, --setup mode)
 #   Arena-Desktop-<version>.exe         ← portable, no install
-# Push a tag (v1.5.12) to publish a release the in-app updater can see.
+# Push a tag (v1.5.13) to publish a release the in-app updater can see.
 
 on:
   push:

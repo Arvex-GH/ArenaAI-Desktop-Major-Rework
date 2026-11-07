@@ -65,6 +65,7 @@
     'search-plus': '<circle cx="10.5" cy="10.5" r="6.4"/><path d="m15.3 15.3 4.2 4.2M10.5 7.8v5.4M7.8 10.5h5.4"/>',
     copy: '<rect x="8.2" y="8.2" width="11.3" height="11.3" rx="2"/><path d="M15.8 8.2V6a1.8 1.8 0 0 0-1.8-1.8H6A1.8 1.8 0 0 0 4.2 6v8a1.8 1.8 0 0 0 1.8 1.8h2.2"/>',
     check: '<path d="m5 12.4 4.4 4.4L19 7"/>',
+    minus: '<path d="M6 12h12"/>',
     package: '<path d="m12 3 8 4.3v9.4L12 21l-8-4.3V7.3L12 3Z"/><path d="m4.3 7.5 7.7 4 7.7-4M12 11.5V21"/>',
     sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
     download: '<path d="M12 3.5v11M7.5 10.5 12 15l4.5-4.5M4 19.5h16"/>',
@@ -1177,7 +1178,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '1.5.12',
+        app_version: '1.5.13',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -1382,12 +1383,12 @@
       const wanted = new URLSearchParams(window.location.search).get('update') === '1';
       if (wanted) {
         return {
-          enabled: true, current: '1.5.11', latest: '1.5.12', update: true, demo: true,
+          enabled: true, current: '1.5.12', latest: '1.5.13', update: true, demo: true,
           url: 'https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases',
           published_at: new Date(Date.now() - 86400000 * 2).toISOString(),
           notes: 'What changed in this build:\n\n· The sidebar is quieter: one New chat row, no oversized button.\n· Update flow rebuilt: the app downloads the new build, replaces itself and restarts.\n· Fixed lane answers being clipped when two models answered at once.\n· Chat titles are written by Arena and no longer overwritten locally.',
           installer: { name: 'Arena-Desktop-Setup-1.6.1.exe', size: 84 * 1024 * 1024, kind: 'installer' },
-          can_install: true, install_mode: 'helper', installed_version: '1.5.12'
+          can_install: true, install_mode: 'helper', installed_version: '1.5.13'
         };
       }
       return { enabled: true, current: 'demo', latest: null, update: false, url: null, demo: true };
@@ -12899,7 +12900,8 @@ You can start with a more structured option: one script, short captions, and a c
           icon.className = `startup-step-icon is-${state}`;
           icon.replaceChildren(...(state === 'run'
             ? [el('span', { class: 'tool-spinner', 'aria-hidden': 'true' })]
-            : [iconEl(state === 'ok' ? 'check' : state === 'warn' ? 'alert' : 'x')]));
+            : state === 'off' ? [iconEl('minus')]
+              : [iconEl(state === 'ok' ? 'check' : state === 'warn' ? 'alert' : 'x')]));
           if (text) note.textContent = text;
         }
       };
@@ -12932,6 +12934,7 @@ You can start with a more structured option: one script, short captions, and a c
     let mcpTotal = 0;
     let mcpDone = 0;
     let mcpFailed = 0;
+    let mcpOff = 0;
     let retrying = false;
 
     const tracker = {
@@ -12963,9 +12966,10 @@ You can start with a more structured option: one script, short captions, and a c
           return;
         }
         title.textContent = 'Ready';
+        const off = mcpOff ? ` · ${mcpOff} switched off` : '';
         detail.textContent = mcpTotal
-          ? `${mcpTotal} connector${mcpTotal === 1 ? '' : 's'} connected.`
-          : 'The app is ready.';
+          ? `${mcpTotal} connector${mcpTotal === 1 ? '' : 's'} connected${off}.`
+          : (mcpOff ? `No connectors switched on (${mcpOff} off).` : 'The app is ready.');
         window.setTimeout(() => { if (!closed) close(); }, 900);
       }
     };
@@ -12983,8 +12987,11 @@ You can start with a more structured option: one script, short captions, and a c
         const id = String(item.id || '');
         let entry = rows.get(id);
         if (!entry) {
-          entry = row(String(item.name || id));
-          if (item.detail) entry.li.querySelector('.startup-step-copy').title = String(item.detail);
+          // The friendly name a preset was installed under ("Sequential Thinking"),
+          // not the raw id ("sequential_thinking").
+          entry = row(String(item.label || item.name || id));
+          const tip = String(item.detail || item.description || '');
+          if (tip) entry.li.querySelector('.startup-step-copy').title = tip;
           rows.set(id, entry);
         }
         const status = String(item.status || '');
@@ -12992,12 +12999,14 @@ You can start with a more structured option: one script, short captions, and a c
         else if (status === 'connecting') entry.set('run', 'Connecting…');
         else if (status === 'connected') entry.set('ok', item.tools ? `${item.tools} tool${item.tools === 1 ? '' : 's'}` : 'Connected');
         else if (status === 'unsupported') entry.set('warn', 'Not supported');
+        else if (status === 'disabled') entry.set('off', 'Off');
         else if (status === 'error') entry.set('error', String(item.error || 'Could not connect').slice(0, 160));
         else entry.set('warn', status || '');
       });
-      mcpTotal = Number(snap.total) || items.length;
+      mcpTotal = Number(snap.total) || 0;
       mcpDone = Number(snap.done) || 0;
       mcpFailed = Number(snap.failed) || 0;
+      mcpOff = Number(snap.disabled) || 0;
       const share = mcpTotal ? mcpDone / mcpTotal : 0;
       progress(0.25 + 0.7 * share);
       if (mcpTotal) detail.textContent = snap.phase === 'done'

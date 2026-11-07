@@ -639,7 +639,8 @@
           icon.className = `startup-step-icon is-${state}`;
           icon.replaceChildren(...(state === 'run'
             ? [el('span', { class: 'tool-spinner', 'aria-hidden': 'true' })]
-            : [iconEl(state === 'ok' ? 'check' : state === 'warn' ? 'alert' : 'x')]));
+            : state === 'off' ? [iconEl('minus')]
+              : [iconEl(state === 'ok' ? 'check' : state === 'warn' ? 'alert' : 'x')]));
           if (text) note.textContent = text;
         }
       };
@@ -672,6 +673,7 @@
     let mcpTotal = 0;
     let mcpDone = 0;
     let mcpFailed = 0;
+    let mcpOff = 0;
     let retrying = false;
 
     const tracker = {
@@ -703,9 +705,10 @@
           return;
         }
         title.textContent = 'Ready';
+        const off = mcpOff ? ` · ${mcpOff} switched off` : '';
         detail.textContent = mcpTotal
-          ? `${mcpTotal} connector${mcpTotal === 1 ? '' : 's'} connected.`
-          : 'The app is ready.';
+          ? `${mcpTotal} connector${mcpTotal === 1 ? '' : 's'} connected${off}.`
+          : (mcpOff ? `No connectors switched on (${mcpOff} off).` : 'The app is ready.');
         window.setTimeout(() => { if (!closed) close(); }, 900);
       }
     };
@@ -723,8 +726,11 @@
         const id = String(item.id || '');
         let entry = rows.get(id);
         if (!entry) {
-          entry = row(String(item.name || id));
-          if (item.detail) entry.li.querySelector('.startup-step-copy').title = String(item.detail);
+          // The friendly name a preset was installed under ("Sequential Thinking"),
+          // not the raw id ("sequential_thinking").
+          entry = row(String(item.label || item.name || id));
+          const tip = String(item.detail || item.description || '');
+          if (tip) entry.li.querySelector('.startup-step-copy').title = tip;
           rows.set(id, entry);
         }
         const status = String(item.status || '');
@@ -732,12 +738,14 @@
         else if (status === 'connecting') entry.set('run', 'Connecting…');
         else if (status === 'connected') entry.set('ok', item.tools ? `${item.tools} tool${item.tools === 1 ? '' : 's'}` : 'Connected');
         else if (status === 'unsupported') entry.set('warn', 'Not supported');
+        else if (status === 'disabled') entry.set('off', 'Off');
         else if (status === 'error') entry.set('error', String(item.error || 'Could not connect').slice(0, 160));
         else entry.set('warn', status || '');
       });
-      mcpTotal = Number(snap.total) || items.length;
+      mcpTotal = Number(snap.total) || 0;
       mcpDone = Number(snap.done) || 0;
       mcpFailed = Number(snap.failed) || 0;
+      mcpOff = Number(snap.disabled) || 0;
       const share = mcpTotal ? mcpDone / mcpTotal : 0;
       progress(0.25 + 0.7 * share);
       if (mcpTotal) detail.textContent = snap.phase === 'done'
