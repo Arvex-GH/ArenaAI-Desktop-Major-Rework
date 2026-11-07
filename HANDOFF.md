@@ -522,6 +522,29 @@ suite.
   `startup_screen_dom.js` → 20 (presets named, Off row, tool counts).
 - Version 1.5.13.
 
+## Session 27 (2026-11-07) — 1.5.16 released
+
+- **Published:** tag `v1.5.16` on merge commit **`2176e92`** (PR #32), run
+  `42408042576` **success**.
+- **Assets:** `Arena-Desktop-Setup-1.5.16.exe` and `Arena-Desktop-1.5.16.exe`,
+  28,653,418 bytes each,
+  `sha256:9633f706051bce27ac6e76a97ac6011ddabfd7af18293054e07cf6466bb11081`.
+- **Contains both rounds merged after 1.5.14** — 1.5.15 (thought rows, a bypass
+  that does not ask, the agent and the permissions in the composer's Chat options
+  panel) and 1.5.16 (a run of tool calls as one line). The release notes say so
+  up front, because anyone on 1.5.14 gets both at once.
+- **Release notes** written with `gh release edit v1.5.16 --notes-file` (the
+  workflow's `--generate-notes` body is replaced, so the digest and the install
+  paragraph live in the release itself).
+- **Feed check:** `updater.fetch_latest('stable')` → 1.5.16, installer
+  `Arena-Desktop-Setup-1.5.16.exe`, 28,653,418 bytes, digest above,
+  `is_allowed_url` True, `is_newer('1.5.16','1.5.15')` True.
+- **Note for next time:** `gh release view --json assets` reports `digest: null`;
+  `gh api repos/<repo>/releases/tags/<tag> --jq '.assets[].digest'` has the real
+  one. A fresh `/tmp/venv` needs `requests` + `certifi` and
+  `REQUESTS_CA_BUNDLE=/usr/local/share/ca-certificates/e2b-ca.crt` for any
+  GitHub call from Python in this sandbox.
+
 ## Session 26 (2026-11-07) — merged, NOT released: a run of tool calls is one line
 
 - **Asked:** *"if the agent calls a certain tool more than once in a row … the
