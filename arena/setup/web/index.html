@@ -508,8 +508,8 @@
     );
   }
 
-  async function init() {
-    const api = bridge();
+  async function init(ready) {
+    const api = ready || bridge();
     if (!api) return; // browser preview: simulate on start
     try {
       const info = await api.info();
@@ -537,7 +537,7 @@
 
   // Browser preview only (no pywebview): animate so the screen can be reviewed.
   function simulate() {
-    els.version.textContent = "\u00b7 1.5.4";
+    els.version.textContent = "\u00b7 1.5.5";
     const steps = [
       [0.06, "Preparing"], [0.18, "Copying the application \u2014 12 of 84 MB"],
       [0.52, "Copying the application \u2014 44 of 84 MB"], [0.78, "Creating shortcuts \u2014 start menu"],
@@ -566,14 +566,48 @@
     }
   });
 
-  if (window.pywebview && window.pywebview.api) {
-    init();
-  } else {
-    document.addEventListener("pywebviewready", init, { once: true });
-    setTimeout(() => {
-      if (!window.pywebview) { els.version.textContent = "\u00b7 1.5.4"; start(); }
-    }, 900);
+  // pywebview injects window.pywebview.api a moment after the page loads and
+  // announces it with a `pywebviewready` event on **window** — not on document.
+  // 1.5.3/1.5.4 listened on document only and checked once after 900 ms, so a
+  // bridge that arrived at 1.7 s was never picked up and the window sat on its
+  // static "Starting…" until Windows called it unresponsive.
+  function whenBridge(done, timeoutMs) {
+    const found = bridge();
+    if (found) return done(found);
+    const deadline = Date.now() + (timeoutMs || 0);
+    let timer = null;
+    function stop() {
+      if (timer) { clearInterval(timer); timer = null; }
+      window.removeEventListener("pywebviewready", check);
+      document.removeEventListener("pywebviewready", check);
+    }
+    function check() {
+      const api = bridge();
+      if (api) { stop(); done(api); return true; }
+      return false;
+    }
+    window.addEventListener("pywebviewready", check);
+    document.addEventListener("pywebviewready", check);
+    timer = setInterval(() => {
+      if (check()) return;
+      if (deadline && Date.now() > deadline) { stop(); done(null); }
+    }, 120);
   }
+
+  // A WebView2 window whose bridge never turned up: the Python watchdog finishes
+  // the install within twelve seconds and closes the window. Say so rather than
+  // animating a fake install.
+  function waitingForBridge() {
+    els.shell.dataset.state = "working";
+    setStatus("Finishing the install in the background");
+    els.tagline.textContent = "The window could not reach the installer. It is finishing the install on its own and this window will close.";
+  }
+
+  whenBridge((api) => {
+    if (api) { init(api); return; }
+    if (window.chrome && window.chrome.webview) { waitingForBridge(); return; }
+    simulate();  // opened in a plain browser: animate so the screen can be reviewed
+  }, 6000);
 })();
 </script>
 </body>
