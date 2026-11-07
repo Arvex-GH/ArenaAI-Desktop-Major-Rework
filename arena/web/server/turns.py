@@ -521,7 +521,9 @@ def _gateway_workspace_index() -> dict:
 
 def _gateway_tool_index() -> dict:
     try:
-        tool_map = CONNECTORS.ensure_started(timeout=10) or {}
+        # Already-running connectors only: refreshing a gateway index must not
+        # spawn anything or wait on the launch run.
+        tool_map = CONNECTORS.tools_now() or {}
     except Exception:
         tool_map = {}
     index: dict = {}

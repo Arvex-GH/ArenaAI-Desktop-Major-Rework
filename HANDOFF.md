@@ -522,6 +522,32 @@ suite.
   `startup_screen_dom.js` → 20 (presets named, Off row, tool counts).
 - Version 1.5.13.
 
+## Session 23 (2026-11-07) — merged, NOT released: a reply never waits for a connector
+
+- **Reported:** after 1.5.13, the first prompt of a session takes a very long
+  time even though the connectors connected at launch — suspected cause: *"the
+  mcp connects under the hud again"*.
+- **Cause:** `_agent_run()` (`arena/web/server/local_agent.py`) began with
+  `CONNECTORS.ensure_started(timeout=30)`, which connected every enabled server
+  in turn, waiting up to 30 s for each. A prompt sent while the launch run was
+  still spawning `npx` servers waited behind it; a connector that had failed at
+  launch was re-spawned on every turn.
+- **Fix:** the turn asks `CONNECTORS.tools_now()` (running servers only, never
+  starts one) after `wait_for_startup(1.5)` — a courtesy second, then it names
+  what is late in one notice line. `retry_failed_in_background()` retries failed
+  connectors off the request thread, throttled to one attempt a minute.
+  `call()` no longer spawns a stopped connector. The launch run is now parallel
+  (`_run_startup` + `_connect_one`), so it ends in the time of its slowest
+  server instead of their sum. Switching a connector on in Settings connects it
+  in the background (`set_enabled` → `connect_in_background`; the preset and
+  CLI routes already connect explicitly).
+- **Tests:** `tests/test_turn_connect_latency.py` — 10 checks (no work in
+  `tools_now`, no waiting behind a live launch run, bounded grace, parallel
+  launch run, throttled background retry, source guards on `_agent_run` and
+  `_gateway_tool_index`). `tests/test_startup_connect.py` updated for the
+  parallel order. Full suite: **445 passed, 21 skipped**.
+- **No version bump, no tag, no release.**
+
 ## Session 22 (2026-11-07) — merged, NOT released: no outline around answers, no avatar
 
 - **Asked:** "remove that outline for the ai. only my prompt should be outlined.

@@ -10,6 +10,7 @@ Secrets belong only in the user's profile file and are masked in API output.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -22,6 +23,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from arena.config import CONFIG_DIR, ensure_config_dir
 from arena.tools.mcp import McpStdioClient
+
+LOG = logging.getLogger(__name__)
 
 MCP_CONFIG_FILE = CONFIG_DIR / "mcp.json"
 _SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -302,6 +305,9 @@ def build_preset_entry(preset_id: str, workspace: Path, values: Optional[Dict[st
 
 
 STARTUP_TIMEOUT = 90.0
+# A connector that failed is retried in the background, never in a reply, and
+# not on every reply: one `npx` attempt a minute is plenty.
+RETRY_COOLDOWN = 60.0
 
 
 def _startup_label(server: Dict[str, Any]) -> str:
@@ -316,6 +322,7 @@ class ConnectorManager:
         self._clients: Dict[str, McpStdioClient] = {}
         self._signatures: Dict[str, str] = {}
         self._errors: Dict[str, str] = {}
+        self._retry_at: Dict[str, float] = {}
         self._lock = threading.RLock()
         # One attempt per server at a time, without freezing the whole manager:
         # a 90 s npx download at launch must not block the panel or a turn that
@@ -463,6 +470,7 @@ class ConnectorManager:
                     self._clients[name] = client
                     self._signatures[name] = signature
                     self._errors.pop(name, None)
+                    self._retry_at.pop(name, None)
                 else:
                     self._errors[name] = client.last_error or "MCP server did not start"
             return self._summary(server)
@@ -489,6 +497,10 @@ class ConnectorManager:
         if not enabled:
             with self._lock:
                 self.disconnect(name)
+        else:
+            # Switched on in Settings: it starts now, in the background, so the
+            # first reply that could use it already has it.
+            self.connect_in_background(name)
         return self.list()
 
     def remove(self, name: str) -> Dict[str, Any]:
@@ -501,6 +513,7 @@ class ConnectorManager:
         servers.pop(name, None)
         save_config(data, self._config_path)
         self._errors.pop(name, None)
+        self._retry_at.pop(name, None)
         return self.list()
 
     def add_entry(self, name: str, entry: Dict[str, Any], overwrite: bool = False) -> Dict[str, Any]:
@@ -640,6 +653,15 @@ class ConnectorManager:
         return self.startup_snapshot()
 
     def _run_startup(self, plan: List[Dict[str, Any]]) -> None:
+        """Connect the plan — every server at once, not one after another.
+
+        ``npx -y`` may have to download a package on first use, and that wait
+        used to be paid three times in a row (Filesystem, then Memory, then
+        Sequential Thinking). They are independent processes: spawn them in
+        parallel so the launch screen finishes in about the time of its
+        slowest connector instead of their sum.
+        """
+        threads: List[threading.Thread] = []
         try:
             for item in plan:
                 if item["status"] == "disabled":
@@ -649,23 +671,127 @@ class ConnectorManager:
                                       error="Remote HTTP/SSE MCP transport is not supported in this version")
                     continue
                 self._set_startup(item["id"], status="connecting")
-                try:
-                    summary = self.connect(item["id"], timeout=STARTUP_TIMEOUT)
-                except Exception as e:  # a broken entry must not stop the others
-                    self._set_startup(item["id"], status="error", error=str(e))
-                    continue
-                if summary.get("running"):
-                    self._set_startup(item["id"], status="connected",
-                                      tools=int(summary.get("tools_count") or 0))
-                else:
-                    self._set_startup(item["id"], status="error",
-                                      error=summary.get("error") or "MCP server did not start")
+                thread = threading.Thread(target=self._connect_one, args=(item,), daemon=True,
+                                          name=f"mcp-startup-{item['id']}")
+                thread.start()
+                threads.append(thread)
+            for thread in threads:
+                thread.join()
         finally:
             with self._startup_lock:
                 self._startup_phase = "done"
                 self._startup_finished_at = time.time()
 
+    def _connect_one(self, item: Dict[str, Any]) -> None:
+        """One connector of the launch run (its own thread, its own failures)."""
+        try:
+            summary = self.connect(item["id"], timeout=STARTUP_TIMEOUT)
+        except Exception as e:  # a broken entry must not stop the others
+            self._set_startup(item["id"], status="error", error=str(e))
+            return
+        if summary.get("running"):
+            self._set_startup(item["id"], status="connected",
+                              tools=int(summary.get("tools_count") or 0))
+        else:
+            self._set_startup(item["id"], status="error",
+                              error=summary.get("error") or "MCP server did not start")
+
+    def tools_now(self) -> Dict[str, Dict[str, Any]]:
+        """The tools of connectors that are running *right now* — never starts one.
+
+        This is what a turn asks for.  ``ensure_started`` used to sit at the
+        head of every reply, so a prompt sent while the launch run was still
+        spawning ``npx`` servers waited behind it (up to the per-server
+        timeout, one server after another), and a connector that had failed
+        was spawned again on every single turn.  Both looked like the model
+        thinking for a minute about a one-line question.
+
+        A connector that is not up simply is not in the map: the reply goes
+        out with the tools that exist, and the ones that arrive later join the
+        next message (the guide is resent when the tool list changes).
+        """
+        return self.tool_map()
+
+    def starting_labels(self) -> List[str]:
+        """Friendly names of enabled connectors whose launch connect is unfinished."""
+        with self._startup_lock:
+            if self._startup_phase != "connecting":
+                return []
+            return [str(item.get("label") or item.get("name") or item.get("id") or "")
+                    for item in self._startup_items
+                    if item.get("status") in ("queued", "connecting")]
+
+    def wait_for_startup(self, budget: float = 1.5) -> List[str]:
+        """Give the launch run a short, bounded moment, then name what is late.
+
+        A courtesy wait, not a gate: if the connectors were still spawning when
+        the user hit send, a second of patience usually turns "no file tools"
+        into the full set.  Whatever is still missing after ``budget`` seconds
+        is reported by name so the reply can say so instead of quietly
+        answering without it.
+        """
+        deadline = time.monotonic() + max(0.0, float(budget))
+        while True:
+            with self._startup_lock:
+                thread = self._startup_thread
+                phase = self._startup_phase
+            if phase != "connecting" or thread is None or not thread.is_alive():
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            # Never join while holding the start-up lock: the run itself needs
+            # it to publish each step.
+            thread.join(min(0.1, remaining))
+        return self.starting_labels()
+
+    def retry_failed_in_background(self, cooldown: float = RETRY_COOLDOWN) -> List[str]:
+        """Give connectors that failed another chance — off the reply's path.
+
+        A cold ``npx`` download that outlasts the launch timeout would otherwise
+        leave the app without that connector until it is restarted.  Retries are
+        throttled per server, so a permanently broken entry costs one attempt a
+        minute instead of a stalled turn.
+        """
+        try:
+            servers = self._servers()
+        except ValueError:
+            return []
+        with self._startup_lock:
+            failed = {item["id"] for item in self._startup_items if item.get("status") == "error"}
+        with self._lock:
+            failed |= set(self._errors)
+        now = time.monotonic()
+        started: List[str] = []
+        with self._lock:
+            for name, server in servers.items():
+                if name not in failed:
+                    continue
+                if not server.get("enabled") or server.get("transport") != "stdio" or not server.get("command"):
+                    continue
+                if self._retry_at.get(name, 0.0) > now:
+                    continue
+                self._retry_at[name] = now + max(5.0, float(cooldown))
+                started.append(name)
+        for name in started:
+            self.connect_in_background(name)
+        return started
+
+    def connect_in_background(self, name: str) -> None:
+        """Connect one connector off the request thread (e.g. right after it is switched on)."""
+        def run():
+            try:
+                self.connect(name, timeout=STARTUP_TIMEOUT)
+            except Exception:
+                LOG.debug("background connect failed for %s", name, exc_info=True)
+        threading.Thread(target=run, daemon=True, name=f"mcp-connect-{name}").start()
+
     def ensure_started(self, timeout: float = 30.0) -> Dict[str, Dict[str, Any]]:
+        """Connect every enabled server now, blocking for up to ``timeout`` each.
+
+        Explicit use only (an install step, a test).  Nothing on the path of a
+        reply may call this — that is what ``tools_now`` is for.
+        """
         try:
             servers = self._servers()
         except ValueError:
@@ -713,10 +839,11 @@ class ConnectorManager:
     def call(self, alias: str, arguments: Dict[str, Any]) -> str:
         entry = self.tool_map().get(alias)
         if entry is None:
-            # A server may have been enabled after the map was built.
-            entry = self.ensure_started().get(alias)
-        if entry is None:
-            raise KeyError(f"MCP tool is not available: {alias}")
+            # A connector that is not running is not resurrected here: spawning
+            # one inside a reply is what made a single tool call sit for the
+            # whole start timeout. The error is answered to the model instead,
+            # and the launch run (or the panel) brings the connector up.
+            raise KeyError(f"MCP tool is not available: {alias} — its connector is not running")
         return entry["client"].call_tool(entry["tool"], arguments or {}, timeout=90)
 
     @staticmethod

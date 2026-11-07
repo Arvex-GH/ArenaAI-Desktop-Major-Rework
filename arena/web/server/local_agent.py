@@ -7,6 +7,11 @@
 
 _ckpt_lock = threading.Lock()
 
+# How long a reply waits for connectors that are mid-spawn at send time.  A
+# courtesy second, not a gate: anything slower is answered without its tools
+# and joins the next message.
+TURN_CONNECT_GRACE = 1.5
+
 
 def _invalidate_read_cache(conv, info):
     conv.pop("_output_cache", None)  # listings/searches may have changed too
@@ -576,11 +581,38 @@ def _agent_run(client: ArenaClient, message: str, conv: dict):
     mode = _perm_mode()
     total = {"a": "", "b": ""}
     yield _sse({"type": "agent", "root": str(root), "mode": mode, "dual": dual})
+    # Connectors belong to the launch run, not to this reply.  Asking for the
+    # tools that are already up (plus a second of patience for anything that is
+    # mid-spawn) keeps the first prompt from standing in line behind npx: the
+    # old ensure_started() here waited for each enabled server in turn, with a
+    # 30 s timeout each, and started a fresh attempt for any server that had
+    # failed — so a one-line question could sit for a minute before the model
+    # was even contacted.
+    # Each of the three is optional on its own: a manager that cannot do one of
+    # them still lets the reply go out with the tools it does have.
+    late = []
     try:
-        mcp_tools = CONNECTORS.ensure_started(timeout=30)
+        late = list(CONNECTORS.wait_for_startup(TURN_CONNECT_GRACE) or [])
+    except Exception:
+        late = []
+    try:
+        mcp_tools = CONNECTORS.tools_now()
     except Exception as e:
         mcp_tools = {}
         yield _sse({"type": "notice", "text": f"MCP connectors are unavailable for this turn: {e}"})
+    try:
+        # A connector that failed at launch gets another chance — in its own
+        # thread, throttled, so this reply neither waits nor fails because of it.
+        CONNECTORS.retry_failed_in_background()
+    except Exception:
+        pass
+    if late:
+        # Honest rather than silent: this reply really is missing those tools.
+        names = ", ".join(late)
+        yield _sse({"type": "notice", "level": "info",
+                    "text": (f"{names} {'was' if len(late) == 1 else 'were'} still starting when this message "
+                             f"went out, so this reply works without {'its' if len(late) == 1 else 'their'} "
+                             f"tools. They join your next message.")})
     mcp_guide = CONNECTORS.guide(mcp_tools)
     if mcp_tools:
         yield _sse({"type": "agent", "stage": f"MCP tools available: {len(mcp_tools)}",
