@@ -522,6 +522,20 @@ window reference must stay private*. The installer was the one place that forgot
 attribute of `SetupApi` must be a plain value, which is exactly the rule the
 walk depends on.
 
+### What shipped, and what the window is not
+
+`v1.5.4` is published with both files at 28,621,059 bytes
+(`sha256:437d85aa…eb517`), and the feed check behind the in-app updater sees it:
+1.5.3 is offered the update, 1.5.4 is not offered one to itself.
+
+Two honest notes about the window. The in-app updater has always run the
+downloaded file as `--setup --update --silent`, so nobody who updated from
+Settings ever saw the setup window at all — the freeze only ever hit the
+double-click path, which is the path that had to be proven fixed. And install
+mode over a copy that is *running* still fails on the locked application file
+and reports an access error in the window; update mode already handles it by
+waiting for the app to exit, and install mode should learn the same trick.
+
 ### Bypass permissions, and the missing fifth mode
 
 With *Bypass permissions* selected, every message died before the model was
