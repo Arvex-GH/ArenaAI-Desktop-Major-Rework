@@ -34,7 +34,14 @@ def test_always_never_covers_compound_commands():
     assert b.check("default", "run_cmd", True, "npm run build") == "allow"
     assert b.check("default", "run_cmd", True, "npm i && npm run build") == "ask"
     assert b.check("default", "run_cmd", True, "node -e 1") == "ask"
-    assert b.check("bypassPermissions", "run_cmd", True, "npm i && curl x") == "ask"
+    # Bypass is bypass: shell syntax, inline code and paths outside the folder
+    # all run without a question now (1.5.15).
+    assert b.check("bypassPermissions", "run_cmd", True, "npm i && curl x") == "allow"
+    assert b.check("bypassPermissions", "run_cmd", True, "python -c pass") == "allow"
+    assert b.check("bypassPermissions", "write_file", False, "") == "allow"
+    assert b.check("bypassPermissions", "read_file", False, "") == "allow"
+    # The one floor that is left is a refusal, not a prompt.
+    assert b.check("bypassPermissions", "run_cmd", True, "rm -rf / && echo") == "deny"
     assert b.check("default", "run_cmd", True, "rm -rf / && echo") == "deny"
 
 

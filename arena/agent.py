@@ -109,9 +109,10 @@ MODE_NOTES = {
     "default": "The user approves each change and command.",
     "acceptEdits": "File edits run without asking; deletes and commands need approval.",
     "auto": "Work inside the project folder runs without asking; risky commands need approval.",
-    "bypassPermissions": "Bypass permissions is on: everything runs without asking except catastrophic "
-                         "commands, and commands that use shell syntax (&&, |, >, %VAR%) or inline code "
-                         "still ask one by one.",
+    "bypassPermissions": "Bypass permissions is on: work runs without asking — file changes, deletes, "
+                         "commands, shell syntax (&&, |, >, %VAR%), inline code and paths outside the folder "
+                         "included. Only catastrophic commands (disk formatting, system shutdown, wiping a "
+                         "drive root) are refused outright.",
 }
 
 

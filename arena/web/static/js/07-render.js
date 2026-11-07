@@ -902,16 +902,96 @@
     return renderToolRow(activity, lane.streaming, activity.id === waitingId);
   }
 
-  /* A thought the model said out loud: one collapsed line, opened while it is
-     still being written. It sits where it happened, between the words above it
-     and the words below it. */
-  function renderThinkingNode(block) {
-    const details = el('details', { class: `reasoning thinking-block${block.open ? ' is-live' : ''}` },
-      el('summary', { text: block.open ? 'Thinking' : 'Thought' }),
-      el('div', { class: 'reasoning-content', text: block.body.trim() })
-    );
-    if (block.open) details.setAttribute('open', '');
-    return details;
+  /* A thought is a call, in the interface: one quiet line, a chevron, opened
+     while it is still being written and folded when it ends — "Thought for 3
+     seconds", exactly like "Ran commands" on arena.ai. It keeps its place
+     between the words above it and the words below it, and the body never
+     becomes part of the answer.
+
+     The duration is measured, not invented: a block's first sighting during a
+     stream stamps its start, its closing tag stamps the end, and a thought
+     loaded from a saved chat has no stamps at all — so it reads "Thought",
+     never "Thought for 0 seconds". */
+  const _thoughtClocks = new WeakMap();
+
+  function thoughtSeconds(lane, block) {
+    const key = String(Number.isFinite(block.at) ? block.at : 0);
+    let clocks = _thoughtClocks.get(lane);
+    if (!clocks) { clocks = {}; _thoughtClocks.set(lane, clocks); }
+    const now = Date.now();
+    const entry = clocks[key];
+    if (!entry) {
+      // A block seen for the first time after the stream ended (a saved chat)
+      // has no honest duration: return null and the row stays undated.
+      if (!block.open && !lane.streaming) return null;
+      clocks[key] = { start: now, end: block.open ? 0 : now };
+      return 0;
+    }
+    if (!block.open && !entry.end) entry.end = now;
+    if (!entry.start) return 0;
+    const end = entry.end || now;
+    return Math.max(0, end - entry.start);
+  }
+
+  function thoughtLabel(ms) {
+    if (ms === null || ms === undefined) return 'Thought';
+    const total = Math.max(1, Math.round(ms / 1000));
+    if (total < 60) return `Thought for ${total} second${total === 1 ? '' : 's'}`;
+    const minutes = Math.floor(total / 60);
+    const seconds = total % 60;
+    const head = `${minutes} minute${minutes === 1 ? '' : 's'}`;
+    return seconds ? `Thought for ${head} ${seconds}s` : `Thought for ${head}`;
+  }
+
+  function renderThoughtRow(lane, block) {
+    const id = `thought-${Number.isFinite(block.at) ? block.at : 0}`;
+    const body = String(block.body || '').trim();
+    // A thought with nothing in it is not worth a line of its own.
+    if (!body && !block.open) return null;
+    const running = Boolean(block.open);
+    const expanded = expandedActivities.has(id);
+    const closedByHand = collapsedActivities.has(id);
+    const wasRunning = _runningActivities.has(id);
+    const folding = !running && !expanded && !closedByHand && wasRunning;
+    if (running) _runningActivities.add(id);
+    else if (wasRunning) _runningActivities.delete(id);
+    const open = !closedByHand && (running || expanded || folding);
+    // Always asked, even while the row says "Thinking…": the first sighting is
+    // what starts the clock, and a clock that starts when the block closes
+    // would time every thought at one second.
+    const seconds = thoughtSeconds(lane, block);
+    const label = running ? 'Thinking\u2026' : thoughtLabel(seconds);
+
+    const row = el('div', {
+      class: `tool-row is-thought ${running ? 'is-run' : 'is-idle'}${open ? ' is-open' : ''}${folding ? ' is-folding' : ''}`,
+      'data-thought-id': id
+    });
+    row.appendChild(el('button', {
+      class: 'tool-line thought-line', type: 'button', 'data-tool-toggle': id,
+      'aria-expanded': open ? 'true' : 'false',
+      title: running ? 'What the model is thinking right now' : label
+    },
+      el('span', { class: 'tool-chevron', 'aria-hidden': 'true' }, iconEl('chevron-right')),
+      el('span', { class: 'thought-glyph', 'aria-hidden': 'true' }, iconEl('spark')),
+      el('span', { class: 'tool-name', text: label }),
+      running ? el('span', { class: 'tool-spinner', 'aria-hidden': 'true' }) : null
+    ));
+    if (!open) return row;
+
+    const detail = el('div', { class: 'tool-detail' },
+      el('div', { class: 'tool-detail-content' },
+        el('div', { class: 'thought-text', text: body })));
+    if (folding) {
+      detail.classList.add('is-folding');
+      const settle = () => {
+        detail.remove();
+        row.classList.remove('is-open', 'is-folding');
+      };
+      detail.addEventListener('animationend', settle, { once: true });
+      setTimeout(settle, 900);
+    }
+    row.appendChild(detail);
+    return row;
   }
 
   /* The answer and the work it did, in the order they happened: text, then the
@@ -940,14 +1020,17 @@
       return a.at - b.at || a.index - b.index;
     };
     const node = (item) => (item.kind === 'thinking'
-      ? renderThinkingNode(item.block)
+      ? renderThoughtRow(lane, item.block)
       : renderActivityNode(item.activity, lane, waitingId));
     if (showTypewriter) {
       // The words are hidden behind the placeholder for a moment — it stands in
       // for them, so pouring them here as well would print the first sentence
       // twice. The calls and thoughts it already had are not hidden: a command
       // still opens while it runs, in the order they happened.
-      placed.slice().sort(bySource).forEach((item) => nodes.push(node(item)));
+      placed.slice().sort(bySource).forEach((item) => {
+        const rendered = node(item);
+        if (rendered) nodes.push(rendered);
+      });
       return nodes;
     }
     placed.sort((a, b) => {
@@ -965,7 +1048,8 @@
         if (piece.trim()) nodes.push(markdownNode(piece));
         cursor = Math.max(cursor, item.pos);
       }
-      nodes.push(node(item));
+      const rendered = node(item);
+      if (rendered) nodes.push(rendered);
     });
     const rest = visibleText.slice(cursor);
     if (rest.trim()) nodes.push(markdownNode(rest));
@@ -1568,11 +1652,10 @@
     card.appendChild(head);
 
     if (lane.reasoning) {
-      const details = el('details', { class: 'reasoning' },
-        el('summary', { text: lane.demo ? "Thinking · demo" : "Thinking" }),
-        el('div', { class: 'reasoning-content', text: lane.reasoning })
-      );
-      card.appendChild(details);
+      // A cloud reply's reasoning arrives as one finished block: the same row
+      // a thought gets, with no duration to promise (nothing was timed here).
+      const row = renderThoughtRow(lane, { at: null, open: false, body: lane.reasoning });
+      if (row) card.appendChild(row);
     }
 
     const view = laneView(lane);

@@ -54,7 +54,6 @@
   function openSettings(initialTab = 'connection') {
     const tabDefs = [
       { id: 'connection', label: 'Account', icon: 'user' },
-      { id: 'permissions', label: 'Permissions', icon: 'shield' },
       { id: 'workspace', label: 'Folder', icon: 'folder' },
       { id: 'memory', label: 'Memory', icon: 'layers' },
       { id: 'automations', label: 'Automations', icon: 'clock' },
@@ -201,84 +200,6 @@
         wrap.appendChild(el('div', { class: 'note-box is-danger', style: { marginTop: '10px' } }, iconEl('wifi-off'), el('span', { text: state.serverError })));
       } else if (state.status?.session_error) {
         wrap.appendChild(el('div', { class: 'note-box is-danger', style: { marginTop: '10px' } }, iconEl('alert'), el('span', { text: `Session error: ${textValue(state.status.session_error)}` })));
-      }
-      return wrap;
-    }
-
-    function renderPermissionsPanel() {
-      const wrap = el('div');
-      wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Local Agent permissions' }));
-      wrap.appendChild(el('p', { class: 'modal-copy', text: 'What the Local Agent may do in your folder without asking. The same switch sits under the message box.' }));
-      const controlsDisabled = anyGenerationRunning() || state.remoteBusy || state.pendingChanges > 0;
-      const cards = el('div', { class: 'radio-cards' });
-      PERMISSION_MODES.forEach((mode) => {
-        const selected = state.permissionMode === mode.id;
-        const label = el('label', { class: `radio-card${selected ? ' is-selected' : ''}${mode.danger ? ' is-danger-card' : ''}` });
-        const input = el('input', {
-          type: 'radio', name: 'permission-mode', value: mode.id,
-          checked: selected, disabled: controlsDisabled,
-          'aria-label': mode.label
-        });
-        input.addEventListener('change', async () => {
-          if (!input.checked) return;
-          input.disabled = true;
-          await changePermissionMode(mode.id);
-          refreshPanel();
-        });
-        label.append(input,
-          el('span', { class: 'radio-indicator', 'aria-hidden': 'true' }),
-          el('span', { class: 'radio-copy' },
-            el('span', { class: 'radio-title' }, el('span', { text: mode.label }), mode.danger ? el('span', { class: 'radio-tag', text: 'Dangerous' }) : null),
-            el('span', { class: 'radio-desc', text: mode.desc })
-          )
-        );
-        cards.appendChild(label);
-      });
-      wrap.appendChild(cards);
-      if (state.permissionMode === 'bypassPermissions') {
-        wrap.appendChild(el('div', { class: 'note-box is-danger', style: { marginTop: '8px' } }, iconEl('shield-alert'),
-          el('span', { text: 'Bypass is on: the Local Agent can change files and run commands in your folder without asking.' })));
-      }
-
-      wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Agent for new chats' }));
-      wrap.appendChild(el('p', { class: 'modal-copy', text: 'Which agent new Agent Mode chats use. A started chat keeps its own agent.' }));
-      const agentCards = el('div', { class: 'radio-cards' });
-      [
-        { id: 'native', label: 'Arena Agent', desc: "Arena's own agent: cloud workspace, search, files and Arena connectors. Recommended." },
-        { id: 'local', label: 'Local Agent', desc: 'Works in the folder you pick, on this computer, under the permissions above.' }
-      ].forEach((kind) => {
-        const selected = state.agentKind === kind.id;
-        const label = el('label', { class: `radio-card${selected ? ' is-selected' : ''}` });
-        const input = el('input', {
-          type: 'radio', name: 'agent-kind', value: kind.id,
-          checked: selected, disabled: controlsDisabled, 'aria-label': kind.label
-        });
-        input.addEventListener('change', () => { if (input.checked) setAgentKind(kind.id); });
-        label.append(input,
-          el('span', { class: 'radio-indicator', 'aria-hidden': 'true' }),
-          el('span', { class: 'radio-copy' },
-            el('span', { class: 'radio-title' }, el('span', { text: kind.label })),
-            el('span', { class: 'radio-desc', text: kind.desc })));
-        agentCards.appendChild(label);
-      });
-      wrap.appendChild(agentCards);
-
-      if (state.pendingPermissions.length) {
-        wrap.appendChild(el('h3', { class: 'modal-section-title', text: `Waiting for your answer (${state.pendingPermissions.length})` }));
-        const pendingWrap = el('div', { class: 'permissions-list' });
-        state.pendingPermissions.forEach((permission) => {
-          const item = el('div', { class: 'permission-mini' },
-            el('div', { class: 'permission-mini-head' }, iconEl('shield-alert'), el('span', { text: permission.title || 'Permission request' })),
-            el('div', { class: 'permission-mini-detail', text: permissionDetail(permission) }),
-            el('div', { class: 'permission-mini-actions' },
-              el('button', { class: 'button button-small button-allow', type: 'button', disabled: state.decidingPermissions.has(String(permission.id) || ''), onclick: () => decidePermission(permission.id, 'allow') }, el('span', { text: 'Allow once' })),
-              el('button', { class: 'button button-small button-always', type: 'button', disabled: state.decidingPermissions.has(String(permission.id) || ''), onclick: () => decidePermission(permission.id, 'always') }, el('span', { text: 'Allow in this chat' })),
-              el('button', { class: 'button button-small button-deny', type: 'button', disabled: state.decidingPermissions.has(String(permission.id) || ''), onclick: () => decidePermission(permission.id, 'deny') }, el('span', { text: 'Deny' }))
-            )
-          );
-          pendingWrap.appendChild(item);
-        });
-        wrap.appendChild(pendingWrap);
       }
       return wrap;
     }
@@ -1028,7 +949,6 @@
     }
 
     function contentFor(tab) {
-      if (tab === 'permissions') return renderPermissionsPanel();
       if (tab === 'workspace') return renderWorkspacePanel();
       if (tab === 'memory') return renderMemoryPanel();
       if (tab === 'automations') return renderAutomationsPanel();
@@ -1043,10 +963,7 @@
       if (hydrated[tab]) return;
       hydrated[tab] = true;
       if (state.serverError || state.networkOffline) return;
-      if (tab === 'permissions') {
-        Promise.allSettled([loadPermissionModeFromServer({ quiet: true }), loadPermissions({ quiet: true })])
-          .then(() => { if (state.settingsTab === 'permissions') refreshPanel(); });
-      } else if (tab === 'workspace') {
+      if (tab === 'workspace') {
         loadWorkspaceFromServer({ quiet: true }).then(() => { if (state.settingsTab === 'workspace') refreshPanel(); });
       } else if (tab === 'connection') {
         API.getAccounts().then((result) => {

@@ -38,6 +38,7 @@
     'thumbs-down': '<path d="M17.2 13.8V4.5h2.5a.8.8 0 0 1 .8.8v7.7a.8.8 0 0 1-.8.8h-2.5ZM17.2 11.6l-3.9 7.3c-1.3.2-2.4-.8-2.3-2l.6-3.1H5.7c-1 0-1.7-1-1.4-1.9l1.4-5.4a2 2 0 0 1 2-1.5h7.8c.9 0 1.7.7 1.7 1.7v4.9Z"/>',
     scale: '<path d="M12 4v16M7.5 20h9M12 4 6 6.4M12 4l6 2.4M6 6.4 3.4 12a3.4 3.4 0 0 0 5.2 0L6 6.4ZM18 6.4 15.4 12a3.4 3.4 0 0 0 5.2 0L18 6.4Z"/>',
     menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    ellipsis: '<circle cx="5.6" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="18.4" cy="12" r="1.5" fill="currentColor" stroke="none"/>',
     trash: '<path d="M4.8 7h14.4M9.2 7V4.6h5.6V7M7.2 7l.9 13h7.8l.9-13M10 10.5v6M14 10.5v6"/>',
     layout: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9h17M9 9v10.5"/>',
     chart: '<path d="M4 20V4M4 20h16"/><path d="M8 16v-4M12.5 16V7.5M17 16v-6"/>',

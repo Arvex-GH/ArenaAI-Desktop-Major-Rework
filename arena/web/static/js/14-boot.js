@@ -82,6 +82,8 @@
     els.sidebarResize = $('#sidebarResize');
     els.workspaceResize = $('#workspaceResize');
     els.workspaceSplitResize = $('#workspaceSplitResize');
+    els.composerMenuButton = $('#composerMenuButton');
+    els.composerMenuDot = $('#composerMenuDot');
     els.permissionButton = $('#permissionButton');
     els.bypassIndicator = $('#bypassIndicator');
     els.workspaceSyncChip = $('#workspaceSyncChip');
@@ -286,6 +288,11 @@
         els.reloadConnectorsButton.classList.remove('is-spinning');
       }
     });
+    // One button instead of six chips: the toolbar is two icons and Send now.
+    els.composerMenuButton?.addEventListener('click', () => {
+      if (els.composerMenuButton.getAttribute('aria-expanded') === 'true') { closePopover(); return; }
+      openComposerMenu();
+    });
     els.modeButton?.addEventListener('click', () => {
       if (!els.modeButton.disabled) openModePopover();
     });
@@ -300,7 +307,7 @@
     els.gatewayChip?.addEventListener('click', () => openSettings('gateway'));
     els.sendButton?.setAttribute('type', 'submit');
     els.stopButton?.addEventListener('click', () => { void stopGeneration(); });
-    els.chatSettingsButton?.addEventListener('click', () => openSettings('permissions'));
+    els.chatSettingsButton?.addEventListener('click', () => openSettings('workspace'));
 
     /* Attachments: +, file picker, paste, drag & drop */
     els.attachButton?.addEventListener('click', () => {

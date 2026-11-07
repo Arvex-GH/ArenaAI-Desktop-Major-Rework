@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark">
   <meta name="description" content="Arena Desktop — an unofficial local Windows client for arena.ai. A desktop interface over a local Flask + pywebview backend.">
   <title>Arena Desktop</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.5.14" onerror="this.onerror=null;this.href='static/style.css?v=1.5.14'">
+  <link rel="stylesheet" href="/static/style.css?v=1.5.15" onerror="this.onerror=null;this.href='static/style.css?v=1.5.15'">
 </head>
 <body>
   <a class="skip-link" href="#prompt">Skip to the message box</a>
@@ -239,55 +239,73 @@
             <div class="model-strip" id="modelStrip" aria-label="Selected models"></div>
 
             <div class="composer-toolbar" role="toolbar" aria-label="Request options">
-              <button class="attach-button" type="button" id="attachButton" aria-label="Attach files" title="Attach files">
+              <!-- Two controls, both icons, both with a tooltip. Everything the
+                   composer used to spell out (mode, work type, permissions,
+                   folder) lives one click away in this menu, which is where a
+                   setting that changes what a send means belongs. -->
+              <button class="tool-icon-button composer-menu-button" type="button" id="composerMenuButton"
+                      aria-haspopup="dialog" aria-expanded="false"
+                      aria-label="Chat options: mode, work type, permissions, folder"
+                      title="Chat options — mode, work type, permissions, folder">
+                <span data-icon="ellipsis"></span>
+                <span class="composer-menu-dot" id="composerMenuDot" hidden aria-hidden="true"></span>
+              </button>
+              <button class="attach-button tool-icon-button" type="button" id="attachButton"
+                      aria-label="Attach files" title="Attach files — images, PDFs, code">
                 <span data-icon="plus"></span>
               </button>
               <input type="file" id="fileInput" multiple hidden aria-hidden="true" tabindex="-1">
-              <button class="composer-chip" type="button" id="workspaceButton" aria-haspopup="listbox" aria-expanded="false" aria-label="Workspace">
-                <span data-icon="folder"></span>
-                <span class="chip-label" id="workspaceLabel">No folder selected</span>
-                <span data-icon="chevron-down" class="chip-chevron"></span>
-              </button>
-              <button class="composer-chip modality-chip" type="button" id="modalityButton" aria-haspopup="listbox" aria-expanded="false" aria-label="Work type">
-                <span data-icon="spark"></span>
-                <span class="chip-label" id="modalityLabel">Auto</span>
-                <span data-icon="chevron-down" class="chip-chevron"></span>
-              </button>
-              <button class="composer-chip mode-chip" type="button" id="modeButton" aria-haspopup="listbox" aria-expanded="false" aria-label="Mode">
-                <span data-icon="swords"></span>
-                <span class="chip-label" id="modeLabel">Battle Mode</span>
-                <span data-icon="chevron-down" class="chip-chevron"></span>
-              </button>
-              <label class="composer-chip agent-direct-chip" id="workspaceSyncChip" title="Workspace Sync: connect this chat to the folder selected on this computer">
-                <span class="chip-label">Workspace Sync</span>
-                <span class="switch">
-                  <input type="checkbox" class="switch-input" id="workspaceSyncToggle" aria-label="Workspace Sync: allow the models to work in the folder selected on this computer">
-                  <span class="switch-track" aria-hidden="true"></span>
-                </span>
-              </label>
-              <button class="composer-chip compact-chip" type="button" id="compactButton" hidden title="Compact: continue this chat in a fresh Arena session with a summary">
-                <span data-icon="compress"></span>
-                <span class="chip-label">Compact</span>
-                <span class="compact-dot" id="compactDot" hidden aria-hidden="true"></span>
-              </button>
-              <button class="composer-chip gateway-chip" type="button" id="gatewayChip" hidden title="Agent Gateway is ON">
-                <span data-icon="globe"></span>
-                <span class="chip-label">Gateway on</span>
-              </button>
               <span class="pending-permissions-badge" id="pendingPermissionsBadge" hidden></span>
               <div class="toolbar-spacer"></div>
               <div class="send-cluster">
-                <button class="permission-chip send-permission" type="button" id="permissionButton" aria-haspopup="listbox" aria-expanded="false" aria-label="Confirmation mode">
-                  <span data-icon="shield" class="permission-glyph"></span>
-                  <span class="chip-label" id="permissionLabel">Ask</span>
-                </button>
-                <span class="bypass-indicator" id="bypassIndicator" role="status" aria-label="Permission bypass is on" hidden></span>
+                <span class="bypass-indicator" id="bypassIndicator" role="status" aria-label="Permission bypass is on"
+                      title="Bypass permissions is on: nothing asks before it runs" hidden></span>
                 <button class="stop-button" type="button" id="stopButton" hidden>
                   <span class="icon" data-icon="stop"></span>
                   <span>Stop</span>
                 </button>
-                <button class="send-button" type="submit" id="sendButton" aria-label="Send message">
+                <button class="send-button" type="submit" id="sendButton" aria-label="Send message" title="Send">
                   <span class="icon" data-icon="arrow-up"></span>
+                </button>
+              </div>
+              <!-- The old chips are the state and the wiring the menu reads and
+                   drives (labels, disabled states, the Workspace Sync switch).
+                   They are never drawn: nothing in the toolbar shows text now. -->
+              <div class="toolbar-stash" hidden aria-hidden="true">
+                <button class="composer-chip" type="button" id="workspaceButton" aria-haspopup="listbox" aria-expanded="false" aria-label="Workspace">
+                  <span data-icon="folder"></span>
+                  <span class="chip-label" id="workspaceLabel">No folder selected</span>
+                  <span data-icon="chevron-down" class="chip-chevron"></span>
+                </button>
+                <button class="composer-chip modality-chip" type="button" id="modalityButton" aria-haspopup="listbox" aria-expanded="false" aria-label="Work type">
+                  <span data-icon="spark"></span>
+                  <span class="chip-label" id="modalityLabel">Auto</span>
+                  <span data-icon="chevron-down" class="chip-chevron"></span>
+                </button>
+                <button class="composer-chip mode-chip" type="button" id="modeButton" aria-haspopup="listbox" aria-expanded="false" aria-label="Mode">
+                  <span data-icon="swords"></span>
+                  <span class="chip-label" id="modeLabel">Battle Mode</span>
+                  <span data-icon="chevron-down" class="chip-chevron"></span>
+                </button>
+                <label class="composer-chip agent-direct-chip" id="workspaceSyncChip" title="Workspace Sync: connect this chat to the folder selected on this computer">
+                  <span class="chip-label">Workspace Sync</span>
+                  <span class="switch">
+                    <input type="checkbox" class="switch-input" id="workspaceSyncToggle" aria-label="Workspace Sync: allow the models to work in the folder selected on this computer">
+                    <span class="switch-track" aria-hidden="true"></span>
+                  </span>
+                </label>
+                <button class="composer-chip compact-chip" type="button" id="compactButton" hidden title="Compact: continue this chat in a fresh Arena session with a summary">
+                  <span data-icon="compress"></span>
+                  <span class="chip-label">Compact</span>
+                  <span class="compact-dot" id="compactDot" hidden aria-hidden="true"></span>
+                </button>
+                <button class="composer-chip gateway-chip" type="button" id="gatewayChip" hidden title="Agent Gateway is ON">
+                  <span data-icon="globe"></span>
+                  <span class="chip-label">Gateway on</span>
+                </button>
+                <button class="permission-chip send-permission" type="button" id="permissionButton" aria-haspopup="listbox" aria-expanded="false" aria-label="Confirmation mode">
+                  <span data-icon="shield" class="permission-glyph"></span>
+                  <span class="chip-label" id="permissionLabel">Ask</span>
                 </button>
               </div>
             </div>
@@ -399,6 +417,6 @@
     <div class="noscript-message">Arena Desktop needs JavaScript. Enable it in the WebView2 settings.</div>
   </noscript>
 
-  <script src="/static/app.js?v=1.5.14" defer onerror="this.onerror=null;this.src='static/app.js?v=1.5.14'"></script>
+  <script src="/static/app.js?v=1.5.15" defer onerror="this.onerror=null;this.src='static/app.js?v=1.5.15'"></script>
 </body>
 </html>

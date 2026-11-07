@@ -69,11 +69,16 @@ def decide(mode: str, tool: str, inside: bool = True, command: str = "") -> str:
     kind = KIND.get(tool, "shell")
     if kind == "shell" and CATASTROPHIC.search(command or ""):
         return "deny"
-    if kind == "read":
-        return "allow" if inside else "ask"
+    # Bypass first: it answers for reads outside the folder too.
     if mode == "bypassPermissions":
-        if kind == "shell" and needs_explicit_approval(command):
-            return "ask"
+        # Bypass means bypass. It used to keep asking for three kinds of work —
+        # shell syntax (``&&``, ``|``, ``>``, ``%VAR%``), inline code (``-c``,
+        # ``-e``) and any path outside the folder — which is most of what an
+        # agent actually does, so "work fully autonomously" still stopped every
+        # few steps to ask. The catastrophic list above is the only floor left,
+        # and that is a refusal, not a question.
+        return "allow"
+    if kind == "read":
         return "allow" if inside else "ask"
     if mode == "plan":
         return "deny"

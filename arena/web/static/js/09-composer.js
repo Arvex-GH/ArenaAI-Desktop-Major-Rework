@@ -334,6 +334,21 @@
       els.bypassIndicator.hidden = !bypass;
       els.bypassIndicator.title = bypass ? 'Permission bypass is on: nothing asks before it runs.' : '';
     }
+    // The menu swallowed the chips that used to say what was active. Two things
+    // still need to be visible without opening it: a bypass that runs everything
+    // unattended (its dot stays next to Send) and a request waiting for you.
+    if (els.composerMenuDot) {
+      const waiting = Array.isArray(state.pendingPermissions) && state.pendingPermissions.length > 0;
+      els.composerMenuDot.hidden = !(waiting || state.permissionMode === 'bypassPermissions');
+      els.composerMenuDot.classList.toggle('is-waiting', waiting);
+      els.composerMenuButton?.classList.toggle('is-danger', state.permissionMode === 'bypassPermissions');
+      els.composerMenuButton?.classList.toggle('has-waiting', waiting);
+    }
+    if (els.composerMenuButton) {
+      els.composerMenuButton.title = state.permissionMode === 'bypassPermissions'
+        ? 'Chat options — mode, work type, permissions, folder · bypass is on'
+        : 'Chat options — mode, work type, permissions, folder';
+    }
     if (els.workspaceLabel) {
       els.workspaceLabel.textContent = state.workspace ? workspaceName() : "Choose folder";
       els.workspaceButton.title = state.workspace || "Working folder not selected";

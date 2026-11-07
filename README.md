@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.14-brightgreen?style=flat-square" alt="v1.5.14" />
+  <img src="https://img.shields.io/badge/version-1.5.15-brightgreen?style=flat-square" alt="v1.5.15" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.14](#whats-new-in-v1514)
+- [What's new in v1.5.15](#whats-new-in-v1515)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,7 +44,43 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.14
+## What's new in v1.5.15
+
+### The composer is two icons, and the agent is one click away
+
+Four things reported from the installed app, all about the row under the message
+box and what happens before you type in it.
+
+**Thinking reads like a tool call.** A reasoning block used to be a separate,
+quieter species of box — a *Thinking* label, grey italic prose, a different
+border. It is a tool row now, the same one that says *Ran commands 1*: a chevron
+on the left, a glyph, one line of text, and the prose folded underneath. While
+the model is thinking the row says `Thinking…` with a spinner; when it stops the
+same row says `Thought for 3 seconds`, and clicking it opens the same text it
+always held. Nothing about the reasoning changed — only the drawer it lives in.
+
+**Bypass means bypass.** With *Bypass permissions* selected the agent still
+stopped to ask about ordinary shell syntax (`npm i && curl …`, `%VAR%`,
+`python -c`), inline code and paths outside the folder. Those rules were written
+for the modes that *do* ask, and they were reached before the bypass check. Now
+bypass is answered first and answered with **allow**: the only thing that can
+stop it is a denial, and the only denials left are the catastrophic ones
+(`rm -rf /`, a fork bomb, `mkfs`). The mode note says exactly that.
+
+**Local or Cloud agent, from the composer.** The agent backend — *Local agent*
+(arena.ai's tools on this PC) or *Cloud agent* (arena.ai's own agent, its cloud
+workspace) — used to live three levels deep in Settings → Permissions, together
+with a duplicate of the permission radios. That panel is gone. Both backends are
+now a row in the composer's Chat options, one click, remembered for the next
+launch.
+
+**The toolbar is two icons and Send.** The six text chips (mode, work type,
+folder, Workspace Sync, compact, gateway) are inside a single **Chat options**
+button — three dots, left of `+`, with a tooltip. `+` stays, the bypass dot and
+Stop stay next to Send, and nothing in the row is text. A small dot on the menu
+button reports a permission request waiting for you, or a bypass that is on.
+
+### Previous: v1.5.14 — no box around a reply, no waiting for connectors
 
 ### The first answer no longer waits for the connectors
 
