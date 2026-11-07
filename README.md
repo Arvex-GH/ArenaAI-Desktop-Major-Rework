@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.6.0-brightgreen?style=flat-square" alt="v1.6.0" />
+  <img src="https://img.shields.io/badge/version-1.5.2-brightgreen?style=flat-square" alt="v1.5.2" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.6.0](#whats-new-in-v160)
+- [What's new in v1.5.2](#whats-new-in-v152)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,7 +44,36 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.6.0
+## What's new in v1.5.2
+
+This is the first release of the rework: the interface was rebuilt around the
+things you actually do — pick a mode, type, watch the work happen. Everything
+below is in the build; what is deliberately still missing is listed in
+[docs/REWORK.md](docs/REWORK.md).
+
+### A quieter sidebar
+
+One column of rows instead of boxes: **New chat**, **Search**, **Projects**,
+**Artifacts**, then your chats. Small caps for section labels, hairlines for
+structure, no cards. The rail collapses to 76px of icons and comes back.
+
+The account block and the footer's icon row are gone; both live behind a single
+**⚙ Settings** row pinned to the bottom of the rail, where the chat list always
+ends in the same place. *Terms of Use*, *Privacy Policy* and the cookie policy
+moved into **Settings → About** next to the GitHub link, so the rail does not
+end in small print.
+
+### The conversation: one line per call
+
+A tool call is one silver line — `Bash npm install && npm run build`,
+`Writing src/hero.js` — and nothing else. It expands while it runs, folds itself
+when it finishes, and can be opened by hand at any point. No parentheses, no
+boxed cards, no wall of command output in the middle of an answer.
+
+Before a call is written, the model announces it with a marker line
+(`~~~command`, `~~~write`, …). The app hides that block from its first character
+and shows the one-line row in its place, so a half-written tool block never
+scrolls past.
 
 ### A real installer, and updates that install themselves
 
@@ -222,7 +251,7 @@ If Windows SmartScreen warns: click **More info → Run anyway** (the build is n
   </tr>
   <tr>
     <td width="50%"><img src="docs/screenshots/battle.png" alt="Battle Mode with two anonymous answers and vote buttons" /><br /><sub><b>Battle Mode</b>: two anonymous models answer, then you vote.</sub></td>
-    <td width="50%"><img src="docs/screenshots/workspace-connectors.png" alt="Workspace panel with the folder tree, Arena connectors and local MCP servers" /><br /><sub><b>Workspace panel</b>: your folder's files, with Arena connectors and local MCP servers kept apart.</sub></td>
+    <td width="50%"><img src="docs/screenshots/settings.png" alt="Settings window: account, permissions, folder, memory, automations, usage, gateway, components and about" /><br /><sub><b>Settings</b>: account, permissions, folders, memory, gateways and components in one window.</sub></td>
   </tr>
 </table>
 

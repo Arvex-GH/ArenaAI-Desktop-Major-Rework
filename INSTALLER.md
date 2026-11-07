@@ -4,8 +4,8 @@ Arena Desktop ships as a single Windows executable that is also its own
 installer. There is no separate setup framework and no per-machine service.
 
 ```
-Arena-Desktop-Setup-1.6.0.exe    ← what users download and double-click
-Arena-Desktop-1.6.0.exe          ← the same binary, for people who want no install
+Arena-Desktop-Setup-1.5.2.exe    ← what users download and double-click
+Arena-Desktop-1.5.2.exe          ← the same binary, for people who want no install
 ```
 
 <p align="center">
@@ -110,7 +110,7 @@ Push a tag to publish a release the updater can see:
 
 ```bash
 # bump arena/version.py first, then
-git tag v1.6.0 && git push origin v1.6.0
+git tag v1.5.2 && git push origin v1.5.2
 ```
 
 The tag must match `arena/version.py`; the workflow fails otherwise.

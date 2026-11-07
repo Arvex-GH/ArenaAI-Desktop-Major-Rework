@@ -1,4 +1,4 @@
-# The 1.6.0 rework
+# The 1.5.2 rework
 
 What has changed in this fork so far, what the sidebar becomes, and what is
 still to come. Written to be read in a year, so it names the files it talks
@@ -97,8 +97,8 @@ What that meant here:
 - `.github/workflows/build.yml` — runs the suite **before** PyInstaller, builds
   the exe, runs `Arena-Desktop.exe --version` as a smoke test, and only
   publishes a release on a `v*` tag that matches `arena/version.py`.
-- `docs/screenshots/preview-1.6.0/` — the seven frames captured from the
-  merged build, including the three states of the setup window.
+- `docs/screenshots/preview/` — the seven frames of the interface as it stood
+  before this rework, including the three states of the setup window.
 
 ---
 
@@ -350,7 +350,7 @@ If a reply stops mid-call, the pending line stays and reads `stopped` instead of
   switch.
 - **Republishing the release.** The feed and the installer are in place; no
   `v*` tag has been pushed yet, so the updater correctly reports "up to date".
-  Pushing `v1.6.0` publishes `Arena-Desktop-Setup-1.6.0.exe` and switches the
+  Pushing `v1.5.2` publishes `Arena-Desktop-Setup-1.5.2.exe` and switches the
   loop on for everyone.
 
 The rest is coming. This document will grow with each step rather than being
