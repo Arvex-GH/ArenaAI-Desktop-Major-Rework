@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.5-brightgreen?style=flat-square" alt="v1.5.5" />
+  <img src="https://img.shields.io/badge/version-1.5.6-brightgreen?style=flat-square" alt="v1.5.6" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.5](#whats-new-in-v155)
+- [What's new in v1.5.6](#whats-new-in-v156)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,7 +44,30 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.5
+## What's new in v1.5.6
+
+### One verdict per command, and only when it is "no"
+
+An approved command used to leave two lines in the thread: the row that says
+`Bash powershell -NoProfile -Command "Get-Volume"` with its `exit 0`, and a
+second silver line reading `Allowed powershell … allowed`. On a turn that ran
+three commands, half the thread was the app agreeing with itself.
+
+The granted-approval line is gone. The command row is the record. A refusal is
+the only verdict that still gets a line, and it sits on the command's own row —
+the same 10px line, in red, right behind the command:
+
+```
+● Bash powershell -NoProfile -Command "Remove-Item .\*"   rejected by user
+```
+
+If the reply was stopped before a command ran, or the approval expired
+unanswered, the row says `not run: …` instead of pretending the user refused.
+
+### Previous: v1.5.5 — the Setup window shows the install
+
+<details>
+<summary>1.5.5: the setup page picks up the pywebview bridge and drives the install itself</summary>
 
 ### The Setup window shows the install again
 
@@ -65,6 +88,8 @@ background"* instead of animating a fake install.
 A headless regression harness (`tests/js/setup_page_bridge.js`, jsdom) covers the
 three arrivals: at load, late with the event on `window`, late with the event on
 `document` — plus the no-bridge case.
+
+</details>
 
 ### Previous: v1.5.4 — bypass permissions and the frozen Setup window
 

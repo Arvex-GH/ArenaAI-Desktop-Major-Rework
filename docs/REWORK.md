@@ -643,6 +643,56 @@ PASS
 skips otherwise, so CI stays light and a machine with the toolchain still catches
 a regression.
 
+## The 1.5.6 release
+
+### The app agreeing with itself
+
+An approved command produced two lines. The row itself, which is the record:
+
+```
+● Bash powershell -NoProfile -Command "Get-Volume"   exit 0
+```
+
+and then a second silver line, rendered from the answered approval:
+
+```
+● Allowed powershell -NoProfile -Command "Get-Volume"   allowed
+```
+
+Three commands in a turn meant six lines, half of them the app telling the user
+what the row above already said. The silver line was introduced when approvals
+moved into a pop-up: the thread was supposed to keep *a* trace of the answer, not
+restate it.
+
+**What the thread keeps now:**
+
+- **Nothing for a granted approval.** The command row is the record — it has the
+  command, the exit code and the output.
+- **One red tag for a refusal**, on the command's own row, in the same 10px line
+  as the exit code: `rejected by user`. `rejected` replaces the `failed` meta text
+  there, because "failed" and "you said no" are different things.
+- **`not run: …` for the two cases that are not a refusal** — the reply was
+  stopped before the command ran, or the approval expired unanswered.
+- **Plan mode and the safety rules keep their own wording** (`blocked: plan mode
+  is read-only`), which is not a refusal by the user and must not be dressed as
+  one.
+
+`rejectionText()` reads the verdict off the activity (the local agent already
+streams `denied by the user` as the tool result status), and
+`laneShowsRejection()` stops the receipt row from appearing when the command row
+already carries the tag — so a refusal can never show twice.
+
+`tests/js/permission_rows.js` (`node tests/js/permission_rows.js`, wired into
+pytest as `tests/test_permission_rows.py`) extracts the two pure helpers from the
+render source and checks them, then asserts the render source and the stylesheet
+match: the receipt returns nothing for a granted approval, the card loop skips it,
+the refusal tag is on the row, and `.tool-reject` is `var(--red)`.
+
+The old `docs/screenshots/chat/tool-done.png` shows the removed line at its
+bottom (`● Allowed python -m pytest -q allowed`); a fresh capture needs a browser,
+which this sandbox no longer has — the screenshot will be replaced with the next
+capture that runs in a real window.
+
 ## Still to come
 
 - **Session list presentation.** Grouping (today / this week / older), the way a

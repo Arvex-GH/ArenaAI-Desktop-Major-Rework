@@ -443,6 +443,15 @@
     return { label: status || "In progress", cls: '' };
   }
 
+  /* A refused command says so on its own row. Nothing else in the thread needs
+     to repeat it: an approval that was granted is not news, a refusal is. */
+  function rejectionText(activity) {
+    const raw = activity.raw || {};
+    const status = String(activity.status || raw.status || '').toLowerCase();
+    if (status.includes('denied')) return 'rejected by user';
+    return '';
+  }
+
   function renderDiffCard(activity) {
     const raw = activity.raw || {};
     const fileName = (raw.path || activity.path || '').split('/').pop() || 'file';
@@ -749,8 +758,9 @@
     });
 
     const argText = arg.length > 400 ? arg.slice(0, 400) + '\u2026' : arg;
+    const rejected = rejectionText(activity);
     const line = el('button', {
-      class: 'tool-line', type: 'button', 'data-tool-toggle': activity.id,
+      class: `tool-line${rejected ? ' is-rejected' : ''}`, type: 'button', 'data-tool-toggle': activity.id,
       'aria-expanded': open ? 'true' : 'false',
       title: arg || label
     },
@@ -759,7 +769,8 @@
       argText ? el('span', { class: 'tool-arg' },
         el('span', { class: 'tool-arg-text', text: argText.replace(/\s*\n\s*/g, ' \u21b5 ') })) : null,
       raw.background ? el('span', { class: 'tool-tag', text: 'background' }) : null,
-      el('span', { class: 'tool-meta', text: toolMetaText(activity, running, described) })
+      rejected ? el('span', { class: 'tool-reject', text: rejected })
+        : el('span', { class: 'tool-meta', text: toolMetaText(activity, running, described) })
     );
     row.appendChild(line);
 
@@ -985,21 +996,41 @@
     return wrap.childNodes.length ? wrap : null;
   }
 
-  /* An answered approval is a fact about the conversation, so it stays in the
-     thread — as one silver line, not as the card that asked the question. */
+  function permissionAllowed(status) {
+    return ['allow', 'always', 'allowed'].includes(String(status || ''));
+  }
+
+  /* An approval that was granted is not news: the command it allowed is right
+     there in the thread, with its exit code. Only a refusal needs saying, and it
+     says it on the row of the command that was refused (rejectionText above).
+     This row is the fallback for a refusal that has no command row of its own —
+     the reply was stopped first, or the approval expired unanswered. */
   function renderPermissionReceipt(permission) {
-    const allowed = ['allow', 'always', 'allowed'].includes(String(permission.status || ''));
+    const status = String(permission.status || '');
+    if (permissionAllowed(status)) return null;
     const what = permission.command || permission.path || permission.title || 'Action';
-    const verdict = allowed ? (permission.status === 'always' ? 'allowed for this session' : 'allowed') : 'declined';
-    const row = el('div', { class: `tool-row ${allowed ? 'is-ok' : 'is-err'}` },
-      el('div', { class: 'tool-line' },
+    const rejected = !{ stopped: 1, expired: 1 }[status];
+    const note = { stopped: 'not run: the reply was stopped', expired: 'not run: no answer in time' }[status]
+      || 'rejected by user';
+    return el('div', { class: `tool-row ${rejected ? 'is-err' : 'is-idle'}` },
+      el('div', { class: `tool-line${rejected ? ' is-rejected' : ''}` },
         el('span', { class: 'tool-mark', 'aria-hidden': 'true' }),
-        el('span', { class: 'tool-name', text: allowed ? 'Allowed' : 'Declined' }),
+        el('span', { class: 'tool-name', text: permission.title || 'Action' }),
         el('span', { class: 'tool-arg' },
           el('span', { class: 'tool-arg-text', text: String(what).replace(/\s*\n\s*/g, ' \u21b5 ') })),
-        el('span', { class: 'tool-meta', text: verdict })
+        rejected ? el('span', { class: 'tool-reject', text: note })
+          : el('span', { class: 'tool-meta', text: note })
       ));
-    return row;
+  }
+
+  /* Does the thread already carry this refusal on the command's own row? */
+  function laneShowsRejection(lane, permission) {
+    const what = String(permission.command || permission.path || permission.title || '').trim();
+    if (!what) return false;
+    const head = what.slice(0, 24);
+    const list = Array.isArray(lane.activities) ? lane.activities : [];
+    return list.some((activity) => rejectionText(activity)
+      && String(toolArg(activity) || '').trim().startsWith(head));
   }
 
 
@@ -1445,7 +1476,10 @@
     if (Array.isArray(lane.permissions)) {
       lane.permissions.forEach((permission) => {
         if (!permission.status || permission.status === 'pending') return;
-        card.appendChild(renderPermissionReceipt(permission));
+        if (permissionAllowed(permission.status)) return;
+        if (laneShowsRejection(lane, permission)) return;
+        const receipt = renderPermissionReceipt(permission);
+        if (receipt) card.appendChild(receipt);
       });
     }
     const media = renderMedia(lane);
