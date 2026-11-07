@@ -278,31 +278,52 @@ it is sent rather than after the reply. It is stored against the chat id in
 the chat "New chat" — cannot rename it underneath you. Chat rows carry
 `data-chat-id`, so the mapping is easy to check from the console.
 
-### Still to build
+### The model announces a call before writing it
 
-**The `~~~write` envelope.** Long file writes should not stream into the chat as
-raw code. The agent will be told, in its guide message, to open such a block with
-a marker:
+The reply used to carry the raw block: a `<tool name="write_file">` with a whole
+file body inside it streamed into the chat, and the app only tidied it away once
+the backend had executed the call and posted a row. For a second or two the
+conversation showed the file.
+
+Now every call is announced first. The guide asks the model for a marker line
+before the call and a bare `~~~` after it:
 
 ```
-~~~write path/to/file.ts
-...the file contents...
+~~~write
+<tool name="write_file"><path>src/hero.js</path><content>
+…the whole file…
+</content></tool>
 ~~~
 ```
 
-- `~~~` alone opens a tool step.
-- `~~~write <path>` opens a write step.
-- The closing `~~~` ends it.
+The marker carries the kind, and the kind is what the chat shows while the block
+streams — one silver line, breathing, with the argument appearing as soon as it
+arrives:
 
-The app hides the marker and the body while it streams and shows one calm
-`Writing path/to/file.ts…` line with a shimmer, then renders whatever the model
-writes next as normal text. If the block never closes, the partial content
-appears as an ordinary code block when the stream ends, so nothing is lost.
+![A command being written](screenshots/chat/tool-pending-bash.png)
 
-This needs the backend guide text and the streaming renderer changed together,
-and it needs a real stream to test against; it is the next backend item.
+![A file being written](screenshots/chat/tool-pending-write.png)
 
----
+Nothing of the block underneath reaches the chat: not the tag, not the path
+attribute, not one line of the file. When the closing `~~~` arrives the pending
+line is removed and the real row appears once the backend has run the call, with
+its exit code and its fold-away detail.
+
+The vocabulary, one marker each: `~~~command` (run_cmd, stop_cmd), `~~~write`,
+`~~~edit`, `~~~read`, `~~~search`, `~~~list`, `~~~delete`, `~~~plan`, `~~~todos`,
+`~~~ask`, and `~~~tool` for connector tools.
+
+Two rules keep it safe:
+
+- **A closing `~~~` only counts after the call's own tag has closed.** A file
+  being written may legitimately contain a `~~~` fence (Markdown), so the
+  envelope cannot end inside the content.
+- **Markers are display only.** The backend strips them from stored history and
+  from the visible answer, and never lets one reach a tool parameter — the tag
+  inside runs exactly as it did before.
+
+If a reply stops mid-call, the pending line stays and reads `stopped` instead of
+`working`, so the interruption is visible rather than silent.
 
 ## Still to come
 
@@ -314,8 +335,6 @@ and it needs a real stream to test against; it is the next backend item.
   open. Deferred on purpose: the rail had to be right first.
 - **Chat mode gets the file tools**, with Agent Mode keeping the step-by-step
   loop and gaining arena.ai's account connectors.
-- **The `~~~write` stream protocol**, so a long file write shows as one
-  `Writing path/to/file.ts…` line instead of a wall of code.
 - **The return of the right bar** — workspace files and connectors — and with
   it the real *Artifacts* view.
 - **The light theme across the app**, not just the rail, with the Settings

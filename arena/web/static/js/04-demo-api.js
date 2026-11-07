@@ -532,6 +532,30 @@
         }
         return true;
       };
+      // A marker line, the call, then the closing marker — exactly what a real
+      // model streams, so the pending row can be seen standing in for a block
+      // that never reaches the chat.
+      const streamEnvelope = async (kind, block, size = 12) => {
+        // The marker goes first, on its own, the way the guide asks a model
+        // to write it: the app hides everything that follows until "~~~".
+        const push = async (chunk, delay) => {
+          emit({ type: 'text', model: 'a', text: chunk });
+          await sleep(delay);
+          return !checkStop();
+        };
+        for (let i = 0; i < `\n\n~~~${kind}\n`.length; i += 6) {
+          if (!await push(`\n\n~~~${kind}\n`.slice(i, i + 6), 22)) return false;
+        }
+        await sleep(260);
+        for (let i = 0; i < block.length; i += size) {
+          if (!await push(block.slice(i, i + size), 70)) return false;
+        }
+        await sleep(220);
+        for (let i = 0; i < `\n~~~\n\n`.length; i += 4) {
+          if (!await push(`\n~~~\n\n`.slice(i, i + 4), 28)) return false;
+        }
+        return true;
+      };
       const requestPermission = (permission) => new Promise((resolve) => {
         const record = {
           ...permission,
@@ -667,6 +691,9 @@ You can start with a more structured option: one script, short captions, and a c
 
         if (mode === 'agent') {
           emit({ type: 'agent', stage: 'planning', message: "I am making a demonstration plan. Commands are not executed without permission." });
+          const readEnvelope = await streamEnvelope('read',
+            `<tool name="read_file"><path>${demoStore.workspace}\\app.py</path></tool>`);
+          if (!readEnvelope) { stoppedNotice(); return; }
           emit({
             type: 'tool_call', id: 'demo-tool-1', name: 'read_file', model: 'a',
             title: "Read the project file",
@@ -676,6 +703,9 @@ You can start with a more structured option: one script, short captions, and a c
           await sleep(480);
           if (checkStop()) { stoppedNotice(); return; }
           emit({ type: 'tool_result', id: 'demo-tool-1', status: 'ok', output: "Demo: the contents of the file were not read or transmitted." });
+          const buildEnvelope = await streamEnvelope('command',
+            '<tool name="run_cmd"><cmd>npm install && npm run build</cmd></tool>');
+          if (!buildEnvelope) { stoppedNotice(); return; }
           emit({ type: 'tool_call', id: 'demo-tool-2', tool: 'run_cmd', model: 'a', command: 'npm install && npm run build', status: 'running' });
           const demoLines = ['added 214 packages, and audited 215 packages in 3s', '', '> demo-site@1.0.0 build', '> vite build',
             'vite v5.4.0 building for production...', 'transforming (12) src/main.js', '✓ 34 modules transformed.',
@@ -687,9 +717,34 @@ You can start with a more structured option: one script, short captions, and a c
             emit({ type: 'tool_progress', id: 'demo-tool-2', output: demoLines.slice(0, i).join('\n') });
           }
           emit({ type: 'tool_result', id: 'demo-tool-2', status: 'ok', output: `exit code 0\n${demoLines.join('\n')}` });
-          emit({ type: 'tool_call', id: 'demo-tool-3', tool: 'edit_file', model: 'a', rel: 'src/main.js', status: 'running',
-            diff: "--- src/main.js\n+++ src/main.js\n@@ -1,3 +1,3 @@\n-const title = 'Hello';\n+const title = 'Engineering portfolio';\n render(title);" });
-          emit({ type: 'tool_result', id: 'demo-tool-3', status: 'ok', output: 'Edited src/main.js' });
+          // A whole-file write: the body is the thing that used to flood the
+          // chat while it streamed, so it is the best demonstration.
+          const demoFile = [
+            "const hero = document.querySelector('[data-hero]');",
+            "const caption = document.querySelector('[data-caption]');",
+            "",
+            "export function render(studio) {",
+            "  if (!hero || !studio) return;",
+            "  hero.innerHTML = '';",
+            "  const grid = document.createElement('div');",
+            "  grid.className = 'studio-grid';",
+            "  studio.series.forEach((shot, index) => {",
+            "    const figure = document.createElement('figure');",
+            "    figure.className = index % 3 === 0 ? 'wide' : 'tall';",
+            "    figure.innerHTML = `<img alt=\"\" src=\"${shot.src}\">` +",
+            "      `<figcaption>${shot.caption}</figcaption>`;",
+            "    grid.appendChild(figure);",
+            "  });",
+            "  hero.appendChild(grid);",
+            "  if (caption) caption.textContent = studio.contact;",
+            "}"
+          ].join('\n');
+          const writeEnvelope = await streamEnvelope('write',
+            `<tool name="write_file"><path>src/hero.js</path><content>\n${demoFile}\n</content></tool>`, 40);
+          if (!writeEnvelope) { stoppedNotice(); return; }
+          emit({ type: 'tool_call', id: 'demo-tool-3', tool: 'write_file', model: 'a', rel: 'src/hero.js', status: 'running',
+            diff: "--- /dev/null\n+++ src/hero.js\n@@ -0,0 +1,18 @@\n" + demoFile.split('\n').map((line) => `+${line}`).join('\n') });
+          emit({ type: 'tool_result', id: 'demo-tool-3', status: 'ok', output: 'Wrote 18 lines to src/hero.js' });
           emit({ type: 'tool_call', id: 'demo-tool-4', tool: 'run_cmd', model: 'a', command: 'npm test', status: 'running' });
           emit({ type: 'tool_result', id: 'demo-tool-4', status: 'error', output: 'exit code 1\nFAIL src/main.test.js\n  expected "Hello" to be "Engineering portfolio"\n[Process exited with code 1]' });
           const permission = {

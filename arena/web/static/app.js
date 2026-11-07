@@ -1682,6 +1682,30 @@
         }
         return true;
       };
+      // A marker line, the call, then the closing marker — exactly what a real
+      // model streams, so the pending row can be seen standing in for a block
+      // that never reaches the chat.
+      const streamEnvelope = async (kind, block, size = 12) => {
+        // The marker goes first, on its own, the way the guide asks a model
+        // to write it: the app hides everything that follows until "~~~".
+        const push = async (chunk, delay) => {
+          emit({ type: 'text', model: 'a', text: chunk });
+          await sleep(delay);
+          return !checkStop();
+        };
+        for (let i = 0; i < `\n\n~~~${kind}\n`.length; i += 6) {
+          if (!await push(`\n\n~~~${kind}\n`.slice(i, i + 6), 22)) return false;
+        }
+        await sleep(260);
+        for (let i = 0; i < block.length; i += size) {
+          if (!await push(block.slice(i, i + size), 70)) return false;
+        }
+        await sleep(220);
+        for (let i = 0; i < `\n~~~\n\n`.length; i += 4) {
+          if (!await push(`\n~~~\n\n`.slice(i, i + 4), 28)) return false;
+        }
+        return true;
+      };
       const requestPermission = (permission) => new Promise((resolve) => {
         const record = {
           ...permission,
@@ -1817,6 +1841,9 @@ You can start with a more structured option: one script, short captions, and a c
 
         if (mode === 'agent') {
           emit({ type: 'agent', stage: 'planning', message: "I am making a demonstration plan. Commands are not executed without permission." });
+          const readEnvelope = await streamEnvelope('read',
+            `<tool name="read_file"><path>${demoStore.workspace}\\app.py</path></tool>`);
+          if (!readEnvelope) { stoppedNotice(); return; }
           emit({
             type: 'tool_call', id: 'demo-tool-1', name: 'read_file', model: 'a',
             title: "Read the project file",
@@ -1826,6 +1853,9 @@ You can start with a more structured option: one script, short captions, and a c
           await sleep(480);
           if (checkStop()) { stoppedNotice(); return; }
           emit({ type: 'tool_result', id: 'demo-tool-1', status: 'ok', output: "Demo: the contents of the file were not read or transmitted." });
+          const buildEnvelope = await streamEnvelope('command',
+            '<tool name="run_cmd"><cmd>npm install && npm run build</cmd></tool>');
+          if (!buildEnvelope) { stoppedNotice(); return; }
           emit({ type: 'tool_call', id: 'demo-tool-2', tool: 'run_cmd', model: 'a', command: 'npm install && npm run build', status: 'running' });
           const demoLines = ['added 214 packages, and audited 215 packages in 3s', '', '> demo-site@1.0.0 build', '> vite build',
             'vite v5.4.0 building for production...', 'transforming (12) src/main.js', '✓ 34 modules transformed.',
@@ -1837,9 +1867,34 @@ You can start with a more structured option: one script, short captions, and a c
             emit({ type: 'tool_progress', id: 'demo-tool-2', output: demoLines.slice(0, i).join('\n') });
           }
           emit({ type: 'tool_result', id: 'demo-tool-2', status: 'ok', output: `exit code 0\n${demoLines.join('\n')}` });
-          emit({ type: 'tool_call', id: 'demo-tool-3', tool: 'edit_file', model: 'a', rel: 'src/main.js', status: 'running',
-            diff: "--- src/main.js\n+++ src/main.js\n@@ -1,3 +1,3 @@\n-const title = 'Hello';\n+const title = 'Engineering portfolio';\n render(title);" });
-          emit({ type: 'tool_result', id: 'demo-tool-3', status: 'ok', output: 'Edited src/main.js' });
+          // A whole-file write: the body is the thing that used to flood the
+          // chat while it streamed, so it is the best demonstration.
+          const demoFile = [
+            "const hero = document.querySelector('[data-hero]');",
+            "const caption = document.querySelector('[data-caption]');",
+            "",
+            "export function render(studio) {",
+            "  if (!hero || !studio) return;",
+            "  hero.innerHTML = '';",
+            "  const grid = document.createElement('div');",
+            "  grid.className = 'studio-grid';",
+            "  studio.series.forEach((shot, index) => {",
+            "    const figure = document.createElement('figure');",
+            "    figure.className = index % 3 === 0 ? 'wide' : 'tall';",
+            "    figure.innerHTML = `<img alt=\"\" src=\"${shot.src}\">` +",
+            "      `<figcaption>${shot.caption}</figcaption>`;",
+            "    grid.appendChild(figure);",
+            "  });",
+            "  hero.appendChild(grid);",
+            "  if (caption) caption.textContent = studio.contact;",
+            "}"
+          ].join('\n');
+          const writeEnvelope = await streamEnvelope('write',
+            `<tool name="write_file"><path>src/hero.js</path><content>\n${demoFile}\n</content></tool>`, 40);
+          if (!writeEnvelope) { stoppedNotice(); return; }
+          emit({ type: 'tool_call', id: 'demo-tool-3', tool: 'write_file', model: 'a', rel: 'src/hero.js', status: 'running',
+            diff: "--- /dev/null\n+++ src/hero.js\n@@ -0,0 +1,18 @@\n" + demoFile.split('\n').map((line) => `+${line}`).join('\n') });
+          emit({ type: 'tool_result', id: 'demo-tool-3', status: 'ok', output: 'Wrote 18 lines to src/hero.js' });
           emit({ type: 'tool_call', id: 'demo-tool-4', tool: 'run_cmd', model: 'a', command: 'npm test', status: 'running' });
           emit({ type: 'tool_result', id: 'demo-tool-4', status: 'error', output: 'exit code 1\nFAIL src/main.test.js\n  expected "Hello" to be "Engineering portfolio"\n[Process exited with code 1]' });
           const permission = {
@@ -4411,7 +4466,7 @@ You can start with a more structured option: one script, short captions, and a c
     const waitingId = lane.streaming && laneAwaitsApproval(lane) ? currentToolActivity(lane)?.id : null;
     const placed = list.map((activity, index) => {
       const at = Number.isFinite(activity.at) ? activity.at : null;
-      const pos = at === null ? null : stripToolMarkup(raw.slice(0, at)).length;
+      const pos = at === null ? null : readToolStream(raw.slice(0, at), false).text.length;
       return { activity, index, pos };
     });
     // Known positions keep their places; anything without one goes to the end
@@ -4673,10 +4728,93 @@ You can start with a more structured option: one script, short captions, and a c
     return card;
   }
 
+  /* Markers                                                                  */
+  /* The model writes a line like "~~~write" before a call and "~~~" after it.
+     That one line arrives before the block does, so the app can hide the call
+     from its first character instead of printing a file body into the chat and
+     tidying up afterwards. Markers are display only: the tags still run. */
+  const STEP_MARKER_LINE = /^[ \t]*~~~([A-Za-z][\w-]*)?[ \t]*$/;
+  const TOOL_TAG_CLOSE = /<\/(?:tool|invoke)\s*>/i;
+
+  const MARKER_LABELS = {
+    command: 'Bash', write: 'Writing', edit: 'Editing', read: 'Reading',
+    search: 'Searching', list: 'Listing', delete: 'Deleting', plan: 'Planning',
+    todos: 'Todos', ask: 'Asking', tool: 'Tool'
+  };
+
+  function markerLabel(kind) {
+    if (!kind) return 'Working';
+    return MARKER_LABELS[kind] || (kind.charAt(0).toUpperCase() + kind.slice(1));
+  }
+
+  function markerDetail(kind, body) {
+    const grab = (tag) => {
+      const m = body.match(new RegExp(`<${tag}>\\s*([^<\\n]{1,200})`, 'i'));
+      return m ? m[1].trim() : '';
+    };
+    if (kind === 'command') return grab('cmd');
+    if (kind === 'write' || kind === 'edit' || kind === 'read' || kind === 'delete' || kind === 'list') return grab('path');
+    if (kind === 'search') return grab('pattern');
+    if (kind === 'ask') return grab('question');
+    return '';
+  }
+
+  /* Walks the reply line by line: everything between a marker and its closing
+     "~~~" is hidden. A closing marker only counts once the call's own tag has
+     closed, so a "~~~" fence inside a file being written cannot end it early. */
+  function readToolStream(raw, streaming) {
+    const text = String(raw || '');
+    if (!text.includes('~~~')) return { text, pending: null };
+    const lines = [];
+    let start = 0;
+    for (let i = 0; i <= text.length; i += 1) {
+      if (i === text.length || text[i] === '\n') {
+        lines.push({ start, end: i, text: text.slice(start, i).replace(/\r$/, '') });
+        start = i + 1;
+      }
+    }
+    const hidden = [];
+    let open = null;
+    let sawClose = false;
+    lines.forEach((line) => {
+      const match = STEP_MARKER_LINE.exec(line.text);
+      if (match) {
+        if (!open) {
+          open = { kind: (match[1] || '').toLowerCase(), start: line.start };
+          sawClose = false;
+        } else if (sawClose) {
+          hidden.push([open.start, line.end]);
+          open = null;
+          sawClose = false;
+        }
+        return;
+      }
+      if (open && TOOL_TAG_CLOSE.test(line.text)) sawClose = true;
+    });
+    let pending = null;
+    if (open) {
+      pending = {
+        kind: open.kind,
+        label: markerLabel(open.kind),
+        detail: markerDetail(open.kind, text.slice(open.start)),
+        unfinished: !streaming
+      };
+      hidden.push([open.start, text.length]);
+    }
+    let visible = '';
+    let pos = 0;
+    hidden.forEach(([from, to]) => {
+      if (from > pos) visible += text.slice(pos, from);
+      pos = Math.max(pos, to);
+    });
+    visible += text.slice(pos);
+    return { text: visible, pending };
+  }
+
   function stripToolMarkup(raw) {
-    // With folder tools, the model's raw reply contains <tool> call blocks.
-    // Those are rendered as tool rows; the answer text must not show the
-    // markup itself (nor a half-streamed tag at the end).
+    // Legacy replies without markers still carry <tool> blocks in the text.
+    // Those are rendered as tool rows; the answer must not show the markup
+    // itself, nor a half-streamed tag at the end.
     let text = String(raw || '')
       .replace(/<function_calls>[\s\S]*?<\/function_calls\s*>/gi, '')
       .replace(/<tool\s+name[^>]*>[\s\S]*?<\/tool\s*>/gi, '')
@@ -4686,12 +4824,31 @@ You can start with a more structured option: one script, short captions, and a c
     return text.replace(/\n{3,}/g, '\n\n');
   }
 
-  function visibleLaneText(lane) {
+  /* The text the chat may show, and the call currently being written. */
+  function laneView(lane) {
     const raw = lane.text || '';
+    const read = readToolStream(raw, Boolean(lane.streaming));
     const hadTools = (lane.activities || []).some((item) => item.kind === 'tool')
       || (lane.permissions || []).length > 0;
-    if (!hadTools || !raw.includes('<')) return raw;
-    return stripToolMarkup(raw);
+    let text = read.text;
+    if (hadTools && text.includes('<')) text = stripToolMarkup(text);
+    return { text, pending: read.pending };
+  }
+
+  function visibleLaneText(lane) {
+    return laneView(lane).text;
+  }
+
+  /* The line that stands in for a call while its block streams. */
+  function renderPendingTool(pending) {
+    return el('div', { class: `tool-row is-run tool-pending${pending.unfinished ? ' is-done-early' : ''}` },
+      el('div', { class: 'tool-line' },
+        el('span', { class: 'tool-mark', 'aria-hidden': 'true' }),
+        el('span', { class: 'tool-name', text: pending.label }),
+        pending.detail ? el('span', { class: 'tool-arg' },
+          el('span', { class: 'tool-arg-text', text: pending.detail })) : null,
+        el('span', { class: 'tool-meta', text: pending.unfinished ? 'stopped' : 'working' })
+      ));
   }
 
   function answerFootNote(lane) {
@@ -4787,7 +4944,8 @@ You can start with a more structured option: one script, short captions, and a c
       card.appendChild(details);
     }
 
-    const visibleText = visibleLaneText(lane);
+    const view = laneView(lane);
+    const visibleText = view.text;
     const inTypewriterWindow = lane.typewriterUntil && Date.now() < lane.typewriterUntil;
     const showTypewriter = lane.streaming && (!visibleText || inTypewriterWindow);
     if (!lane.streaming) dropLaneTypewriter(lane);
@@ -4807,7 +4965,7 @@ You can start with a more structured option: one script, short captions, and a c
     } else {
       const flow = renderLaneFlow(lane, visibleText, false);
       flow.forEach((node) => card.appendChild(node));
-      if (lane.streaming && visibleText) {
+      if (lane.streaming && visibleText && !view.pending) {
         // The caret belongs at the end of the sentence being written, not
         // below the tool row that followed it.
         const last = flow[flow.length - 1];
@@ -4815,6 +4973,9 @@ You can start with a more structured option: one script, short captions, and a c
         if (last && last.classList.contains('markdown')) last.appendChild(cursor);
       }
     }
+    // The call being written sits at the end of the flow, whatever the
+    // thinking placeholder above it is doing.
+    if (view.pending) card.appendChild(renderPendingTool(view.pending));
     if (Array.isArray(lane.permissions)) {
       lane.permissions.forEach((permission) => {
         if (!permission.status || permission.status === 'pending') return;
