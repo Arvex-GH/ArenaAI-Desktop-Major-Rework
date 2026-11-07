@@ -522,6 +522,26 @@ suite.
   `startup_screen_dom.js` → 20 (presets named, Off row, tool counts).
 - Version 1.5.13.
 
+## Session 24 (2026-11-07) — 1.5.14 released
+
+- **Built and published:** tag `v1.5.14` on merge commit **`f6ccea1`** (PR #29),
+  run `42398925497` **success**.
+- **Assets:** `Arena-Desktop-Setup-1.5.14.exe` and `Arena-Desktop-1.5.14.exe`,
+  28,644,309 bytes each,
+  `sha256:1a050d9833d2cda1aeb131999bfc0f3d7188a6c4309e76bb79c52bfda6ecdf66`.
+- **Contains** the two rounds merged after 1.5.13: no outline/avatar around an
+  answer (PR #27) and the connector work taken off the reply's path (PR #28).
+- **Release notes** written with `gh release edit v1.5.14 --notes-file` (the
+  workflow's auto notes are replaced, so the digest and the install paragraph
+  live in the body).
+- **Feed check:** `updater.fetch_latest('stable')` → 1.5.14, installer
+  `Arena-Desktop-Setup-1.5.14.exe` with the digest above, `is_allowed_url` True,
+  `is_newer('1.5.14','1.5.13')` True.
+- **Note for the next session:** a fresh `/tmp/venv` needs
+  `REQUESTS_CA_BUNDLE=/usr/local/share/ca-certificates/e2b-ca.crt` for any
+  GitHub call from Python in this sandbox (`SSL: CERTIFICATE_VERIFY_FAILED`
+  otherwise); `gh` is unaffected.
+
 ## Session 23 (2026-11-07) — merged, NOT released: a reply never waits for a connector
 
 - **Reported:** after 1.5.13, the first prompt of a session takes a very long
