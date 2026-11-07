@@ -693,6 +693,9 @@ bottom (`● Allowed python -m pytest -q allowed`); a fresh capture needs a brow
 which this sandbox no longer has — the screenshot will be replaced with the next
 capture that runs in a real window.
 
+`v1.5.6` is published: 28,622,084 bytes, `sha256:aa4e57e6…2c620`, and the feed
+the in-app updater reads offers it to 1.5.5 and not to itself.
+
 ## Still to come
 
 - **Session list presentation.** Grouping (today / this week / older), the way a

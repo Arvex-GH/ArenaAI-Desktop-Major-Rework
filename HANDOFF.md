@@ -336,3 +336,15 @@ suite.
 - Bumped to 1.5.6. `docs/screenshots/chat/tool-done.png` still shows the removed
   line — the sandbox has no browser any more (playwright's CDN is not reachable),
   so the replacement shot is pending.
+
+## Session 13 (2026-11-07) — v1.5.6 published
+
+- **Tag:** `v1.5.6` on `dd5e576` (merge of #17), workflow green, release published
+  `Arena-Desktop-Setup-1.5.6.exe` + `Arena-Desktop-1.5.6.exe`,
+  **28,622,084 bytes each, `sha256:aa4e57e661602a6dd9e44fde949d9f9097f205f67e07aeb9f54cc1e75102c620`**.
+- **Feed check** (`updater.fetch_latest('stable')`): 1.5.6, Setup asset picked
+  (28,622,084 B, kind `installer`), `is_allowed_url` true, 1.5.5 sees the update,
+  1.5.6 does not see one to itself. Notes replaced with `gh release edit`.
+- The user closed the Supabase bridge before this release, so nothing was verified
+  on their PC this time — the in-app *Settings → Updates* path is the test.
+- 415 tests pass, 1 skipped (the jsdom setup-page harness).
