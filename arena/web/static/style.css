@@ -990,6 +990,27 @@ svg { display: block; }
   overflow-wrap: anywhere;
 }
 .message-error .icon { flex: 0 0 auto; margin-top: 1px; color: var(--red); width: 14px; height: 14px; }
+.message-error-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.message-error-detail {
+  color: #b08883;
+  font-family: var(--mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  font-size: 10.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.message-error-copy {
+  align-self: flex-start;
+  padding: 0;
+  color: #9aa39d;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 10px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.message-error-copy:hover { color: #d9ddd8; }
 .message-notice { display: flex; align-items: flex-start; gap: 7px; margin-top: 9px; color: #909a94; font-size: 10.75px; line-height: 1.55; }
 .message-notice .icon { flex: 0 0 auto; margin-top: 1px; width: 13px; height: 13px; }
 .challenge-slot { margin: 16px 2px 0; }

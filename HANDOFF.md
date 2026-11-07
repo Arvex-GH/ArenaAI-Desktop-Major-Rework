@@ -230,3 +230,13 @@ PYTHONPATH=. python -m pytest tests/ --tb=short -q
 - **Sandbox limits, not app bugs:** this machine cannot reach `release-assets.githubusercontent.com` (asset downloads) and has no system CA bundle for python `requests` — the feed check needs `REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt`. GitHub's UI also cannot be screenshotted (githubassets is blocked), so the release is documented with the app's own Settings window instead.
 - **README/docs corrected for the release:** hero screenshot recaptured from this build, the gallery cell that sold the removed Workspace panel replaced by the Settings window, `preview-1.6.0/` renamed to `preview/` and retitled as the pre-rework record, What's new rewritten to lead with the rail, the one-line tool rows and the marker protocol.
 - 391 tests pass.
+
+## Session 7 (2026-11-07) — 1.5.3: the Setup download installs; failed replies explain themselves
+
+Two bugs reported against 1.5.2.
+
+- **The installer never ran.** 1.5.2 published `Arena-Desktop-Setup-1.5.2.exe`, but setup mode was entered only on `--setup`, and a double-click passes no arguments — so the "installer" opened the app: no files in `%LOCALAPPDATA%\Programs\Arena Desktop`, no Start-menu shortcut, no *Apps & features* entry, and Windows search showed a file instead of an app. Fix: `arena/setup/core.py` gained `looks_like_installer()` and `setup_mode_from_argv()`; `arena-cli.py` asks the latter before opening anything. Frozen builds whose file name contains `setup`/`installer` install; `--app` forces the app; `--setup`/`--install` still force setup; a source run never installs. Tests: `tests/test_installer.py::test_a_file_named_setup_installs_without_any_flag` and friends.
+- **"The app hit an internal error." with nothing behind it.** `_sse_wrap` caught every exception in a reply and logged nothing, and the frontend dropped the `detail` field. Now: `LOG.exception` (traceback in `desktop.log`), the exception rendered under the message with *Copy details*, and `_engine_ready()`/`_engine_cx()` around the two unguarded `ENGINE.wait_ready`/`native_preflight` calls that could kill an Agent turn before its first character. Tests: `tests/test_crash_reporting.py`.
+- **The reported Agent failure was not reproduced here** (no arena.ai session in this sandbox). If it recurs, the row now names the exception and the log has the stack — that is the next step for it, not another guess.
+- Version 1.5.3, released after the merge; `docs/REWORK.md` has both write-ups with the error-row screenshot.
+- 398 tests pass.

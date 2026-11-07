@@ -469,6 +469,10 @@
     }
     if (type === 'error') {
       const message = textValue(event.message ?? event.error ?? event.detail ?? 'The server reported an error.');
+      // The backend sends the exception name beside the friendly message. It
+      // used to be dropped, which left "the app hit an internal error" with
+      // nothing to act on; keep it on the turn so the row can show it.
+      const detail = textValue(event.detail ?? '');
       generation.hadError = true;
       if (event.code === 'rate_limit' && Number(event.wait) > 0) {
         // Informational only (v5.1): drives the switch-account hint.
@@ -497,6 +501,7 @@
         // Global backend error: show it once at turn level instead of
         // attributing it to Model A or pretending a card generated it.
         turn.error = message;
+        turn.errorDetail = detail && detail !== message ? detail : '';
       }
       toast(message, 'error', 'Generation error');
       scheduleChatRender();

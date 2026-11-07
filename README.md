@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.2-brightgreen?style=flat-square" alt="v1.5.2" />
+  <img src="https://img.shields.io/badge/version-1.5.3-brightgreen?style=flat-square" alt="v1.5.3" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.2](#whats-new-in-v152)
+- [What's new in v1.5.3](#whats-new-in-v153)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,11 +44,39 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.2
+## What's new in v1.5.3
 
-This is the first release of the rework: the interface was rebuilt around the
-things you actually do — pick a mode, type, watch the work happen. Everything
-below is in the build; what is deliberately still missing is listed in
+### The Setup download installs
+
+1.5.2 shipped both files but only `--setup` opened the installer, and a
+double-click passes no arguments: the file called *Setup* simply started the
+app. Nothing went into `%LOCALAPPDATA%\Programs\Arena Desktop`, no Start-menu
+shortcut appeared, *Apps & features* knew nothing about it, and Windows search
+found a stray exe instead of an app.
+
+The file's own name is the switch now. **Double-click
+`Arena-Desktop-Setup-<version>.exe` and it installs** — per-user, no admin
+rights, Start-menu shortcut, uninstaller, and from then on the app updates
+itself. `Arena-Desktop-<version>.exe` still just runs, which is what the
+portable download is for. `--app` forces the app from either file; running from
+source never installs.
+
+### A failed reply explains itself
+
+A crash inside a reply used to say only *The app hit an internal error.* — no
+exception, and no traceback anywhere. The row now shows the exception under the
+message with *Copy details* beside it, and the full stack goes to
+`%USERPROFILE%\.arena-personal\desktop.log`. Two unguarded calls into the
+WebView2 bridge that could kill an Agent turn before its first character now
+read as "the arena.ai window is not ready" instead.
+
+### Previous: v1.5.2 — the rework itself
+
+<details>
+<summary>The first release of the rework: the rail, the one-line tool rows, the Settings row, the installer</summary>
+
+The interface was rebuilt around the things you actually do — pick a mode, type,
+watch the work happen. What is deliberately still missing is listed in
 [docs/REWORK.md](docs/REWORK.md).
 
 ### A quieter sidebar
@@ -103,6 +131,8 @@ still works from the composer chip and Settings → Folder.
 - **Chats stay in place.** Opening or importing a chat no longer moves it to the top of the list.
 - **Previews open in the app.** The Preview button on a live site opens the app's preview window. Before, an error sent it to the web browser instead. Closing the window only hides it.
 - **arena.ai outages are shown.** The app reads status.arena.ai. When arena.ai reports trouble, a bar at the top names the problem and links to the status page. While arena.ai fails, the sign-in check no longer says your session expired. Settings → About → Quick diagnostics has a new "Arena.ai service status" row, and failed checks now show why. The encryption check no longer always fails.
+
+</details>
 
 ### Previous: v1.5.0
 

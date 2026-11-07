@@ -355,3 +355,49 @@ def test_install_info_shape(api):
     got = client.get("/api/install-info").get_json()
     assert got["version"]
     assert "installed" in got and "mode" in got
+
+
+# ---------------------------------------------------------------------------
+# Double-clicking the download called Setup
+# ---------------------------------------------------------------------------
+def test_a_file_named_setup_installs_without_any_flag(tmp_path):
+    """The release ships one binary under two names. Double-clicking the copy
+    called ...-Setup-<version>.exe must install: nobody types --setup after
+    opening a file, and before this it simply opened the app."""
+    exe = tmp_path / "Arena-Desktop-Setup-1.5.3.exe"
+    exe.write_bytes(b"MZ")
+    assert core.looks_like_installer(exe=exe, frozen=True) is True
+    assert core.looks_like_installer(exe=tmp_path / "Arena-Desktop-1.5.3.exe", frozen=True) is False
+
+
+def test_the_names_that_do_not_mean_installer(tmp_path):
+    # The installed copy and the portable download both open the app.
+    assert core.looks_like_installer(exe=core.install_dir() / core.EXE_NAME, frozen=True) is False
+    assert core.looks_like_installer(exe=tmp_path / "Arena-Desktop-Installer-helper.exe", frozen=True) is True
+
+
+def test_running_from_source_never_installs(tmp_path, monkeypatch):
+    monkeypatch.setattr(core.sys, "executable", str(tmp_path / "Arena-Desktop-Setup-1.5.3.exe"), raising=False)
+    monkeypatch.setattr(core.sys, "frozen", False, raising=False)
+    assert core.looks_like_installer() is False
+    assert core.setup_mode_from_argv([]) is None
+
+
+def test_setup_mode_decisions(tmp_path, monkeypatch):
+    setup_exe = tmp_path / "Arena-Desktop-Setup-1.5.3.exe"
+    setup_exe.write_bytes(b"MZ")
+    monkeypatch.setattr(core, "current_exe", lambda: setup_exe)
+    monkeypatch.setattr(core.sys, "frozen", True, raising=False)
+
+    # explicit flags win anywhere, including from source
+    assert core.setup_mode_from_argv(["--setup"], frozen=False) == "install"
+    assert core.setup_mode_from_argv(["--install"], frozen=False) == "install"
+    assert core.setup_mode_from_argv(["--setup", "--update"], frozen=False) == "update"
+    assert core.setup_mode_from_argv([], frozen=False) is None
+
+    # the filename alone routes a frozen build into the installer
+    assert core.setup_mode_from_argv([]) == "install"
+    assert core.setup_mode_from_argv(["--silent"]) == "install"
+    # ...unless the user asks for the app, which is how the installer copy can
+    # still be started as the app it contains
+    assert core.setup_mode_from_argv(["--app"]) is None

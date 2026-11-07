@@ -15,8 +15,8 @@ copied from it.**
 ## 1. Installer
 
 `Arena-Desktop-Setup-<version>.exe` is the same binary as the portable build,
-started with `--setup`. Double-click it and one 540x372 window appears: the
-brand, one sentence, one hairline progress bar. It asks nothing.
+and its own file name is the switch: double-click it and one 540x372 window
+appears — the brand, one sentence, one hairline progress bar. It asks nothing.
 
 - **Per-user.** Installs to `%LOCALAPPDATA%\Programs\Arena Desktop`, no
   administrator prompt.
@@ -33,6 +33,29 @@ Code: `arena/setup/core.py` (install, uninstall, shortcuts, registry),
 page inside it, which also renders the update and uninstall states),
 `arena-cli.py --setup | --uninstall | --apply-update`.
 
+### The download that did not install (fixed in 1.5.3)
+
+1.5.2 published both names, but only `--setup` opened the installer and a
+double-click passes no arguments at all. So the file called *Setup* simply
+started the app: nothing in `%LOCALAPPDATA%\Programs`, no Start-menu shortcut,
+no entry in *Apps & features*, no uninstaller — Windows search found a stray
+exe instead of an app. The release notes promised an installer that the code
+never entered.
+
+The name now decides. `arena/setup/core.py` gained `looks_like_installer()`
+(frozen builds only, `setup` or `installer` in the file's own stem) and
+`setup_mode_from_argv()`, and `arena-cli.py` asks the second one before it
+opens anything:
+
+| started as | what happens |
+|---|---|
+| `Arena-Desktop-Setup-1.5.3.exe`, double-clicked | installs, then offers to open the app |
+| `Arena-Desktop-1.5.3.exe`, double-clicked | the app, nothing installed |
+| `Arena-Desktop.exe` in the install folder | the app, `install.json` already there |
+| any file with `--app` | the app, even from a file called Setup |
+| any file with `--setup` | the installer, even from source |
+| `python arena-cli.py` | the app — a source run never installs |
+
 The window is cream paper (`#f4f1ea`), ink (`#14161a`), one green accent
 (`#1e9e63`), and a serif wordmark. It is deliberately not a wizard and
 deliberately not the app's dark theme.
@@ -41,7 +64,7 @@ deliberately not the app's dark theme.
 
 - The app checks the release feed at startup and every 6 hours, per channel
   (stable / beta), cached for 6 hours per channel.
-- When something newer exists, a single dialog says so: *Version 1.6.1 is
+- When something newer exists, a single dialog says so: *Version 1.5.3 is
   available*, what you have against what is offered, the release notes, the
   date and the size, then *Later* or *Download and install*.
 - The download is verified against the published size and, when GitHub provides
@@ -93,7 +116,7 @@ What that meant here:
 
 ## 5. How this is checked
 
-- `tests/` — 391 tests, including installer, updater and route coverage.
+- `tests/` — 398 tests, including installer, updater and route coverage.
 - `.github/workflows/build.yml` — runs the suite **before** PyInstaller, builds
   the exe, runs `Arena-Desktop.exe --version` as a smoke test, and only
   publishes a release on a `v*` tag that matches `arena/version.py`.
@@ -387,6 +410,37 @@ back and re-hashed there. Integrity rests on GitHub's own digest, computed
 server-side on upload — and on the two assets carrying the same digest, which
 proves the installer and the portable build are the same bytes. The download and
 verify path itself is covered by `tests/test_installer.py`.
+
+## When a reply fails
+
+A crash anywhere inside a reply used to arrive as one sentence — *The app hit an
+internal error.* — with nothing else: no exception name in the window, and no
+traceback in `desktop.log`, because the stream wrapper caught the exception and
+logged nothing. A report like that could not be acted on, by the person who saw
+it or by anyone they told.
+
+Three things changed:
+
+- **The log gets the traceback.** `_sse_wrap` in `arena/web/server/stream.py`
+  calls `LOG.exception` before it emits the error event, so
+  `%USERPROFILE%\.arena-personal\desktop.log` carries the stack.
+- **The row carries the exception.** The `detail` field the backend always sent
+  (and the window always dropped) is kept on the turn and rendered under the
+  message in mono, with *Copy details* beside it. The toast stays one line.
+- **Two silent crashers closed.** The arena.ai window is driven over pywebview,
+  the least dependable part of the app; `ENGINE.wait_ready` and
+  `ENGINE.native_preflight` were called unguarded at the start of an Agent turn,
+  where a closed or crashed WebView2 surface ended the whole reply before a
+  single character. `_engine_ready()` and `_engine_cx()` in
+  `arena/web/server/arena_agent.py` turn that into "not ready yet" and a request
+  without a `cx` blob — the same request the app sent before the preflight
+  existed.
+
+![A failed reply, with the exception and a way to copy it](screenshots/chat/error-details.png)
+
+`tests/test_crash_reporting.py` pins all of it: the friendly message, the
+exception beside it, the traceback in the log, and a dead engine reading as "not
+ready" instead of an internal error.
 
 ## Still to come
 

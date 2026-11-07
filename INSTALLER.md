@@ -2,11 +2,23 @@
 
 Arena Desktop ships as a single Windows executable that is also its own
 installer. There is no separate setup framework and no per-machine service.
+The release publishes that one binary under two names, and the name decides
+what a double-click does.
 
 ```
-Arena-Desktop-Setup-1.5.2.exe    ← what users download and double-click
-Arena-Desktop-1.5.2.exe          ← the same binary, for people who want no install
+Arena-Desktop-Setup-1.5.3.exe    ← double-click: installs (no admin rights)
+Arena-Desktop-1.5.3.exe          ← double-click: runs, installs nothing
 ```
+
+Both files are the same bytes; `-Setup-` in the file name is the switch. A
+frozen build whose own file name contains `setup` or `installer` starts the
+setup window; everything else starts the app. So the download behaves the way
+its name promises, and the portable copy never installs anything behind your
+back. Running from source (`python arena-cli.py`) is never an installer.
+
+Scripting still uses the flags — `--setup [--silent] [--update]`,
+`--uninstall [--wipe-data]` — and `--app` forces the application even from a
+file called Setup.
 
 <p align="center">
   <img src="docs/screenshots/installer.png" alt="Arena Desktop setup window: brand, one progress line" width="520" />
@@ -15,8 +27,14 @@ Arena-Desktop-1.5.2.exe          ← the same binary, for people who want no ins
 ## Installing
 
 1. Download `Arena-Desktop-Setup-<version>.exe`.
-2. Double-click it. A single window opens: brand, one progress line.
-3. When it finishes, **Open Arena Desktop** starts the installed app.
+2. Double-click it. A single window opens: brand, one progress line. The files
+   go to `%LOCALAPPDATA%\Programs\Arena Desktop`.
+3. When it finishes, **Open Arena Desktop** starts the installed app — and from
+   then on Windows finds it in the Start menu and in *Apps & features*.
+
+Double-clicking the copy called `Arena-Desktop-<version>.exe` instead just runs
+the app from where it sits: no shortcut, no entry in *Apps & features*, no
+uninstaller. That is the whole difference between the two downloads.
 
 | | |
 |---|---|
@@ -41,7 +59,7 @@ The app checks the release feed of this repo
 (`Arvex-GH/ArenaAI-Desktop-Major-Rework`) at startup and every 6 hours.
 
 ```
-Arena Desktop 1.6.1 is available      ← dialog, not a browser link
+Arena Desktop 1.5.3 is available      ← dialog, not a browser link
 [Later]  [Download and install]
 ```
 
@@ -110,7 +128,7 @@ Push a tag to publish a release the updater can see:
 
 ```bash
 # bump arena/version.py first, then
-git tag v1.5.2 && git push origin v1.5.2
+git tag v1.5.3 && git push origin v1.5.3
 ```
 
 The tag must match `arena/version.py`; the workflow fails otherwise.
