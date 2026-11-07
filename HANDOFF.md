@@ -362,3 +362,16 @@ suite.
   branch, so rows stream under the placeholder.
 - `tests/js/permission_rows.js` gained a check for it (13 checks).
 - Version 1.5.7.
+
+## Session 15 (2026-11-07) — v1.5.7 published
+
+- **Tag:** `v1.5.7` on `224e059` (merge of #19), workflow green, release published
+  `Arena-Desktop-Setup-1.5.7.exe` + `Arena-Desktop-1.5.7.exe`,
+  **28,622,094 bytes each, `sha256:b426594a0e6b011111194018d93c49ff783edb62c916f677d62e1b4433f19aad`**.
+- **Feed check:** 1.5.7, Setup asset picked, `is_allowed_url` true, 1.5.6 sees the
+  update, 1.5.7 does not see one to itself.
+- 415 tests pass, 1 skipped (jsdom setup-page harness, no jsdom in the sandbox);
+  `tests/js/permission_rows.js` is at 13 checks.
+- Still pending with the browser gone: a fresh `docs/screenshots/chat/tool-done.png`
+  (it still shows the removed `Allowed … allowed` line) and a shot of a running
+  row under the "Thinking…" placeholder.
