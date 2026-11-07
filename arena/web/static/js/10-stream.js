@@ -29,6 +29,9 @@
       Object.assign(existing, { status: activity.status, detail: activity.detail || existing.detail, command: activity.command || existing.command, path: activity.path || existing.path, url: activity.url || existing.url, output: activity.output || existing.output });
       return existing;
     }
+    // Where in its own reply the model made this call: the renderer puts the
+    // row there instead of stacking every tool above the answer.
+    activity.at = String(lane.text || '').length;
     lane.activities.push(activity);
     return activity;
   }
@@ -295,8 +298,9 @@
       }
       if (!lane.permissions.some((item) => permission.id && String(item.id) === String(permission.id))) lane.permissions.push(permission);
       updatePendingPermissionsBadge();
+      // The approval pop-up is the notification now: the window dims and the
+      // question is in front of you. A toast on top of that is noise.
       announce("New permission request. Your decision is needed.");
-      toast(permission.title || "Permission request", 'warning', "Decision required");
       scheduleChatRender();
       return;
     }
@@ -1042,7 +1046,8 @@
 
       const turn = makeGenerationTurn(text, chatId, sentAttachments);
       if (!state.activeChatTitle || state.activeChatTitle === "New chat") {
-        state.activeChatTitle = truncate(text, 52);
+        state.activeChatTitle = titleFromPrompt(text, 52);
+        rememberChatTitle(chatId, state.activeChatTitle);
         const chat = state.chats.find((item) => item.id === String(chatId));
         if (chat) chat.title = state.activeChatTitle;
         else {

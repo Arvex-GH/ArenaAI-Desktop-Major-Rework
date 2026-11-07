@@ -415,6 +415,38 @@
     } catch { return ''; }
   }
 
+  /* Titles belong to the person who typed the first message, not to a server
+     that summarises it. The chat id is the key, the prompt is the title, and
+     the choice is remembered so a refresh cannot rename the chat underneath. */
+  const LOCAL_TITLES_KEY = 'arenaPersonal.chatTitles.v1';
+
+  function localChatTitles() {
+    try { return JSON.parse(localStorage.getItem(LOCAL_TITLES_KEY) || '{}') || {}; } catch { return {}; }
+  }
+
+  function rememberChatTitle(chatId, title) {
+    if (!chatId || !title) return;
+    const map = localChatTitles();
+    if (map[String(chatId)] === title) return;
+    map[String(chatId)] = title;
+    try { localStorage.setItem(LOCAL_TITLES_KEY, JSON.stringify(map)); } catch { /* storage unavailable */ }
+  }
+
+  function applyLocalTitles(chats) {
+    const map = localChatTitles();
+    (chats || []).forEach((chat) => {
+      const title = map[String(chat.id)];
+      if (title) chat.title = title;
+    });
+    return chats;
+  }
+
+  function titleFromPrompt(text, limit = 60) {
+    const clean = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!clean) return '';
+    return clean.length > limit ? `${clean.slice(0, limit - 1).trimEnd()}\u2026` : clean;
+  }
+
   function truncate(value, length = 54) {
     const text = textValue(value).replace(/\s+/g, ' ').trim();
     return text.length > length ? `${text.slice(0, Math.max(1, length - 1))}…` : text;
@@ -1756,7 +1788,11 @@ All content is for demonstration.`
 
 You can start with a more structured option: one script, short captions, and a clear next action. This is a simulated demo mode response.`;
 
-        const okA = await typeOut('a', textA);
+        // Agent Mode keeps text and work interleaved in the demo too: one
+        // sentence, then the calls it makes, then the answer. Nothing is
+        // collected into a block at the top.
+        const agentLeadIn = mode === 'agent' ? "I'll look at the project, build it, then run the tests.\n\n" : '';
+        const okA = await typeOut('a', agentLeadIn + (mode === 'agent' ? '' : textA));
         if (!okA) { stoppedNotice(); return; }
         if (twoLanes) {
           const okB = await typeOut('b', textB);
@@ -1795,8 +1831,8 @@ You can start with a more structured option: one script, short captions, and a c
             'vite v5.4.0 building for production...', 'transforming (12) src/main.js', '✓ 34 modules transformed.',
             'dist/index.html                 0.46 kB', 'dist/assets/index-4f2a.css     2.10 kB', 'dist/assets/index-9c1b.js     48.31 kB',
             '✓ built in 612ms'];
-          for (let i = 1; i <= demoLines.length; i += 3) {
-            await sleep(260);
+          for (let i = 1; i <= demoLines.length; i += 2) {
+            await sleep(300);
             if (checkStop()) { stoppedNotice(); return; }
             emit({ type: 'tool_progress', id: 'demo-tool-2', output: demoLines.slice(0, i).join('\n') });
           }
@@ -1822,12 +1858,16 @@ You can start with a more structured option: one script, short captions, and a c
           if (checkStop() && !decision) { stoppedNotice(); return; }
           emit({ type: 'permission_done', id: permission.id, decision });
           if (decision === 'allow' || decision === 'always') {
-            emit({ type: 'tool_result', id: `demo-permission-${permission.id}`, status: 'ok', output: "Demo: check marked as allowed. The command was not executed." });
-            emit({ type: 'text', model: 'a', text: "\n\nPermission granted in demo. **The real command was not executed.** Permission bypass is not used." });
+            emit({ type: 'text', model: 'a', text: "\n\nPermission granted in demo. **The real command was not executed.** Permission bypass is not used.\n\n" });
           } else {
-            emit({ type: 'text', model: 'a', text: "\n\nAction denied. **The command was not run**, the working folder was not changed." });
+            emit({ type: 'text', model: 'a', text: "\n\nAction denied. **The command was not run**, the working folder was not changed.\n\n" });
             emit({ type: 'notice', message: "Permission denied by the user in the demo scenario." });
           }
+        }
+
+        if (mode === 'agent') {
+          const okEnd = await typeOut('a', textA);
+          if (!okEnd) { stoppedNotice(); return; }
         }
 
         if (modality === 'code') {
@@ -2699,7 +2739,7 @@ You can start with a more structured option: one script, short captions, and a c
 
   function legacyToolActivities(text) {
     const out = [];
-    const add = (name, body, paramRe) => {
+    const add = (name, body, paramRe, at) => {
       const input = {};
       for (const param of body.matchAll(paramRe)) {
         const key = param[1].toLowerCase();
@@ -2711,11 +2751,11 @@ You can start with a more structured option: one script, short captions, and a c
         command: tool === 'run_cmd' ? (input.cmd || input.command || '') : '',
         background: /^(1|true|yes)$/i.test(input.background || '') || undefined
       }, 'tool');
-      if (activity) out.push(activity);
+      if (activity) { activity.at = at; out.push(activity); }
     };
     const source = String(text || '');
-    for (const match of source.matchAll(LEGACY_TOOL_RE)) add(match[1], match[2], LEGACY_PARAM_RE);
-    for (const match of source.matchAll(LEGACY_INVOKE_RE)) add(match[1], match[2], LEGACY_INVOKE_PARAM_RE);
+    for (const match of source.matchAll(LEGACY_TOOL_RE)) add(match[1], match[2], LEGACY_PARAM_RE, match.index);
+    for (const match of source.matchAll(LEGACY_INVOKE_RE)) add(match[1], match[2], LEGACY_INVOKE_PARAM_RE, match.index);
     return out;
   }
 
@@ -3061,7 +3101,7 @@ You can start with a more structured option: one script, short captions, and a c
     try {
       const raw = await API.getChats();
       const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.chats) ? raw.chats : []);
-      const serverChats = list.map(normalizeChat).filter(Boolean);
+      const serverChats = applyLocalTitles(list.map(normalizeChat).filter(Boolean));
       const serverIds = new Set(serverChats.map((chat) => chat.id));
       const keptLocal = (state.chats || []).filter((chat) =>
         !serverIds.has(chat.id)
@@ -3277,6 +3317,7 @@ You can start with a more structured option: one script, short captions, and a c
       class: 'chat-row-main chat-row-open',
       type: 'button',
       'data-chat-open': chat.id,
+      'data-chat-id': chat.id,
       'aria-label': `Open chat: ${chat.title}${running ? ' (working)' : unread ? ' (finished, not opened yet)' : ''}`,
       'aria-current': active ? 'page' : false
     },
@@ -4159,6 +4200,25 @@ You can start with a more structured option: one script, short captions, and a c
     return box;
   }
 
+  /* A tool call is one line of silver text: what ran, on what, and how it
+     ended. Nothing is open unless it is doing something — while it runs the
+     detail streams underneath, and when the command ends the row folds itself
+     back to that one line. Clicking a finished row opens it again. */
+  const _runningActivities = new Set();
+
+  function toolMetaText(activity, running, described) {
+    const raw = activity.raw || {};
+    if (running) return 'running';
+    if (raw.background && !described.summary) return 'in background';
+    const code = described.code;
+    if (typeof code === 'number') return code === 0 ? 'exit 0' : `exit ${code}`;
+    const status = activityStatus(activity.status);
+    if (status.cls === 'is-ok') return 'done';
+    if (status.cls === 'is-err') return 'failed';
+    if (status.cls === 'is-wait') return 'waiting';
+    return '';
+  }
+
   function renderToolRow(activity, laneStreaming, awaitingApproval) {
     const raw = activity.raw || {};
     const status = activityStatus(activity.status);
@@ -4168,67 +4228,96 @@ You can start with a more structured option: one script, short captions, and a c
     const running = !status.cls && Boolean(laneStreaming);
     const stateCls = status.cls === 'is-ok' ? 'is-ok' : status.cls === 'is-err' ? 'is-err'
       : (status.cls === 'is-wait' || (running && awaitingApproval)) ? 'is-wait' : (running ? 'is-run' : 'is-idle');
-    const row = el('div', { class: `tool-row ${stateCls}`, 'data-activity-id': activity.id });
-
-    const argText = arg.length > 400 ? arg.slice(0, 400) + '…' : arg;
-    const head = el('div', { class: 'tool-head', title: arg || label },
-      el('span', { class: 'tool-dot', 'aria-hidden': 'true' }),
-      el('span', { class: 'tool-name', text: label }),
-      argText ? el('span', { class: 'tool-arg' }, el('span', { class: 'tool-paren', text: '(' }),
-        el('span', { class: 'tool-arg-text', text: argText.replace(/\s*\n\s*/g, ' ↵ ') }),
-        el('span', { class: 'tool-paren', text: ')' })) : null,
-      raw.background ? el('span', { class: 'tool-tag', text: 'background' }) : null
-    );
-    row.appendChild(head);
-
-    const body = el('div', { class: 'tool-body' }, el('span', { class: 'tool-elbow', 'aria-hidden': 'true', text: '⎿' }));
-    const content = el('div', { class: 'tool-content' });
-    body.appendChild(content);
+    const expanded = expandedActivities.has(activity.id);
+    // It was open a moment ago and the command has just ended: fold it here,
+    // once, so the row closes by itself instead of snapping shut unannounced.
+    const folding = !running && !expanded && _runningActivities.has(activity.id);
+    if (running) _runningActivities.add(activity.id);
+    else if (folding) _runningActivities.delete(activity.id);
 
     const described = describeOutput(activity, out);
-    const expanded = expandedActivities.has(activity.id);
     const diff = raw.diff && ['Write', 'Update'].includes(label) ? raw.diff : '';
+    const open = running || expanded || folding || stateCls === 'is-wait';
 
+    const row = el('div', {
+      class: `tool-row ${stateCls}${open ? ' is-open' : ''}${folding ? ' is-folding' : ''}`,
+      'data-activity-id': activity.id
+    });
+
+    const argText = arg.length > 400 ? arg.slice(0, 400) + '\u2026' : arg;
+    const line = el('button', {
+      class: 'tool-line', type: 'button', 'data-tool-toggle': activity.id,
+      'aria-expanded': open ? 'true' : 'false',
+      title: arg || label
+    },
+      el('span', { class: 'tool-mark', 'aria-hidden': 'true' }),
+      el('span', { class: 'tool-name', text: label }),
+      argText ? el('span', { class: 'tool-arg' }, el('span', { class: 'tool-paren', text: '(' }),
+        el('span', { class: 'tool-arg-text', text: argText.replace(/\s*\n\s*/g, ' \u21b5 ') }),
+        el('span', { class: 'tool-paren', text: ')' })) : null,
+      raw.background ? el('span', { class: 'tool-tag', text: 'background' }) : null,
+      el('span', { class: 'tool-meta', text: toolMetaText(activity, running, described) })
+    );
+    row.appendChild(line);
+
+    if (!open) return finishRow(row, activity);
+
+    const content = el('div', { class: 'tool-detail-content' });
+    if (diff) {
+      const diffBox = renderDiffLines(diff, expanded ? 400 : 12);
+      if (diffBox) content.appendChild(diffBox);
+    }
     if (stateCls === 'is-wait') {
-      content.appendChild(el('div', { class: 'tool-summary is-wait', text: 'Waiting for your approval…' }));
+      content.appendChild(el('div', { class: 'tool-summary is-wait', text: 'Waiting for your approval\u2026' }));
     } else if (!out && !diff) {
-      if (running) content.appendChild(el('div', { class: 'tool-summary is-muted' }, el('span', { class: 'tool-spinner', 'aria-hidden': 'true' }), el('span', { text: label === 'Bash' ? 'Running…' : 'Working…' })));
-      else if (stateCls === 'is-err') content.appendChild(el('div', { class: 'tool-summary is-err', text: String(raw.status && raw.status !== 'error' ? raw.status : (activity.status && activity.status !== 'error' ? activity.status : 'Failed')) }));
-      else return finishRow(row, activity);
+      if (running) {
+        content.appendChild(el('div', { class: 'tool-summary is-muted' },
+          el('span', { class: 'tool-spinner', 'aria-hidden': 'true' }),
+          el('span', { text: label === 'Bash' ? 'Running\u2026' : 'Working\u2026' })));
+      } else if (stateCls === 'is-err') {
+        content.appendChild(el('div', { class: 'tool-summary is-err', text: String(raw.status && raw.status !== 'error' ? raw.status : (activity.status && activity.status !== 'error' ? activity.status : 'Failed')) }));
+      }
     }
 
     if (described.summary) {
       content.appendChild(el('div', { class: `tool-summary${stateCls === 'is-err' ? ' is-err' : ''}`, text: described.summary }));
     }
     const text = described.body || '';
-    if (text && (!described.folded || expanded)) {
+    if (text) {
       const lines = text.split('\n');
-      const limit = expanded ? 400 : COLLAPSED_LINES;
-      // While a command runs, follow the newest output (tail); afterwards show the head.
-      const tailMode = running && label === 'Bash';
+      // Running: keep the newest lines in view. Finished: the head, folded.
+      const limit = running ? 8 : (expanded ? 400 : COLLAPSED_LINES);
+      const tailMode = running;
       const shown = lines.length > limit ? (tailMode ? lines.slice(-limit) : lines.slice(0, limit)) : lines;
       const exitedNormally = label === 'Bash' && described.code !== null && described.code !== undefined;
       const pre = el('pre', { class: `tool-output${stateCls === 'is-err' && !exitedNormally ? ' is-err' : ''}${expanded ? ' is-expanded' : ''}`, text: shown.join('\n') });
-      if (tailMode && lines.length > limit) {
-        content.appendChild(el('div', { class: 'tool-more', text: `… ${plural(lines.length - limit, 'earlier line')}` }));
-      }
       content.appendChild(pre);
-      if (!tailMode && lines.length > limit) {
-        content.appendChild(el('button', { class: 'tool-more tool-toggle', type: 'button', 'data-tool-toggle': activity.id, text: `… +${plural(lines.length - limit, 'line')} (click to expand)` }));
-      } else if (expanded) {
-        content.appendChild(el('button', { class: 'tool-more tool-toggle', type: 'button', 'data-tool-toggle': activity.id, text: 'Collapse' }));
+      if (tailMode && lines.length > limit) {
+        content.appendChild(el('div', { class: 'tool-more', text: `\u2026 ${plural(lines.length - limit, 'earlier line')}` }));
+      } else if (!tailMode && lines.length > limit && !expanded) {
+        content.appendChild(el('div', { class: 'tool-more', text: `\u2026 ${plural(lines.length - limit, 'more line')}` }));
       }
-    } else if (text && described.folded) {
-      content.appendChild(el('button', { class: 'tool-more tool-toggle', type: 'button', 'data-tool-toggle': activity.id, text: 'Show output' }));
-    }
-    if (diff) {
-      const diffBox = renderDiffLines(diff, expanded ? 400 : 12);
-      if (diffBox) content.appendChild(diffBox);
     }
     if (label === 'Bash' && described.code && described.code !== 0 && described.body) {
       content.appendChild(el('div', { class: 'tool-summary is-err', text: `Exit code ${described.code}` }));
     }
-    row.appendChild(body);
+
+    const detail = el('div', { class: 'tool-detail' }, content);
+    if (folding) {
+      detail.classList.add('is-folding');
+      const settle = () => {
+        detail.remove();
+        row.classList.remove('is-open', 'is-folding');
+      };
+      detail.addEventListener('animationend', settle, { once: true });
+      // A fold interrupted by a re-render leaves no stale node behind.
+      setTimeout(settle, 900);
+    }
+    row.appendChild(detail);
+    if (running) {
+      const pre = content.querySelector('.tool-output');
+      if (pre) pre.scrollTop = pre.scrollHeight;
+    }
     return finishRow(row, activity);
   }
 
@@ -4272,28 +4361,72 @@ You can start with a more structured option: one script, short captions, and a c
     return (lane.permissions || []).some((item) => !item.status || item.status === 'pending');
   }
 
-  function renderActivities(lane) {
-    if (!Array.isArray(lane.activities) || !lane.activities.length) return null;
-    const waitingId = lane.streaming && laneAwaitsApproval(lane) ? currentToolActivity(lane)?.id : null;
-    const cards = lane.activities.map((activity) => {
-      const raw = activity.raw || {};
-      if (activity.kind === 'sandbox' && (raw.verb === 'Edited' || raw.verb === 'Created' || raw.verb === 'Deleted') && raw.path) {
-        const diffCard = renderDiffCard(activity);
-        const ext = (raw.path || '').split('.').pop().toLowerCase();
-        if ((raw.verb === 'Created' || raw.verb === 'Edited') && ['html', 'htm'].includes(ext) && !raw.error) {
-          const preview = renderFilePreview(raw.path);
-          if (preview) {
-            const wrapper = el('div', { class: 'sandbox-file-group' });
-            wrapper.appendChild(diffCard);
-            wrapper.appendChild(preview);
-            return wrapper;
-          }
+  function renderActivityNode(activity, lane, waitingId) {
+    const raw = activity.raw || {};
+    if (activity.kind === 'sandbox' && (raw.verb === 'Edited' || raw.verb === 'Created' || raw.verb === 'Deleted') && raw.path) {
+      const diffCard = renderDiffCard(activity);
+      const ext = (raw.path || '').split('.').pop().toLowerCase();
+      if ((raw.verb === 'Created' || raw.verb === 'Edited') && ['html', 'htm'].includes(ext) && !raw.error) {
+        const preview = renderFilePreview(raw.path);
+        if (preview) {
+          const wrapper = el('div', { class: 'sandbox-file-group' });
+          wrapper.appendChild(diffCard);
+          wrapper.appendChild(preview);
+          return wrapper;
         }
-        return diffCard;
       }
-      return renderToolRow(activity, lane.streaming, activity.id === waitingId);
+      return diffCard;
+    }
+    return renderToolRow(activity, lane.streaming, activity.id === waitingId);
+  }
+
+  /* The answer and the work it did, in the order they happened: text, then the
+     call it made, then the text that followed. Nothing is hoisted to the top. */
+  function renderLaneFlow(lane, visibleText, showTypewriter) {
+    const nodes = [];
+    const list = Array.isArray(lane.activities) ? lane.activities : [];
+    if (showTypewriter) {
+      // The words are hidden behind the typewriter for a moment; the calls it
+      // already made are not, so a command still opens while it runs.
+      const waitingId = lane.streaming && laneAwaitsApproval(lane) ? currentToolActivity(lane)?.id : null;
+      list.forEach((activity) => nodes.push(renderActivityNode(activity, lane, waitingId)));
+      return nodes;
+    }
+    if (!list.length) {
+      if (visibleText) nodes.push(markdownNode(visibleText));
+      return nodes;
+    }
+    const raw = String(lane.text || '');
+    const waitingId = lane.streaming && laneAwaitsApproval(lane) ? currentToolActivity(lane)?.id : null;
+    const placed = list.map((activity, index) => {
+      const at = Number.isFinite(activity.at) ? activity.at : null;
+      const pos = at === null ? null : stripToolMarkup(raw.slice(0, at)).length;
+      return { activity, index, pos };
     });
-    return el('div', { class: 'tool-list' }, cards);
+    // Known positions keep their places; anything without one goes to the end
+    // in the order it arrived.
+    placed.sort((a, b) => {
+      if (a.pos === null && b.pos === null) return a.index - b.index;
+      if (a.pos === null) return 1;
+      if (b.pos === null) return -1;
+      return a.pos - b.pos || a.index - b.index;
+    });
+    let cursor = 0;
+    placed.forEach((item) => {
+      if (item.pos !== null && item.pos > cursor) {
+        const piece = visibleText.slice(cursor, item.pos);
+        if (piece.trim()) nodes.push(markdownNode(piece));
+        cursor = Math.max(cursor, item.pos);
+      }
+      nodes.push(renderActivityNode(item.activity, lane, waitingId));
+    });
+    const rest = visibleText.slice(cursor);
+    if (rest.trim()) nodes.push(markdownNode(rest));
+    return nodes;
+  }
+
+  function markdownNode(text) {
+    return el('div', { class: 'markdown' }, renderMarkdown(text));
   }
 
   function renderSitePreviewCard(artifact) {
@@ -4340,6 +4473,117 @@ You can start with a more structured option: one script, short captions, and a c
     }
     return wrap.childNodes.length ? wrap : null;
   }
+
+  /* An answered approval is a fact about the conversation, so it stays in the
+     thread — as one silver line, not as the card that asked the question. */
+  function renderPermissionReceipt(permission) {
+    const allowed = ['allow', 'always', 'allowed'].includes(String(permission.status || ''));
+    const what = permission.command || permission.path || permission.title || 'Action';
+    const verdict = allowed ? (permission.status === 'always' ? 'allowed for this session' : 'allowed') : 'declined';
+    const row = el('div', { class: `tool-row ${allowed ? 'is-ok' : 'is-err'}` },
+      el('div', { class: 'tool-line' },
+        el('span', { class: 'tool-mark', 'aria-hidden': 'true' }),
+        el('span', { class: 'tool-name', text: allowed ? 'Allowed' : 'Declined' }),
+        el('span', { class: 'tool-arg' }, el('span', { class: 'tool-paren', text: '(' }),
+          el('span', { class: 'tool-arg-text', text: String(what).replace(/\s*\n\s*/g, ' \u21b5 ') }),
+          el('span', { class: 'tool-paren', text: ')' })),
+        el('span', { class: 'tool-meta', text: verdict })
+      ));
+    return row;
+  }
+
+
+  /* Approvals are transient: they sit over the window, ask one question, and
+     are gone. The thread keeps only the receipt above. */
+  function pendingApprovals() {
+    const seen = new Set();
+    const out = [];
+    const here = state.activeChatId ? String(state.activeChatId) : '';
+    const push = (permission) => {
+      if (!permission) return;
+      const status = String(permission.status || 'pending');
+      if (status !== 'pending' && status !== '') return;
+      const id = String(permission.id || '');
+      if (!id || seen.has(id)) return;
+      if (permission.chatId && here && String(permission.chatId) !== here) return;
+      seen.add(id);
+      out.push(permission);
+    };
+    (state.pendingPermissions || []).forEach(push);
+    (state.messages || []).forEach((turn) => {
+      Object.values(turn.lanes || {}).forEach((lane) => (lane.permissions || []).forEach(push));
+    });
+    return out;
+  }
+
+  let _approvalKey = '';
+
+  function syncApprovalSheet() {
+    const list = pendingApprovals();
+    const current = list[0];
+    const key = current ? String(current.id) : '';
+    if (!current) {
+      _approvalKey = '';
+      document.querySelector('[data-approval-sheet]')?.remove();
+      document.querySelector('[data-approval-backdrop]')?.remove();
+      document.body.classList.remove('has-approval');
+      return;
+    }
+    if (key === _approvalKey && document.querySelector('[data-approval-sheet]')) return;
+    _approvalKey = key;
+    document.querySelector('[data-approval-sheet]')?.remove();
+    document.querySelector('[data-approval-backdrop]')?.remove();
+
+    const id = String(current.id);
+    const busy = state.decidingPermissions.has(id);
+    const detail = current.command || current.path || permissionDetail(current);
+
+    const head = el('div', { class: 'approval-head' },
+      el('span', { class: 'approval-icon', 'aria-hidden': 'true' }, iconEl('shield-alert')),
+      el('div', { class: 'approval-heading' },
+        el('p', { class: 'approval-title', text: current.title || 'Allow this action?' }),
+        el('p', { class: 'approval-subtitle', text: `${current.category || 'Action'}${list.length > 1 ? ` \u00b7 1 of ${list.length}` : ''}` })));
+
+    const body = el('div', { class: 'approval-body' });
+    if (detail) body.appendChild(el('pre', { class: 'approval-detail', text: String(detail) }));
+    if (current.cwd && current.cwd !== current.path) body.appendChild(el('p', { class: 'approval-cwd', text: `in ${current.cwd}` }));
+    if (current.description) body.appendChild(el('p', { class: 'approval-note', text: current.description }));
+    if (current.diff) {
+      const diff = el('div', { class: 'approval-diff' });
+      String(current.diff).split('\n').slice(0, 40).forEach((line) => {
+        const type = line.startsWith('+') && !line.startsWith('+++') ? ' is-add' : line.startsWith('-') && !line.startsWith('---') ? ' is-del' : '';
+        diff.appendChild(el('div', { class: `approval-diff-line${type}`, text: line }));
+      });
+      body.appendChild(diff);
+    }
+
+    const actions = el('div', { class: 'approval-actions' },
+      el('button', { class: 'approval-btn is-primary', type: 'button', disabled: busy, 'data-permission-decision': 'allow', 'data-permission-id': id, text: 'Allow once' }),
+      el('button', { class: 'approval-btn', type: 'button', disabled: busy, 'data-permission-decision': 'always', 'data-permission-id': id, text: 'Allow for this session' }),
+      el('button', { class: 'approval-btn is-quiet', type: 'button', disabled: busy, 'data-permission-decision': 'deny', 'data-permission-id': id, text: 'Deny' })
+    );
+
+    const sheet = el('div', {
+      class: 'approval-sheet', role: 'dialog', 'aria-modal': 'true', tabindex: '-1',
+      'aria-label': current.title || 'Allow this action?', 'data-approval-sheet': id
+    }, head, body, actions);
+    const backdrop = el('div', { class: 'approval-backdrop', 'data-approval-backdrop': '' });
+    document.body.appendChild(backdrop);
+    document.body.appendChild(sheet);
+    document.body.classList.add('has-approval');
+    // Focus the sheet, not the primary button: the decision should not look
+    // pre-pressed the moment it appears.
+    sheet.focus({ preventScroll: true });
+  }
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !document.body.classList.contains('has-approval')) return;
+    const sheet = document.querySelector('[data-approval-sheet]');
+    const id = sheet?.getAttribute('data-approval-sheet');
+    if (!id) return;
+    event.preventDefault();
+    void decidePermission(id, 'deny');
+  });
 
   function renderPermissionCard(permission) {
     const isDone = permission.status && permission.status !== 'pending';
@@ -4419,21 +4663,25 @@ You can start with a more structured option: one script, short captions, and a c
     return card;
   }
 
-  function visibleLaneText(lane) {
+  function stripToolMarkup(raw) {
     // With folder tools, the model's raw reply contains <tool> call blocks.
-    // Those are rendered as tool cards; the answer text must not show the
+    // Those are rendered as tool rows; the answer text must not show the
     // markup itself (nor a half-streamed tag at the end).
-    const raw = lane.text || '';
-    const hadTools = (lane.activities || []).some((item) => item.kind === 'tool')
-      || (lane.permissions || []).length > 0;
-    if (!hadTools || !raw.includes('<')) return raw;
-    let text = raw
+    let text = String(raw || '')
       .replace(/<function_calls>[\s\S]*?<\/function_calls\s*>/gi, '')
       .replace(/<tool\s+name[^>]*>[\s\S]*?<\/tool\s*>/gi, '')
       .replace(/<invoke\s+name[^>]*>[\s\S]*?<\/invoke\s*>/gi, '');
     const partial = text.search(/<(tool\s+name|invoke\s+name|function_calls)[\s\S]*$/i);
     if (partial >= 0) text = text.slice(0, partial);
     return text.replace(/\n{3,}/g, '\n\n');
+  }
+
+  function visibleLaneText(lane) {
+    const raw = lane.text || '';
+    const hadTools = (lane.activities || []).some((item) => item.kind === 'tool')
+      || (lane.permissions || []).length > 0;
+    if (!hadTools || !raw.includes('<')) return raw;
+    return stripToolMarkup(raw);
   }
 
   function answerFootNote(lane) {
@@ -4529,7 +4777,6 @@ You can start with a more structured option: one script, short captions, and a c
       card.appendChild(details);
     }
 
-    const markdown = el('div', { class: 'markdown' });
     const visibleText = visibleLaneText(lane);
     const inTypewriterWindow = lane.typewriterUntil && Date.now() < lane.typewriterUntil;
     const showTypewriter = lane.streaming && (!visibleText || inTypewriterWindow);
@@ -4542,23 +4789,28 @@ You can start with a more structured option: one script, short captions, and a c
         typewriter = createThinkingTypewriter();
         _laneTypewriters.set(lane, typewriter);
       }
-      markdown.appendChild(typewriter);
+      card.appendChild(typewriter);
       if (inTypewriterWindow && visibleText) {
         const remaining = lane.typewriterUntil - Date.now();
         setTimeout(() => { lane.typewriterUntil = 0; scheduleChatRender(); }, remaining);
       }
     } else {
-      if (visibleText) markdown.appendChild(renderMarkdown(visibleText));
+      const flow = renderLaneFlow(lane, visibleText, false);
+      flow.forEach((node) => card.appendChild(node));
+      if (lane.streaming && visibleText) {
+        // The caret belongs at the end of the sentence being written, not
+        // below the tool row that followed it.
+        const last = flow[flow.length - 1];
+        const cursor = el('span', { class: 'stream-cursor', 'aria-hidden': 'true' });
+        if (last && last.classList.contains('markdown')) last.appendChild(cursor);
+      }
     }
-    if (lane.streaming && visibleText && !showTypewriter) markdown.appendChild(el('span', { class: 'stream-cursor', 'aria-hidden': 'true' }));
-    // Claude order: thinking, then the work (tool rows, approvals), then the
-    // answer itself at the bottom, then what it produced (media, sources, files).
-    const activities = renderActivities(lane);
-    if (activities) card.appendChild(activities);
     if (Array.isArray(lane.permissions)) {
-      lane.permissions.forEach((permission) => card.appendChild(renderPermissionCard(permission)));
+      lane.permissions.forEach((permission) => {
+        if (!permission.status || permission.status === 'pending') return;
+        card.appendChild(renderPermissionReceipt(permission));
+      });
     }
-    card.appendChild(markdown);
     const media = renderMedia(lane);
     if (media) card.appendChild(media);
     const mediaChoices = renderMediaChoices(lane);
@@ -5407,8 +5659,8 @@ You can start with a more structured option: one script, short captions, and a c
       if (isPair) pairIndex += 1;
       els.messageList.appendChild(renderTurn(turn, isPair ? pairIndex : -1));
     });
-    const unattached = renderUnattachedPermissions(renderedPermissions);
-    if (unattached) els.messageList.appendChild(unattached);
+    // Pending approvals are a pop-up (see syncApprovalSheet), never a block
+    // that pushes the conversation around.
     const questions = renderUnattachedQuestions();
     if (questions) els.messageList.appendChild(questions);
     const mediaChoices = renderUnattachedMediaChoices();
@@ -5427,6 +5679,7 @@ You can start with a more structured option: one script, short captions, and a c
       }
     }
     updateArtifactCount();
+    syncApprovalSheet();
   }
 
   function scheduleChatRender() {
@@ -6808,7 +7061,7 @@ You can start with a more structured option: one script, short captions, and a c
       state.pendingPermissions = state.pendingPermissions.filter((item) => String(item.id) !== String(permissionId));
       state.permissionCount = state.pendingPermissions.length;
       const label = decision === 'deny' ? "Action denied." : decision === 'always' ? "Category allowed for the current session." : "Allowed once.";
-      toast(label, decision === 'deny' ? 'warning' : 'success', "Permission decision");
+      // The thread keeps the receipt; a toast would only repeat it.
       announce(label);
     } catch (error) {
       toast(errorMessage(error), 'error', "Decision not sent");
@@ -6853,6 +7106,9 @@ You can start with a more structured option: one script, short captions, and a c
       Object.assign(existing, { status: activity.status, detail: activity.detail || existing.detail, command: activity.command || existing.command, path: activity.path || existing.path, url: activity.url || existing.url, output: activity.output || existing.output });
       return existing;
     }
+    // Where in its own reply the model made this call: the renderer puts the
+    // row there instead of stacking every tool above the answer.
+    activity.at = String(lane.text || '').length;
     lane.activities.push(activity);
     return activity;
   }
@@ -7119,8 +7375,9 @@ You can start with a more structured option: one script, short captions, and a c
       }
       if (!lane.permissions.some((item) => permission.id && String(item.id) === String(permission.id))) lane.permissions.push(permission);
       updatePendingPermissionsBadge();
+      // The approval pop-up is the notification now: the window dims and the
+      // question is in front of you. A toast on top of that is noise.
       announce("New permission request. Your decision is needed.");
-      toast(permission.title || "Permission request", 'warning', "Decision required");
       scheduleChatRender();
       return;
     }
@@ -7866,7 +8123,8 @@ You can start with a more structured option: one script, short captions, and a c
 
       const turn = makeGenerationTurn(text, chatId, sentAttachments);
       if (!state.activeChatTitle || state.activeChatTitle === "New chat") {
-        state.activeChatTitle = truncate(text, 52);
+        state.activeChatTitle = titleFromPrompt(text, 52);
+        rememberChatTitle(chatId, state.activeChatTitle);
         const chat = state.chats.find((item) => item.id === String(chatId));
         if (chat) chat.title = state.activeChatTitle;
         else {

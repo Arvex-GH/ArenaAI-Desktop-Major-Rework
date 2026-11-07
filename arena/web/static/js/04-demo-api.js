@@ -638,7 +638,11 @@ All content is for demonstration.`
 
 You can start with a more structured option: one script, short captions, and a clear next action. This is a simulated demo mode response.`;
 
-        const okA = await typeOut('a', textA);
+        // Agent Mode keeps text and work interleaved in the demo too: one
+        // sentence, then the calls it makes, then the answer. Nothing is
+        // collected into a block at the top.
+        const agentLeadIn = mode === 'agent' ? "I'll look at the project, build it, then run the tests.\n\n" : '';
+        const okA = await typeOut('a', agentLeadIn + (mode === 'agent' ? '' : textA));
         if (!okA) { stoppedNotice(); return; }
         if (twoLanes) {
           const okB = await typeOut('b', textB);
@@ -677,8 +681,8 @@ You can start with a more structured option: one script, short captions, and a c
             'vite v5.4.0 building for production...', 'transforming (12) src/main.js', '✓ 34 modules transformed.',
             'dist/index.html                 0.46 kB', 'dist/assets/index-4f2a.css     2.10 kB', 'dist/assets/index-9c1b.js     48.31 kB',
             '✓ built in 612ms'];
-          for (let i = 1; i <= demoLines.length; i += 3) {
-            await sleep(260);
+          for (let i = 1; i <= demoLines.length; i += 2) {
+            await sleep(300);
             if (checkStop()) { stoppedNotice(); return; }
             emit({ type: 'tool_progress', id: 'demo-tool-2', output: demoLines.slice(0, i).join('\n') });
           }
@@ -704,12 +708,16 @@ You can start with a more structured option: one script, short captions, and a c
           if (checkStop() && !decision) { stoppedNotice(); return; }
           emit({ type: 'permission_done', id: permission.id, decision });
           if (decision === 'allow' || decision === 'always') {
-            emit({ type: 'tool_result', id: `demo-permission-${permission.id}`, status: 'ok', output: "Demo: check marked as allowed. The command was not executed." });
-            emit({ type: 'text', model: 'a', text: "\n\nPermission granted in demo. **The real command was not executed.** Permission bypass is not used." });
+            emit({ type: 'text', model: 'a', text: "\n\nPermission granted in demo. **The real command was not executed.** Permission bypass is not used.\n\n" });
           } else {
-            emit({ type: 'text', model: 'a', text: "\n\nAction denied. **The command was not run**, the working folder was not changed." });
+            emit({ type: 'text', model: 'a', text: "\n\nAction denied. **The command was not run**, the working folder was not changed.\n\n" });
             emit({ type: 'notice', message: "Permission denied by the user in the demo scenario." });
           }
+        }
+
+        if (mode === 'agent') {
+          const okEnd = await typeOut('a', textA);
+          if (!okEnd) { stoppedNotice(); return; }
         }
 
         if (modality === 'code') {

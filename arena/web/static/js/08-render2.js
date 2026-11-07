@@ -687,8 +687,8 @@
       if (isPair) pairIndex += 1;
       els.messageList.appendChild(renderTurn(turn, isPair ? pairIndex : -1));
     });
-    const unattached = renderUnattachedPermissions(renderedPermissions);
-    if (unattached) els.messageList.appendChild(unattached);
+    // Pending approvals are a pop-up (see syncApprovalSheet), never a block
+    // that pushes the conversation around.
     const questions = renderUnattachedQuestions();
     if (questions) els.messageList.appendChild(questions);
     const mediaChoices = renderUnattachedMediaChoices();
@@ -707,6 +707,7 @@
       }
     }
     updateArtifactCount();
+    syncApprovalSheet();
   }
 
   function scheduleChatRender() {

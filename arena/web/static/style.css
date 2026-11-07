@@ -1298,6 +1298,57 @@ mark.find-hit-current { background: #d9a441; color: #1b1a17; }
 .permission-result { display: flex; align-items: center; gap: 5px; color: #9ebba3; font-size: 9.75px; padding: 7px 11px 9px; }
 .permission-result.is-deny { color: #cba39e; }
 
+/* Approval pop-up: asked over the window, gone once answered. Nothing about it
+   sits in the thread — the conversation only keeps the one-line receipt. */
+.approval-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(12, 13, 14, 0.44);
+  animation: approval-fade 140ms ease-out;
+}
+.approval-sheet:focus { outline: none; }
+.approval-sheet {
+  position: fixed; z-index: 61; left: 50%; bottom: 118px; transform: translateX(-50%);
+  width: min(560px, calc(100vw - 48px)); display: grid; gap: 12px;
+  padding: 16px 18px 14px; border: 1px solid var(--line); border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  animation: approval-in 180ms cubic-bezier(.2, .8, .3, 1);
+}
+.approval-head { display: flex; align-items: flex-start; gap: 10px; }
+.approval-icon { flex: 0 0 auto; display: grid; place-items: center; width: 20px; height: 20px; color: var(--amber); }
+.approval-heading { min-width: 0; }
+.approval-title { margin: 0; color: var(--text); font-size: 13.5px; font-weight: 600; letter-spacing: -.005em; }
+.approval-subtitle { margin: 2px 0 0; color: var(--muted-dim); font-size: 10.5px; letter-spacing: .02em; }
+.approval-body { display: grid; gap: 8px; min-width: 0; }
+.approval-detail {
+  margin: 0; padding: 9px 11px; max-height: 148px; overflow: auto;
+  border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bg-deep);
+  color: var(--text-soft); font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.approval-cwd, .approval-note { margin: 0; color: var(--muted-dim); font-size: 10.5px; }
+.approval-diff {
+  max-height: 132px; overflow: auto; border-left: 1px solid var(--line-strong);
+  font-family: var(--font-mono); font-size: 11px;
+}
+.approval-diff-line { padding: 0 8px; color: var(--muted); white-space: pre-wrap; }
+.approval-diff-line.is-add { color: #9fdcaa; background: rgba(125, 209, 148, 0.06); }
+.approval-diff-line.is-del { color: #f0a19b; background: rgba(240, 161, 155, 0.06); }
+.approval-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.approval-btn {
+  height: 30px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 8px;
+  background: transparent; color: var(--text-soft); font: inherit; font-size: 12px;
+  cursor: pointer; transition: background-color 120ms ease-out, color 120ms ease-out, border-color 120ms ease-out;
+}
+.approval-btn:hover { background: var(--surface-hover); color: var(--text); }
+.approval-btn.is-primary { border-color: var(--accent); background: var(--accent); color: #16211a; font-weight: 600; }
+.approval-btn.is-primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+.approval-btn.is-quiet { border-color: transparent; color: var(--muted); }
+.approval-btn.is-quiet:hover { color: var(--red-soft); background: var(--red-deep); }
+.approval-btn:disabled { opacity: .55; cursor: default; }
+.approval-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@keyframes approval-in { from { opacity: 0; transform: translateX(-50%) translateY(8px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+@keyframes approval-fade { from { opacity: 0; } to { opacity: 1; } }
+
 /* Permission shelf in composer */
 .pending-permissions-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 4px; color: #2a2114; background: var(--amber); border-radius: 4px; font-size: 9px; font-weight: 700; }
 
@@ -3242,29 +3293,70 @@ body.is-resizing-y, body.is-resizing-y * { cursor: ns-resize !important; }
 
 /* ---------------------------------------------------------------------- */
 /* v1.5.0 tool rows, Claude Code style                                     */
-/*   ● Bash(npm install)                                                   */
-/*   ⎿  added 120 packages in 4s                                           */
+/*   ● Bash(npm install)                                        exit 0    */
+/*     └ added 120 packages in 4s       (only while it is running)       */
 /* ---------------------------------------------------------------------- */
-.tool-list { display: grid; gap: 9px; margin: 12px 0 2px; font-family: var(--font-mono); }
-.tool-row { min-width: 0; font-size: 12px; line-height: 1.55; }
-.tool-head { display: flex; align-items: baseline; gap: 0; min-width: 0; color: var(--text-soft); }
-.tool-dot {
-  flex: 0 0 auto; width: 7px; height: 7px; margin: 0 9px 0 1px; border-radius: 50%;
-  background: var(--muted-dim); transform: translateY(-1px);
+/* Silver, one line, no box. A call is part of the answer: it reads as a
+   footnote to the sentence above it, not as a card that interrupts it. */
+.tool-list { display: grid; gap: 2px; margin: 10px 0 2px; font-family: var(--font-mono); }
+.tool-row {
+  min-width: 0; margin: 2px 0; font-family: var(--font-mono);
+  font-size: 11.5px; line-height: 1.7; color: var(--text-soft);
 }
-.tool-row.is-ok .tool-dot { background: var(--green); }
-.tool-row.is-err .tool-dot { background: var(--red); }
-.tool-row.is-wait .tool-dot { background: var(--amber); }
-.tool-row.is-run .tool-dot { background: var(--text-soft); animation: tool-blink 1s ease-in-out infinite; }
-@keyframes tool-blink { 0%, 100% { opacity: 1; } 50% { opacity: .2; } }
-.tool-name { flex: 0 0 auto; color: var(--text); font-weight: 700; }
+.tool-line {
+  display: flex; align-items: baseline; gap: 0; width: 100%; min-width: 0;
+  padding: 0; border: 0; background: none; color: inherit;
+  font: inherit; text-align: left; cursor: pointer;
+}
+.tool-mark {
+  flex: 0 0 auto; width: 5px; height: 5px; margin: 0 9px 0 1px; border-radius: 50%;
+  background: rgba(214, 220, 223, 0.55); transform: translateY(-1px);
+  transition: background-color 160ms ease-out, box-shadow 200ms ease-out;
+}
+.tool-row.is-ok .tool-mark { background: rgba(214, 220, 223, 0.45); }
+.tool-row.is-err .tool-mark { background: var(--red); box-shadow: 0 0 0 3px rgba(224, 122, 114, 0.10); }
+.tool-row.is-wait .tool-mark { background: var(--amber); }
+.tool-row.is-run .tool-mark {
+  background: #e8edef; box-shadow: 0 0 0 3px rgba(232, 237, 239, 0.10);
+  animation: tool-blink 1.1s ease-in-out infinite;
+}
+@keyframes tool-blink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+.tool-name { flex: 0 0 auto; color: var(--text); font-weight: 500; }
 .tool-arg { display: flex; min-width: 0; color: var(--muted); }
 .tool-paren { flex: 0 0 auto; color: var(--muted); }
-.tool-arg-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-soft); }
-.tool-tag {
-  flex: 0 0 auto; margin-left: 8px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 4px;
-  color: var(--muted); font-size: 10px; line-height: 16px;
+.tool-arg-text {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-soft); opacity: .82;
 }
+.tool-tag {
+  flex: 0 0 auto; margin-left: 8px; color: var(--muted-dim); font-size: 10px;
+  letter-spacing: .04em;
+}
+.tool-meta {
+  flex: 0 0 auto; margin-left: 9px;
+  color: var(--muted-dim); font-size: 10px; letter-spacing: .04em;
+  opacity: .8; transition: opacity 160ms ease-out;
+}
+.tool-row:hover .tool-meta { opacity: 1; }
+.tool-row.is-err .tool-meta { color: var(--red); opacity: .85; }
+.tool-row.is-run .tool-meta { color: var(--text-soft); opacity: .9; }
+
+/* Open only while it works. The hairline is the whole container: no fill, no
+   radius, nothing that reads as a form field. */
+.tool-detail {
+  margin: 2px 0 6px 4px; padding: 2px 0 2px 12px;
+  border-left: 1px solid rgba(255, 255, 255, 0.075);
+  color: var(--muted); font-size: 11px; line-height: 1.6;
+  overflow: hidden;
+}
+.tool-row.is-folding .tool-detail { animation: tool-fold 420ms cubic-bezier(.4, 0, .2, 1) forwards; }
+@keyframes tool-fold {
+  from { max-height: 260px; opacity: 1; margin-top: 2px; margin-bottom: 6px; }
+  to   { max-height: 0; opacity: 0; margin-top: 0; margin-bottom: 0; }
+}
+.tool-detail-content { min-width: 0; }
+.tool-row.is-run .tool-detail { border-left-color: rgba(232, 237, 239, 0.16); }
+.tool-row.is-err .tool-detail { border-left-color: rgba(224, 122, 114, 0.28); }
 .tool-body { display: flex; gap: 8px; min-width: 0; padding-left: 4px; }
 .tool-elbow { flex: 0 0 auto; width: 14px; color: var(--muted-dim); line-height: 1.55; user-select: none; }
 .tool-content { flex: 1 1 auto; min-width: 0; }

@@ -1343,7 +1343,7 @@
       state.pendingPermissions = state.pendingPermissions.filter((item) => String(item.id) !== String(permissionId));
       state.permissionCount = state.pendingPermissions.length;
       const label = decision === 'deny' ? "Action denied." : decision === 'always' ? "Category allowed for the current session." : "Allowed once.";
-      toast(label, decision === 'deny' ? 'warning' : 'success', "Permission decision");
+      // The thread keeps the receipt; a toast would only repeat it.
       announce(label);
     } catch (error) {
       toast(errorMessage(error), 'error', "Decision not sent");

@@ -228,30 +228,59 @@ between the folder and work-type chips.
 - In bypass the chip turns red and a 7px dot sits between it and send. Nothing
   else on screen changes.
 
-## Sessions: the design that follows
-
-These are the rules for the next step. None of them are built yet; they are
-recorded here so the next change has a spec instead of an opinion.
-
-### Tool calls live inside the answer
+## The conversation: one line per call
 
 A tool call is part of the model's reply, not a card dropped into the
-conversation. It renders inline with the text, in a silver tone — hairline
-`1px` at 8% ink, no fill, no shadow, no rounded box fighting the message
-column — with the command in mono and its result underneath, folded to four
-lines. Nothing about a tool call should look like a form.
+conversation. It is one silver line — `Bash(npm run build)` — in mono, sitting
+at the exact place in the answer where the model made it, with the outcome at
+the end of the line (`done`, `exit 0`, `exit 1`, `running`). No box, no fill,
+no shadow, no radius: just a dot, a hairline, and type.
 
-### Confirmation is a pop-up
+The rows are no longer collected above the answer. Each one records where in the
+reply it happened, and the renderer splits the text at those points, so a
+sentence, its command, and the sentence after it read in order:
 
-When the mode requires approval, it is asked in a small dialog over the window —
-command, folder, and *Run* / *Skip* — not as a block inside the chat. The chat
-column stays a record of the conversation; approvals are transient and belong on
-top of it.
+![Calls folded to one line, in the order they happened](screenshots/sidebar/tool-done.png)
 
-### The writing protocol
+**Nothing is open by default.** A finished call is one line. While a command
+runs, that one row opens by itself and streams its newest output under a
+hairline; the moment it ends the detail folds away again — a 420 ms collapse,
+not a snap — leaving the single line and its exit code:
 
-Long file writes should not stream into the chat as raw code. The agent is told,
-in its guide message, to open such a block with a marker:
+![The same rows while a build runs](screenshots/sidebar/tool-running.png)
+
+Clicking a finished row opens it again for inspection. Clicking it again closes
+it. That is the only way a row grows outside of running.
+
+### Approval is a pop-up
+
+A confirmation is transient, so it does not live in the thread. The window dims
+and a small sheet asks one question: the command, the folder, a line about what
+it will do, and *Allow once* / *Allow for this session* / *Deny*. `Escape`
+denies. The sheet is anchored above the composer, so the eye does not have to
+travel to the middle of a long conversation to answer it:
+
+![Approval, asked over the conversation instead of inside it](screenshots/sidebar/approval.png)
+
+The thread keeps only the receipt — the same silver line, `Allowed(python -m
+pytest -q) allowed` — because that is a fact about the conversation, while the
+question was a moment. The two toasts that used to fire around approvals (one
+when it arrived, one when it was answered) are gone: the pop-up is the
+notification, the receipt is the record.
+
+### A chat is named after the prompt
+
+The title is the user's first message, trimmed to 52 characters, set the moment
+it is sent rather than after the reply. It is stored against the chat id in
+`arenaPersonal.chatTitles.v1`, so a refresh from arena.ai — which still calls
+the chat "New chat" — cannot rename it underneath you. Chat rows carry
+`data-chat-id`, so the mapping is easy to check from the console.
+
+### Still to build
+
+**The `~~~write` envelope.** Long file writes should not stream into the chat as
+raw code. The agent will be told, in its guide message, to open such a block with
+a marker:
 
 ```
 ~~~write path/to/file.ts
@@ -266,20 +295,10 @@ in its guide message, to open such a block with a marker:
 The app hides the marker and the body while it streams and shows one calm
 `Writing path/to/file.ts…` line with a shimmer, then renders whatever the model
 writes next as normal text. If the block never closes, the partial content
-appears as an ordinary code block when the stream ends, so nothing is ever lost.
+appears as an ordinary code block when the stream ends, so nothing is lost.
 
 This needs the backend guide text and the streaming renderer changed together,
 and it needs a real stream to test against; it is the next backend item.
-
-### A chat is named after the prompt
-
-Session titles should be the user's own first message, trimmed — not a summary
-the server picked. That means keeping a local title per chat that survives a
-refresh from arena.ai, which is why it belongs with the session list rework:
-
-1. First message in a chat sets the title locally.
-2. The title is stored next to the chat id, not derived on every render.
-3. Refresh from arena.ai keeps the local title unless the user renames it.
 
 ---
 
@@ -293,8 +312,8 @@ refresh from arena.ai, which is why it belongs with the session list rework:
   open. Deferred on purpose: the rail had to be right first.
 - **Chat mode gets the file tools**, with Agent Mode keeping the step-by-step
   loop and gaining arena.ai's account connectors.
-- **Tool calls inline and silver**, confirmations as pop-ups, the `~~~write`
-  stream protocol, and chats titled by the user's own prompt.
+- **The `~~~write` stream protocol**, so a long file write shows as one
+  `Writing path/to/file.ts…` line instead of a wall of code.
 - **The return of the right bar** — workspace files and connectors — and with
   it the real *Artifacts* view.
 - **The light theme across the app**, not just the rail, with the Settings
