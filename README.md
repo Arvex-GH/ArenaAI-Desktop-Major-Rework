@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.13-brightgreen?style=flat-square" alt="v1.5.13" />
+  <img src="https://img.shields.io/badge/version-1.5.14-brightgreen?style=flat-square" alt="v1.5.14" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.13](#whats-new-in-v1513)
+- [What's new in v1.5.14](#whats-new-in-v1514)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,7 +44,35 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.13
+## What's new in v1.5.14
+
+### The first answer no longer waits for the connectors
+
+Reported after 1.5.13: the connectors were up at launch, yet the first prompt of
+a session took a long time before the model said anything — *"i think that the
+mcp connects under the hud again"*. It did.
+
+Every local reply runs the tool loop, and its first line asked the connector
+runtime to *make sure everything is started*. That meant connecting **every**
+enabled connector, one after another, waiting up to thirty seconds for each. So
+a prompt sent while the launch run was still spawning `npx` servers stood in
+line behind them — and a connector that had failed at launch was started again
+from scratch on *every* turn, without a word.
+
+Nothing about that belongs on the path of an answer. A reply now takes the tools
+that are up at that moment (`tools_now()`), waits one courtesy second for
+anything mid-spawn, and — if one really is late — says so in a single line
+instead of quietly answering without it: *"Filesystem was still starting when
+this message went out, so this reply works without its tools. They join your
+next message."* The next reply carries the new tool guide by itself.
+
+A connector that failed is retried in the background, once a minute, off the
+request thread. The launch run itself now spawns all of them at once instead of
+one after another, so the start-up screen ends in the time of its slowest
+connector rather than their sum, and switching a connector on in Settings
+connects it straight away.
+
+### Previous: v1.5.13 — every connector in the launch list
 
 ### The app's own connectors are in that list too
 

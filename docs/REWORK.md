@@ -731,7 +731,11 @@ waiting on the row they belong to.
 The lesson recorded here: a receipt that restates a row is worse than noise when
 it hides the row it stands in for.
 
-## Unreleased (merged, not tagged)
+## 1.5.14
+
+Two rounds merged after 1.5.13 shipped, both from screenshots and reports of the
+installed app: an answer is no longer drawn as a box, and a reply no longer
+waits for a connector to start.
 
 ### A reply never waits for a connector
 
