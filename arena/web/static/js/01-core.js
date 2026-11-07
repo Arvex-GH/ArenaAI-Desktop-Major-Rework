@@ -51,6 +51,7 @@
     'search-plus': '<circle cx="10.5" cy="10.5" r="6.4"/><path d="m15.3 15.3 4.2 4.2M10.5 7.8v5.4M7.8 10.5h5.4"/>',
     copy: '<rect x="8.2" y="8.2" width="11.3" height="11.3" rx="2"/><path d="M15.8 8.2V6a1.8 1.8 0 0 0-1.8-1.8H6A1.8 1.8 0 0 0 4.2 6v8a1.8 1.8 0 0 0 1.8 1.8h2.2"/>',
     check: '<path d="m5 12.4 4.4 4.4L19 7"/>',
+    minus: '<path d="M6 12h12"/>',
     package: '<path d="m12 3 8 4.3v9.4L12 21l-8-4.3V7.3L12 3Z"/><path d="m4.3 7.5 7.7 4 7.7-4M12 11.5V21"/>',
     sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
     download: '<path d="M12 3.5v11M7.5 10.5 12 15l4.5-4.5M4 19.5h16"/>',

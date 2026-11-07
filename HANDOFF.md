@@ -496,3 +496,28 @@ suite.
   skipped without jsdom) + `tests/test_startup_screen.py` wrappers. Suite
   **430 passed, 1 skipped**.
 - Version 1.5.12.
+
+## Session 21 (2026-11-07) — 1.5.13: presets in the launch list, "Off" instead of missing
+
+- **Asked:** "Not just connectors. The app also has local MCP like file system,
+  memory or sequential thinking. Is that also started automatically if I have it
+  enabled and shown in the progress bars?"
+- **Answer:** yes — presets are only a catalogue; `install_preset()` writes a
+  normal `mcp.json` entry tagged `x-arena-preset`, so the 1.5.12 launch run
+  already started them. Two gaps fixed anyway:
+  - rows showed the raw id (`sequential_thinking`); `_startup_plan()` now maps
+    `preset_id` → the catalogue's display name, with the masked command as the
+    tooltip (`detail`) and the description in `description`;
+  - switched-off connectors were silently absent; they are items with status
+    `disabled` now — a quiet "Off" row, excluded from `total`/`done`, and the
+    finished line appends "· N switched off".
+- **Counts:** `startup_snapshot()` gained `disabled` and computes `total`/`done`
+  over non-disabled items only; `start_startup_connect()` treats an all-off config
+  as instantly done.
+- **UI:** `applySnapshot` prefers `item.label`, renders `disabled` as `Off`
+  (`minus` icon added to ICONS, `.startup-step.is-off` styles).
+- **Tests:** `test_startup_connect.py` → 15 (installs the three presets the way the
+  panel does, asserts they connect with display names; switched-off → `disabled`,
+  never started, or instantly done when all are off); `startup_screen.js` → 28;
+  `startup_screen_dom.js` → 20 (presets named, Off row, tool counts).
+- Version 1.5.13.

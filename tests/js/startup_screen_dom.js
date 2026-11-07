@@ -25,23 +25,26 @@ const ACCOUNTS = [
   { id: "acc-3", email: "three@example.test", name: "", avatar_url: null, current: false, expired: true },
 ];
 
+// The app's own presets are ordinary connectors: they are started by the same
+// run and keep their display names. One of them is switched off on purpose.
+const FILE = (status, tools, error) => ({ id: "filesystem", name: "filesystem", label: "Filesystem",
+  preset_id: "filesystem", description: "Files inside the selected workspace folder", status, tools, error });
+const MEMORY = (status, tools) => ({ id: "memory", name: "memory", label: "Memory",
+  preset_id: "memory", description: "Local long-term memory as a knowledge graph", status, tools, error: null });
+const THINKING = (status, tools, error) => ({ id: "sequential_thinking", name: "sequential_thinking",
+  label: "Sequential Thinking", preset_id: "sequential_thinking", description: "Structured step-by-step reasoning",
+  status, tools, error: error || null });
+const OFF = { id: "playwright", name: "playwright", label: "Playwright", preset_id: "playwright",
+  description: "Browser MCP", status: "disabled", tools: 0, error: null };
+
 let startupPolls = 0;
 const startupSnapshots = [
-  { ok: true, phase: "connecting", total: 3, done: 0, connected: 0, failed: 0, items: [
-    { id: "filesystem", name: "filesystem", label: "filesystem", detail: "Files inside the workspace", status: "connecting", tools: 0, error: null },
-    { id: "github", name: "github", label: "github", detail: "GitHub", status: "queued", tools: 0, error: null },
-    { id: "time", name: "time", label: "time", detail: "Time", status: "queued", tools: 0, error: null },
-  ] },
-  { ok: true, phase: "connecting", total: 3, done: 2, connected: 2, failed: 0, items: [
-    { id: "filesystem", name: "filesystem", label: "filesystem", detail: "Files inside the workspace", status: "connected", tools: 12, error: null },
-    { id: "github", name: "github", label: "github", detail: "GitHub", status: "connected", tools: 4, error: null },
-    { id: "time", name: "time", label: "time", detail: "Time", status: "connecting", tools: 0, error: null },
-  ] },
-  { ok: true, phase: "done", total: 3, done: 3, connected: 2, failed: 1, items: [
-    { id: "filesystem", name: "filesystem", label: "filesystem", detail: "Files inside the workspace", status: "connected", tools: 12, error: null },
-    { id: "github", name: "github", label: "github", detail: "GitHub", status: "connected", tools: 4, error: null },
-    { id: "time", name: "time", label: "time", detail: "Time", status: "error", tools: 0, error: "npx not found" },
-  ] },
+  { ok: true, phase: "connecting", total: 3, done: 0, connected: 0, failed: 0, disabled: 1,
+    items: [FILE("connecting", 0), MEMORY("queued", 0), THINKING("queued", 0), OFF] },
+  { ok: true, phase: "connecting", total: 3, done: 2, connected: 2, failed: 0, disabled: 1,
+    items: [FILE("connected", 12), MEMORY("connected", 9), THINKING("connecting", 0), OFF] },
+  { ok: true, phase: "done", total: 3, done: 3, connected: 2, failed: 1, disabled: 1,
+    items: [FILE("connected", 12), MEMORY("connected", 9), THINKING("error", 0, "spawn npx ENOENT"), OFF] },
 ];
 
 const payloads = {
@@ -102,8 +105,14 @@ async function main() {
   const overlay = doc.querySelector(".startup-overlay");
   check("start-up screen is on screen", Boolean(overlay), overlay ? "" : "not rendered");
   const rows = overlay ? Array.from(overlay.querySelectorAll(".startup-step-copy")).map((n) => n.textContent) : [];
-  check("it lists the app and the connectors", rows.some((t) => t === "App") && rows.includes("filesystem"),
+  check("it lists the app and the connectors", rows.some((t) => t === "App") && rows.includes("Filesystem"),
     JSON.stringify(rows));
+  check("presets keep their display names", rows.includes("Sequential Thinking") && rows.includes("Memory"),
+    JSON.stringify(rows));
+  check("a switched-off connector is shown as Off, not hidden",
+    rows.includes("Playwright")
+      && Array.from(overlay.querySelectorAll(".startup-step.is-off .startup-step-note"))
+        .some((n) => n.textContent === "Off"));
   const bar = overlay && overlay.querySelector(".startup-progress");
   check("the progress bar moves", Boolean(bar) && Number(bar.getAttribute("aria-valuenow")) >= 0,
     bar ? `aria-valuenow=${bar.getAttribute("aria-valuenow")}` : "no bar");
@@ -115,7 +124,9 @@ async function main() {
     Boolean(titled) && /could not start/i.test(titled.textContent || ""),
     titled ? titled.textContent : "already gone");
   const notes = Array.from(doc.querySelectorAll(".startup-step-note")).map((n) => n.textContent);
-  check("the failing row says why", notes.includes("npx not found"), JSON.stringify(notes));
+  check("the failing row says why", notes.includes("spawn npx ENOENT"), JSON.stringify(notes));
+  check("the connected rows report their tools", notes.includes("12 tools") && notes.includes("9 tools"),
+    JSON.stringify(notes));
   check("a retry is offered", Array.from(doc.querySelectorAll(".startup-actions button"))
     .some((b) => /retry/i.test(b.textContent || "")));
 
