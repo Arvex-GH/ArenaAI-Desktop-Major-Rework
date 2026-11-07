@@ -83,6 +83,7 @@
     els.workspaceResize = $('#workspaceResize');
     els.workspaceSplitResize = $('#workspaceSplitResize');
     els.permissionButton = $('#permissionButton');
+    els.bypassIndicator = $('#bypassIndicator');
     els.workspaceSyncChip = $('#workspaceSyncChip');
     els.workspaceSyncToggle = $('#workspaceSyncToggle');
     els.compactButton = $('#compactButton');
@@ -122,17 +123,10 @@
     els.helpButton = $('#helpTopButton');
   }
 
-  function ensureBypassWarning() {
-    if (!els.composerContext || !els.composerContext.parentNode) return null;
-    let warning = $('#permissionDangerBanner');
-    if (!warning) {
-      warning = el('div', { class: 'composer-warning', id: 'permissionDangerBanner', role: 'alert', hidden: true });
-      warning.append(iconEl('shield-alert'), el('span', { text: "Permission bypass enabled: backend can perform actions without confirmation. This is dangerous outside an isolated environment." }));
-      els.composerContext.insertAdjacentElement('afterend', warning);
-    }
-    warning.hidden = state.permissionMode !== 'bypassPermissions';
-    return warning;
-  }
+  // Bypass is shown as a red dot beside the send button (see updateComposerState).
+  // The old full-width red banner above the composer is gone: it marked the whole
+  // screen as broken for a setting that is one click away from the composer.
+  function ensureBypassWarning() { return null; }
 
   function restoreSidebarPreference() {
     try {

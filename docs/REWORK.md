@@ -135,8 +135,6 @@ A calm rail, 252px wide, in the app's own voice. Captured from this build:
    Check approach to tests
    ...
  ─────────────────────────────────────
- ◑  Demo User
-    Simulation · no tokens
  Terms  Privacy  Cookies
 ```
 
@@ -157,11 +155,17 @@ A calm rail, 252px wide, in the app's own voice. Captured from this build:
   letterspaced micro-caps line; chat titles are the only 13px text; metadata
   drops to 10px and only appears on the row you are pointing at.
 - **Hairlines instead of borders and shadows.** One 1px rule between the rail
-  and the thread, one above the account block, nothing else.
+  and the thread, one above the footer, nothing else.
 - **The wordmark is a serif**, the same voice as the setup window, so the app
   and its installer read as one product. The "Desktop" tag lost its pill.
 - **The rail header is 52px**, matching the topbar, so the two share one
   horizontal line across the window.
+- **The collapse control works.** It had been drawing nothing: icon spans that
+  were written straight into `index.html` (no `.icon` class) had no box, so the
+  panel glyph collapsed to zero width — the same reason the footer's globe,
+  settings and help buttons looked empty. One `:where([data-icon])` rule gives
+  every icon span a box without touching component rules, and the control now
+  flips between `panel-left` and `panel-right` as the rail opens and closes.
 - **Collapsed, the same rows keep their icons.** Nothing is re-invented for the
   76px state:
 
@@ -183,11 +187,114 @@ and dialogs follow in the next step.
 
 ---
 
+## Modes: Chat and Agent
+
+The four modes used to sit in one flat list, as if Battle and Agent were the same
+kind of choice. They are not. The mode picker now has two sections:
+
+![The mode picker, grouped](screenshots/sidebar/modes.png)
+
+- **Chat** — Direct, Battle Mode, Side by Side. Talking to models, with a work
+  type (text, image, video, search, code) on top.
+- **Agent** — the mode that works in thinking steps and runs tools itself.
+
+The composer chip says where you are: `Chat · Direct`, `Chat · Battle`,
+`Agent`. One label, two levels.
+
+### What is intended, and not built yet
+
+- **Files in Chat mode.** Chat should be allowed to read and edit the chosen
+  folder too, with the difference being behaviour rather than permission: Chat
+  answers and edits when asked, Agent plans in steps and works through them.
+  Today the local file tools are reachable only from Agent Mode, so this is a
+  backend change to the tool loop, not a switch: it ships when the loop is
+  safe to run outside Agent Mode.
+- **Arena's account connectors in Agent Mode.** The connectors a user has linked
+  on arena.ai should be available to the agent, fetched from the account rather
+  than configured in the app. This waits for the better implementation that is
+  planned, so nothing is half-wired here.
+
+## The composer: confirmation next to send
+
+Bypass used to paint a red alert bar across the composer, which read as "the app
+is broken" for a setting one click away. It is now a red dot beside the send
+button, and the confirmation selector lives there too instead of being lost
+between the folder and work-type chips.
+
+![Bypass: a red dot, not a red screen](screenshots/sidebar/bypass.png)
+
+- `Ask` · `Accept edits` · `Auto` · `Plan only` · `Bypass` — unchanged
+  behaviour, new home.
+- In bypass the chip turns red and a 7px dot sits between it and send. Nothing
+  else on screen changes.
+
+## Sessions: the design that follows
+
+These are the rules for the next step. None of them are built yet; they are
+recorded here so the next change has a spec instead of an opinion.
+
+### Tool calls live inside the answer
+
+A tool call is part of the model's reply, not a card dropped into the
+conversation. It renders inline with the text, in a silver tone — hairline
+`1px` at 8% ink, no fill, no shadow, no rounded box fighting the message
+column — with the command in mono and its result underneath, folded to four
+lines. Nothing about a tool call should look like a form.
+
+### Confirmation is a pop-up
+
+When the mode requires approval, it is asked in a small dialog over the window —
+command, folder, and *Run* / *Skip* — not as a block inside the chat. The chat
+column stays a record of the conversation; approvals are transient and belong on
+top of it.
+
+### The writing protocol
+
+Long file writes should not stream into the chat as raw code. The agent is told,
+in its guide message, to open such a block with a marker:
+
+```
+~~~write path/to/file.ts
+...the file contents...
+~~~
+```
+
+- `~~~` alone opens a tool step.
+- `~~~write <path>` opens a write step.
+- The closing `~~~` ends it.
+
+The app hides the marker and the body while it streams and shows one calm
+`Writing path/to/file.ts…` line with a shimmer, then renders whatever the model
+writes next as normal text. If the block never closes, the partial content
+appears as an ordinary code block when the stream ends, so nothing is ever lost.
+
+This needs the backend guide text and the streaming renderer changed together,
+and it needs a real stream to test against; it is the next backend item.
+
+### A chat is named after the prompt
+
+Session titles should be the user's own first message, trimmed — not a summary
+the server picked. That means keeping a local title per chat that survives a
+refresh from arena.ai, which is why it belongs with the session list rework:
+
+1. First message in a chat sets the title locally.
+2. The title is stored next to the chat id, not derived on every render.
+3. Refresh from arena.ai keeps the local title unless the user renames it.
+
+---
+
 ## Still to come
 
+- **The account block returns.** Sign-in state, avatar and the account menu are
+  out of the rail for now; they come back with the session work and a design
+  that fits the new rows.
 - **Session list presentation.** Grouping (today / this week / older), the way a
   chat row shows mode and age, and the behaviour of the list while a chat is
   open. Deferred on purpose: the rail had to be right first.
+- **Chat mode gets the file tools**, with Agent Mode keeping the step-by-step
+  loop and gaining arena.ai's account connectors.
+- **Tool calls inline and silver**, confirmations as pop-ups, the `~~~write`
+  stream protocol, and chats titled by the user's own prompt.
 - **The return of the right bar** — workspace files and connectors — and with
   it the real *Artifacts* view.
 - **The light theme across the app**, not just the rail, with the Settings

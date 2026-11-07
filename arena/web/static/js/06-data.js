@@ -618,6 +618,14 @@
     els.collapseSidebar?.setAttribute('aria-expanded', String(!state.sidebarCollapsed));
     els.collapseSidebar?.setAttribute('aria-label', state.sidebarCollapsed ? "Expand the sidebar" : "Collapse the sidebar");
     if (els.collapseSidebar) els.collapseSidebar.title = state.sidebarCollapsed ? "Expand the panel" : "Collapse the panel";
+    const glyph = els.collapseSidebar?.querySelector('[data-icon]');
+    if (glyph) {
+      const wanted = state.sidebarCollapsed ? 'panel-right' : 'panel-left';
+      if (glyph.dataset.icon !== wanted) {
+        glyph.dataset.icon = wanted;
+        glyph.innerHTML = icon(wanted);
+      }
+    }
     try { localStorage.setItem('arenaPersonal.sidebarCollapsed.v4', state.sidebarCollapsed ? '1' : '0'); } catch { /* storage unavailable */ }
   }
 

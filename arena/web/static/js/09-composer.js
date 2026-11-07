@@ -192,6 +192,13 @@
       : "Compacted. Your next message continues in a fresh session with a summary of everything so far.", 'success', "Compact");
   }
 
+  // The composer chip names the top-level mode, then the shape inside it:
+  // "Chat - Battle" reads better than a flat list of four equal modes.
+  function modeChipLabel(meta) {
+    if (meta.id === 'agent') return 'Agent';
+    return `Chat \u00b7 ${meta.label}`;
+  }
+
   function renderModeBars() {
     // Arena-style dropdown triggers in the composer toolbar (no segmented
     // bars). The work-type trigger is hidden while Agent Mode is selected.
@@ -314,7 +321,7 @@
     if (!els.prompt) return;
     const meta = modeMeta(state.mode);
     const mod = modalityMeta(state.modality);
-    if (els.modeLabel) els.modeLabel.textContent = meta.label;
+    if (els.modeLabel) els.modeLabel.textContent = modeChipLabel(meta);
     if (els.modalityLabel) els.modalityLabel.textContent = mod.label;
     const modalityIconNode = els.modalityButton?.querySelector(':scope > .icon');
     if (modalityIconNode) modalityIconNode.innerHTML = icon(mod.icon);
@@ -322,6 +329,11 @@
     if (els.permissionLabel) els.permissionLabel.textContent = permission.short;
     els.permissionButton?.classList.toggle('is-danger', state.permissionMode === 'bypassPermissions');
     els.permissionButton?.setAttribute('title', permission.desc);
+    if (els.bypassIndicator) {
+      const bypass = state.permissionMode === 'bypassPermissions';
+      els.bypassIndicator.hidden = !bypass;
+      els.bypassIndicator.title = bypass ? 'Permission bypass is on: nothing asks before it runs.' : '';
+    }
     if (els.workspaceLabel) {
       els.workspaceLabel.textContent = state.workspace ? workspaceName() : "Choose folder";
       els.workspaceButton.title = state.workspace || "Working folder not selected";

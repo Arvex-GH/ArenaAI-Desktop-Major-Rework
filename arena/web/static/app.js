@@ -1909,7 +1909,7 @@ You can start with a more structured option: one script, short captions, and a c
     mode: 'direct',
     modality: 'text',
     savedModality: 'auto',
-    layout: { sidebarWidth: 276, workspaceWidth: 332, connectorsShare: 38 },
+    layout: { sidebarWidth: 252, workspaceWidth: 332, connectorsShare: 38 },
     selectionTouched: false,
     // Agent has two honest backends: Arena's native Agent Mode (opens on the
     // site, never a Direct chat) and the local folder-tools loop.
@@ -3437,6 +3437,14 @@ You can start with a more structured option: one script, short captions, and a c
     els.collapseSidebar?.setAttribute('aria-expanded', String(!state.sidebarCollapsed));
     els.collapseSidebar?.setAttribute('aria-label', state.sidebarCollapsed ? "Expand the sidebar" : "Collapse the sidebar");
     if (els.collapseSidebar) els.collapseSidebar.title = state.sidebarCollapsed ? "Expand the panel" : "Collapse the panel";
+    const glyph = els.collapseSidebar?.querySelector('[data-icon]');
+    if (glyph) {
+      const wanted = state.sidebarCollapsed ? 'panel-right' : 'panel-left';
+      if (glyph.dataset.icon !== wanted) {
+        glyph.dataset.icon = wanted;
+        glyph.innerHTML = icon(wanted);
+      }
+    }
     try { localStorage.setItem('arenaPersonal.sidebarCollapsed.v4', state.sidebarCollapsed ? '1' : '0'); } catch { /* storage unavailable */ }
   }
 
@@ -5649,6 +5657,13 @@ You can start with a more structured option: one script, short captions, and a c
       : "Compacted. Your next message continues in a fresh session with a summary of everything so far.", 'success', "Compact");
   }
 
+  // The composer chip names the top-level mode, then the shape inside it:
+  // "Chat - Battle" reads better than a flat list of four equal modes.
+  function modeChipLabel(meta) {
+    if (meta.id === 'agent') return 'Agent';
+    return `Chat \u00b7 ${meta.label}`;
+  }
+
   function renderModeBars() {
     // Arena-style dropdown triggers in the composer toolbar (no segmented
     // bars). The work-type trigger is hidden while Agent Mode is selected.
@@ -5771,7 +5786,7 @@ You can start with a more structured option: one script, short captions, and a c
     if (!els.prompt) return;
     const meta = modeMeta(state.mode);
     const mod = modalityMeta(state.modality);
-    if (els.modeLabel) els.modeLabel.textContent = meta.label;
+    if (els.modeLabel) els.modeLabel.textContent = modeChipLabel(meta);
     if (els.modalityLabel) els.modalityLabel.textContent = mod.label;
     const modalityIconNode = els.modalityButton?.querySelector(':scope > .icon');
     if (modalityIconNode) modalityIconNode.innerHTML = icon(mod.icon);
@@ -5779,6 +5794,11 @@ You can start with a more structured option: one script, short captions, and a c
     if (els.permissionLabel) els.permissionLabel.textContent = permission.short;
     els.permissionButton?.classList.toggle('is-danger', state.permissionMode === 'bypassPermissions');
     els.permissionButton?.setAttribute('title', permission.desc);
+    if (els.bypassIndicator) {
+      const bypass = state.permissionMode === 'bypassPermissions';
+      els.bypassIndicator.hidden = !bypass;
+      els.bypassIndicator.title = bypass ? 'Permission bypass is on: nothing asks before it runs.' : '';
+    }
     if (els.workspaceLabel) {
       els.workspaceLabel.textContent = state.workspace ? workspaceName() : "Choose folder";
       els.workspaceButton.title = state.workspace || "Working folder not selected";
@@ -8080,17 +8100,28 @@ You can start with a more structured option: one script, short captions, and a c
   function openModePopover(trigger = els.modeButton) {
     if (!trigger) return;
     const list = el('div', { class: 'popover-list', role: 'listbox', 'aria-label': 'Mode' });
-    MODES.forEach((mode) => {
-      list.appendChild(popoverOption({
-        title: mode.title,
-        desc: mode.desc,
-        icon: mode.icon,
-        selected: state.mode === mode.id,
-        onClick: () => {
-          closePopover();
-          void changeMode(mode.id);
-        }
-      }));
+    // Two levels, not four equal choices: Chat is the umbrella, and the shape
+    // inside it (direct, battle, side by side) is the choice that follows.
+    const groups = [
+      { title: 'Chat', ids: ['direct', 'battle', 'side-by-side'] },
+      { title: 'Agent', ids: ['agent'] }
+    ];
+    groups.forEach((group) => {
+      list.appendChild(el('div', { class: 'popover-section', text: group.title, role: 'presentation' }));
+      group.ids.forEach((id) => {
+        const mode = MODES.find((item) => item.id === id);
+        if (!mode) return;
+        list.appendChild(popoverOption({
+          title: mode.title,
+          desc: mode.desc,
+          icon: mode.icon,
+          selected: state.mode === mode.id,
+          onClick: () => {
+            closePopover();
+            void changeMode(mode.id);
+          }
+        }));
+      });
     });
     openPopover(trigger, {
       title: 'Mode',
@@ -10363,7 +10394,7 @@ You can start with a more structured option: one script, short captions, and a c
   }
 
   const LAYOUT_LIMITS = {
-    sidebarWidth: { min: 220, max: 420, fallback: 276 },
+    sidebarWidth: { min: 220, max: 420, fallback: 252 },
     workspaceWidth: { min: 260, max: 560, fallback: 332 },
     connectorsShare: { min: 22, max: 68, fallback: 38 }
   };
@@ -11602,6 +11633,7 @@ You can start with a more structured option: one script, short captions, and a c
     els.workspaceResize = $('#workspaceResize');
     els.workspaceSplitResize = $('#workspaceSplitResize');
     els.permissionButton = $('#permissionButton');
+    els.bypassIndicator = $('#bypassIndicator');
     els.workspaceSyncChip = $('#workspaceSyncChip');
     els.workspaceSyncToggle = $('#workspaceSyncToggle');
     els.compactButton = $('#compactButton');
@@ -11641,17 +11673,10 @@ You can start with a more structured option: one script, short captions, and a c
     els.helpButton = $('#helpTopButton');
   }
 
-  function ensureBypassWarning() {
-    if (!els.composerContext || !els.composerContext.parentNode) return null;
-    let warning = $('#permissionDangerBanner');
-    if (!warning) {
-      warning = el('div', { class: 'composer-warning', id: 'permissionDangerBanner', role: 'alert', hidden: true });
-      warning.append(iconEl('shield-alert'), el('span', { text: "Permission bypass enabled: backend can perform actions without confirmation. This is dangerous outside an isolated environment." }));
-      els.composerContext.insertAdjacentElement('afterend', warning);
-    }
-    warning.hidden = state.permissionMode !== 'bypassPermissions';
-    return warning;
-  }
+  // Bypass is shown as a red dot beside the send button (see updateComposerState).
+  // The old full-width red banner above the composer is gone: it marked the whole
+  // screen as broken for a setting that is one click away from the composer.
+  function ensureBypassWarning() { return null; }
 
   function restoreSidebarPreference() {
     try {

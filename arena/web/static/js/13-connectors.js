@@ -93,7 +93,7 @@
   }
 
   const LAYOUT_LIMITS = {
-    sidebarWidth: { min: 220, max: 420, fallback: 276 },
+    sidebarWidth: { min: 220, max: 420, fallback: 252 },
     workspaceWidth: { min: 260, max: 560, fallback: 332 },
     connectorsShare: { min: 22, max: 68, fallback: 38 }
   };
