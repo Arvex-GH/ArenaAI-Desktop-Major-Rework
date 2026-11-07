@@ -911,7 +911,7 @@
     const waitingId = lane.streaming && laneAwaitsApproval(lane) ? currentToolActivity(lane)?.id : null;
     const placed = list.map((activity, index) => {
       const at = Number.isFinite(activity.at) ? activity.at : null;
-      const pos = at === null ? null : stripToolMarkup(raw.slice(0, at)).length;
+      const pos = at === null ? null : readToolStream(raw.slice(0, at), false).text.length;
       return { activity, index, pos };
     });
     // Known positions keep their places; anything without one goes to the end
@@ -1173,10 +1173,93 @@
     return card;
   }
 
+  /* Markers                                                                  */
+  /* The model writes a line like "~~~write" before a call and "~~~" after it.
+     That one line arrives before the block does, so the app can hide the call
+     from its first character instead of printing a file body into the chat and
+     tidying up afterwards. Markers are display only: the tags still run. */
+  const STEP_MARKER_LINE = /^[ \t]*~~~([A-Za-z][\w-]*)?[ \t]*$/;
+  const TOOL_TAG_CLOSE = /<\/(?:tool|invoke)\s*>/i;
+
+  const MARKER_LABELS = {
+    command: 'Bash', write: 'Writing', edit: 'Editing', read: 'Reading',
+    search: 'Searching', list: 'Listing', delete: 'Deleting', plan: 'Planning',
+    todos: 'Todos', ask: 'Asking', tool: 'Tool'
+  };
+
+  function markerLabel(kind) {
+    if (!kind) return 'Working';
+    return MARKER_LABELS[kind] || (kind.charAt(0).toUpperCase() + kind.slice(1));
+  }
+
+  function markerDetail(kind, body) {
+    const grab = (tag) => {
+      const m = body.match(new RegExp(`<${tag}>\\s*([^<\\n]{1,200})`, 'i'));
+      return m ? m[1].trim() : '';
+    };
+    if (kind === 'command') return grab('cmd');
+    if (kind === 'write' || kind === 'edit' || kind === 'read' || kind === 'delete' || kind === 'list') return grab('path');
+    if (kind === 'search') return grab('pattern');
+    if (kind === 'ask') return grab('question');
+    return '';
+  }
+
+  /* Walks the reply line by line: everything between a marker and its closing
+     "~~~" is hidden. A closing marker only counts once the call's own tag has
+     closed, so a "~~~" fence inside a file being written cannot end it early. */
+  function readToolStream(raw, streaming) {
+    const text = String(raw || '');
+    if (!text.includes('~~~')) return { text, pending: null };
+    const lines = [];
+    let start = 0;
+    for (let i = 0; i <= text.length; i += 1) {
+      if (i === text.length || text[i] === '\n') {
+        lines.push({ start, end: i, text: text.slice(start, i).replace(/\r$/, '') });
+        start = i + 1;
+      }
+    }
+    const hidden = [];
+    let open = null;
+    let sawClose = false;
+    lines.forEach((line) => {
+      const match = STEP_MARKER_LINE.exec(line.text);
+      if (match) {
+        if (!open) {
+          open = { kind: (match[1] || '').toLowerCase(), start: line.start };
+          sawClose = false;
+        } else if (sawClose) {
+          hidden.push([open.start, line.end]);
+          open = null;
+          sawClose = false;
+        }
+        return;
+      }
+      if (open && TOOL_TAG_CLOSE.test(line.text)) sawClose = true;
+    });
+    let pending = null;
+    if (open) {
+      pending = {
+        kind: open.kind,
+        label: markerLabel(open.kind),
+        detail: markerDetail(open.kind, text.slice(open.start)),
+        unfinished: !streaming
+      };
+      hidden.push([open.start, text.length]);
+    }
+    let visible = '';
+    let pos = 0;
+    hidden.forEach(([from, to]) => {
+      if (from > pos) visible += text.slice(pos, from);
+      pos = Math.max(pos, to);
+    });
+    visible += text.slice(pos);
+    return { text: visible, pending };
+  }
+
   function stripToolMarkup(raw) {
-    // With folder tools, the model's raw reply contains <tool> call blocks.
-    // Those are rendered as tool rows; the answer text must not show the
-    // markup itself (nor a half-streamed tag at the end).
+    // Legacy replies without markers still carry <tool> blocks in the text.
+    // Those are rendered as tool rows; the answer must not show the markup
+    // itself, nor a half-streamed tag at the end.
     let text = String(raw || '')
       .replace(/<function_calls>[\s\S]*?<\/function_calls\s*>/gi, '')
       .replace(/<tool\s+name[^>]*>[\s\S]*?<\/tool\s*>/gi, '')
@@ -1186,12 +1269,31 @@
     return text.replace(/\n{3,}/g, '\n\n');
   }
 
-  function visibleLaneText(lane) {
+  /* The text the chat may show, and the call currently being written. */
+  function laneView(lane) {
     const raw = lane.text || '';
+    const read = readToolStream(raw, Boolean(lane.streaming));
     const hadTools = (lane.activities || []).some((item) => item.kind === 'tool')
       || (lane.permissions || []).length > 0;
-    if (!hadTools || !raw.includes('<')) return raw;
-    return stripToolMarkup(raw);
+    let text = read.text;
+    if (hadTools && text.includes('<')) text = stripToolMarkup(text);
+    return { text, pending: read.pending };
+  }
+
+  function visibleLaneText(lane) {
+    return laneView(lane).text;
+  }
+
+  /* The line that stands in for a call while its block streams. */
+  function renderPendingTool(pending) {
+    return el('div', { class: `tool-row is-run tool-pending${pending.unfinished ? ' is-done-early' : ''}` },
+      el('div', { class: 'tool-line' },
+        el('span', { class: 'tool-mark', 'aria-hidden': 'true' }),
+        el('span', { class: 'tool-name', text: pending.label }),
+        pending.detail ? el('span', { class: 'tool-arg' },
+          el('span', { class: 'tool-arg-text', text: pending.detail })) : null,
+        el('span', { class: 'tool-meta', text: pending.unfinished ? 'stopped' : 'working' })
+      ));
   }
 
   function answerFootNote(lane) {
@@ -1287,7 +1389,8 @@
       card.appendChild(details);
     }
 
-    const visibleText = visibleLaneText(lane);
+    const view = laneView(lane);
+    const visibleText = view.text;
     const inTypewriterWindow = lane.typewriterUntil && Date.now() < lane.typewriterUntil;
     const showTypewriter = lane.streaming && (!visibleText || inTypewriterWindow);
     if (!lane.streaming) dropLaneTypewriter(lane);
@@ -1307,7 +1410,7 @@
     } else {
       const flow = renderLaneFlow(lane, visibleText, false);
       flow.forEach((node) => card.appendChild(node));
-      if (lane.streaming && visibleText) {
+      if (lane.streaming && visibleText && !view.pending) {
         // The caret belongs at the end of the sentence being written, not
         // below the tool row that followed it.
         const last = flow[flow.length - 1];
@@ -1315,6 +1418,9 @@
         if (last && last.classList.contains('markdown')) last.appendChild(cursor);
       }
     }
+    // The call being written sits at the end of the flow, whatever the
+    // thinking placeholder above it is doing.
+    if (view.pending) card.appendChild(renderPendingTool(view.pending));
     if (Array.isArray(lane.permissions)) {
       lane.permissions.forEach((permission) => {
         if (!permission.status || permission.status === 'pending') return;

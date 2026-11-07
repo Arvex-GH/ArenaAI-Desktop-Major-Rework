@@ -30,6 +30,12 @@ ARTIFACTS_DIR = ".arena-artifacts"
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _TOOL_RE = re.compile(r"<tool\s+name\s*=\s*[\"']?([\w-]+)[\"']?\s*>(.*?)</tool\s*>", re.S | re.I)
 _EMPTY_FENCE = re.compile(r"```[\w-]*[ \t]*\n?\s*```")
+# A tool marker: a line of three tildes, optionally naming what the call does
+# ("~~~write", "~~~command"). The model writes one before every tool call and a
+# bare "~~~" after it. The app hides everything between them while it streams,
+# so a file body never runs through the chat before the write row appears; the
+# tags inside still run exactly as before. Markers are display only.
+_STEP_FENCE_STRIP = re.compile(r"(?m)^[ \t]*~~~[\w-]*[ \t]*\r?\n?")
 _PARAM_RE = re.compile(r"<([A-Za-z_][\w-]*)>(.*?)</\1\s*>", re.S | re.I)
 # Some models ignore the guide's tag form and answer with Anthropic-style
 # invokes instead; accept those too so their work is not lost.
@@ -51,6 +57,16 @@ To use a tool, write its tag as plain text in your reply, not inside a code bloc
 <tool name="write_file"><path>index.html</path><content>
 FULL FILE CONTENT
 </content></tool>
+Put a marker line in front of every tool call and a bare `~~~` after it, so the app can hide the call while it streams and show one calm line ("Bash", "Writing src/main.ts", "Reading …") instead of the raw block. Markers change nothing about how the tags run — they are how the interface knows a block is coming before its first character arrives:
+~~~command
+<tool name="run_cmd"><cmd>npm install && npm run build</cmd></tool>
+~~~
+~~~write
+<tool name="write_file"><path>src/main.ts</path><content>
+ENTIRE FILE CONTENT
+</content></tool>
+~~~
+Markers, one per call: `~~~command` (run_cmd, stop_cmd), `~~~write` (write_file), `~~~edit` (edit_file), `~~~read` (read_file, read_files), `~~~search` (search), `~~~list` (ls), `~~~delete` (delete), `~~~plan` (propose_plan), `~~~todos` (set_todos), `~~~ask` (ask_user), and `~~~tool` for a connector tool. Keep the marker on its own line, and never put a bare `~~~` line inside content you write.
 <tool name="edit_file"><path>index.html</path><old_text>exact text to replace</old_text><new_text>replacement</new_text></tool>
 <tool name="mkdir"><path>assets/img</path></tool>
 <tool name="delete"><path>old_notes.txt</path></tool>
@@ -69,6 +85,7 @@ FULL FILE CONTENT
 src/util.py
 README.md</paths></tool>
 {extra_tools}{delegate}
+A marker line (`~~~write`, `~~~command`, …) before a call and `~~~` after it is what the app hides; the call still runs exactly as written.
 Rules: paths are relative to the folder. Read a file before editing it. write_file takes the whole file. When the task is done, reply with a short summary and no tool tags. If the message does not need files, just answer it. Use ask_user only for choices that are genuinely the user's (preferences, ambiguous requirements): one clear question with 2-4 short options \u2014 the user can also type their own answer, and it comes back to you as the tool result. Never ask what you can find out from the files, and do not ask twice in a row. For work with several steps, keep a checklist with set_todos: set it before you start and update it as steps finish ([x] done, [~] in progress, [ ] pending), so the user sees live progress. Before substantial or risky changes, present the intended steps with propose_plan and wait for the user's decision; if they ask for revisions, present the updated plan.
 Keep the context lean: batch independent tool calls in one reply instead of one call per round. Every extra round re-sends the whole context to the model and burns the user's daily Arena balance, so fewer, fuller rounds finish the same work for less. To read several files at once, use read_files with one path per line inside <paths>; re-reading a file that has not changed returns a short note instead of repeating the content. read_file accepts <start_line> and <end_line> — read only the part you need, and do not re-read files you just wrote. Very long tool outputs are saved under .arena-artifacts/ and you only see a preview; read_file that path if you need the full text.
 
@@ -131,6 +148,8 @@ def guide(root, mode_label: str, mode_note: str, dual: bool = False, extra_tools
 def parse_tool_calls(text: str) -> List[Dict[str, Any]]:
     calls = []
     found = []
+    # Marker lines sit outside the tags, so nothing has to be removed before
+    # scanning — and a "~~~" fence inside a file being written stays content.
     for m in _TOOL_RE.finditer(text or ""):
         params: Dict[str, Any] = {}
         for p in _PARAM_RE.finditer(m.group(2)):
@@ -229,7 +248,8 @@ def _coerce_mcp_value(value: Any, prop: Dict[str, Any]) -> Any:
 def strip_tool_calls(text: str) -> str:
     cleaned = _FUNCTION_CALLS_RE.sub("", text or "")
     cleaned = _INVOKE_RE.sub("", cleaned)
-    return _EMPTY_FENCE.sub("", _TOOL_RE.sub("", cleaned))
+    cleaned = _TOOL_RE.sub("", cleaned)
+    return _STEP_FENCE_STRIP.sub("", _EMPTY_FENCE.sub("", cleaned))
 
 
 def _body(text: str) -> str:

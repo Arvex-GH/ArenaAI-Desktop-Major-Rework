@@ -3354,6 +3354,38 @@ body.is-resizing-y, body.is-resizing-y * { cursor: ns-resize !important; }
   to   { max-height: 0; opacity: 0; margin-top: 0; margin-bottom: 0; }
 }
 .tool-detail-content { min-width: 0; }
+/* The stand-in line while a call is still being written. It is the same row,
+   breathing: a sheen crosses the label and "working" pulses at the end. */
+.tool-pending .tool-line { cursor: default; }
+.tool-pending .tool-name,
+.tool-pending .tool-arg-text {
+  background: linear-gradient(100deg, currentColor 30%, rgba(255, 255, 255, 0.92) 50%, currentColor 70%);
+  background-size: 260% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: tool-sheen 1.9s linear infinite;
+}
+.tool-pending .tool-arg-text { opacity: .8; }
+.tool-meta {
+  display: inline-flex; align-items: baseline; gap: 3px;
+}
+.tool-pending .tool-meta::after {
+  content: '';
+  width: 10px;
+  background-image: radial-gradient(circle, currentColor 40%, transparent 45%);
+  background-size: 4px 4px;
+  background-repeat: repeat-x;
+  height: 3px;
+  opacity: .8;
+  animation: tool-dots 1.05s steps(3, end) infinite;
+}
+@keyframes tool-sheen { from { background-position: 130% 0; } to { background-position: -130% 0; } }
+@keyframes tool-dots { from { background-position-x: 0; } to { background-position-x: 12px; } }
+.tool-pending.is-done-early .tool-meta::after { display: none; }
+.tool-pending.is-done-early .tool-name,
+.tool-pending.is-done-early .tool-arg-text { animation: none; -webkit-text-fill-color: currentColor; background: none; }
+
 .tool-row.is-run .tool-detail { border-left-color: rgba(232, 237, 239, 0.16); }
 .tool-row.is-err .tool-detail { border-left-color: rgba(224, 122, 114, 0.28); }
 .tool-body { display: flex; gap: 8px; min-width: 0; padding-left: 4px; }
