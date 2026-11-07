@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.15-brightgreen?style=flat-square" alt="v1.5.15" />
+  <img src="https://img.shields.io/badge/version-1.5.16-brightgreen?style=flat-square" alt="v1.5.16" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.15](#whats-new-in-v1515)
+- [What's new in v1.5.16](#whats-new-in-v1516)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,7 +44,46 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.15
+## What's new in v1.5.16
+
+### A run of tool calls is one line you can open
+
+Reported after 1.5.15: a busy turn is a wall of rows — read, read, write,
+command — and there is no way to see it as one paragraph of work. Now it is one.
+
+Consecutive tool calls between one thought and the next — and between two
+paragraphs of the answer — are a group: a single row that counts what the run
+did, with every call one click behind it.
+
+```
+Thought for 3 seconds
+> 2 reads, 1 write, 1 command        4 calls
+> 2 reads, 1 write, 1 command        (folded)
+```
+
+- **Open by default.** The rows are exactly the rows that were there before,
+  one hairline further in; a click on the summary line folds the whole run, and
+  the choice is remembered for that group.
+- **The counts are the three things you asked for** — reads, writes, commands —
+  in a fixed order, singular when it is one (`1 read, 1 write, 1 command`), and
+  zero categories left out. Searches, fetches, MCP tools and sub-agents are
+  counted as *tools* rather than being passed off as a read or a write.
+- **Boundaries hold.** A thought row ends a run, and so does a paragraph of
+  answer text; a group never spans either.
+- **One call is not a group.** "1 read" over a row that already says *Read
+  app.js* would say it twice, so a lone call stays exactly as it was.
+- **While a run is live** the summary line carries the spinner instead of a call
+  count. A group you folded by hand stays folded — the spinner is what tells you
+  it is still working.
+- **A pending approval is never folded away.** If one of the calls in a run is
+  waiting for your decision, the group opens itself, says *waiting* in amber, and
+  refuses to close. Everything else the view may hide; a question to you it may
+  not.
+
+Nothing about the calls themselves changed: the rows keep their own chevrons,
+their own output, their own approval prompts and their own place in the sentence.
+
+### Previous: v1.5.15 — thought rows, a bypass that does not ask, the agent in the composer
 
 ### The composer is two icons, and the agent is one click away
 

@@ -980,6 +980,31 @@ svg { display: block; }
   font-size: 11.5px; line-height: 1.65;
 }
 
+/* A run of calls, countable: "2 reads, 1 write, 1 command". The line is the
+   same row every tool call uses, so a group and a call read as the same species
+   of thing; the rows behind it are what they always were, one hairline in. */
+.tool-group { margin: 3px 0; }
+.tool-group-line { cursor: pointer; }
+.tool-group-glyph { flex: 0 0 auto; display: inline-flex; margin: 0 7px 0 3px; color: var(--muted-dim); }
+.tool-group-glyph .icon { width: 11px; height: 11px; }
+.tool-group-line .tool-name { color: var(--text-soft); font-weight: 400; }
+.tool-group-line:hover .tool-name { color: var(--text); }
+.tool-group-line .tool-chevron { color: var(--muted-dim); }
+.tool-group.is-open > .tool-group-line .tool-chevron { transform: rotate(90deg); }
+.tool-group.is-run .tool-group-glyph { color: var(--text-soft); }
+.tool-group.is-run .tool-name { color: var(--text); }
+.tool-group .tool-spinner { margin-left: 8px; }
+/* A waiting approval keeps its rows on screen, whatever the reader folded. */
+.tool-group.is-wait .tool-group-glyph { color: var(--amber); }
+.tool-group .tool-meta.is-wait { color: var(--amber); opacity: .95; }
+.tool-group-body {
+  margin: 3px 0 5px 5px;
+  padding-left: 9px;
+  border-left: 1px solid rgba(255, 255, 255, 0.075);
+}
+.tool-group-body > .tool-row:first-child { margin-top: 0; }
+.tool-group-body > .tool-row:last-child { margin-bottom: 0; }
+
 .stream-cursor { display: inline-block; width: 5px; height: 14px; margin-left: 2px; vertical-align: -2px; background: var(--accent); border-radius: 1px; animation: caret 1s steps(2, start) infinite; }
 @keyframes caret { 0%, 50% { opacity: 1; } 50.1%, 100% { opacity: 0; } }
 .answer-footnote { display: flex; align-items: center; gap: 7px; margin-top: 12px; color: #6e7772; font-size: 10px; }

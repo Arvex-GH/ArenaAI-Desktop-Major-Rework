@@ -851,6 +851,22 @@
   }
 
   function onToolToggle(event) {
+    // A group is toggled by its summary line, not by the rows inside it: the
+    // rows keep their own chevrons and their own detail.
+    const groupLine = event.target.closest?.('[data-group-toggle]');
+    if (groupLine) {
+      const groupId = groupLine.getAttribute('data-group-toggle');
+      const isOpen = groupLine.closest('.tool-group')?.classList.contains('is-open');
+      if (isOpen) {
+        closedGroups.add(groupId);
+        openGroups.delete(groupId);
+      } else {
+        openGroups.add(groupId);
+        closedGroups.delete(groupId);
+      }
+      scheduleChatRender();
+      return;
+    }
     const button = event.target.closest?.('[data-tool-toggle]');
     if (!button) return;
     const id = button.getAttribute('data-tool-toggle');
@@ -994,6 +1010,94 @@
     return row;
   }
 
+  /* A run of calls is a paragraph of work, and it can be read as one line.
+     Between one thought and the next (and between two paragraphs of answer
+     text) the calls a turn made are counted instead of listed — "2 reads, 1
+     write, 1 command" — and the rows behind that line are one click away. The
+     grouping is a view, never a record: nothing is merged, dropped or
+     reordered, and opening the group shows exactly the rows that would have
+     been there anyway.
+
+     Default is open. The line exists so the reader *can* fold a busy turn, not
+     so the work hides itself; only an explicit click closes a group, and that
+     decision is remembered per group. A group of one call stays a plain row:
+     "1 read" over a row that already says "Read app.js" would say it twice. */
+  const TOOL_READ_KEYS = new Set([
+    'read_file', 'read_files', 'read', 'view', 'cat',
+    'ls', 'list_files', 'list_dir', 'list_directory'
+  ]);
+  const TOOL_WRITE_KEYS = new Set([
+    'write_file', 'write', 'create_file', 'write_project',
+    'edit_file', 'edit', 'str_replace', 'str_replace_editor', 'multi_edit',
+    'mkdir', 'delete', 'delete_file', 'move_file', 'rename'
+  ]);
+  const TOOL_COMMAND_KEYS = new Set([
+    'run_cmd', 'bash', 'shell', 'execute_command', 'terminal', 'run_command', 'stop_cmd'
+  ]);
+  // Groups the reader folded, and groups they opened again after folding.
+  const closedGroups = new Set();
+  const openGroups = new Set();
+
+  function toolKindOf(activity) {
+    // A file the sandbox edited is a write, whatever its tool was called.
+    if (String(activity.kind || '') === 'sandbox') return 'write';
+    const key = toolKey(activity);
+    if (TOOL_COMMAND_KEYS.has(key)) return 'command';
+    if (TOOL_WRITE_KEYS.has(key)) return 'write';
+    if (TOOL_READ_KEYS.has(key)) return 'read';
+    // Searches, fetches, MCP tools, sub-agents: counted, not mislabelled as a
+    // read or a write just to keep the line short.
+    return 'tool';
+  }
+
+  function toolGroupSummary(items) {
+    const counts = { read: 0, write: 0, command: 0, tool: 0 };
+    items.forEach((item) => { counts[toolKindOf(item.activity)] += 1; });
+    return [['read', 'read'], ['write', 'write'], ['command', 'command'], ['tool', 'tool']]
+      .filter(([kind]) => counts[kind] > 0)
+      .map(([kind, word]) => plural(counts[kind], word))
+      .join(', ');
+  }
+
+  function rowHasClass(node, className) {
+    return Boolean(node && node.classList && node.classList.contains(className));
+  }
+
+  function renderToolGroup(items) {
+    const id = `group-${items[0].activity.id}`;
+    // A pending approval is never folded away. Everything else the reader may
+    // hide; a question addressed to them may not be hidden by a view.
+    const waiting = items.some((item) => rowHasClass(item.node, 'is-wait'));
+    const open = waiting || openGroups.has(id) || !closedGroups.has(id);
+    const running = !waiting && items.some((item) => rowHasClass(item.node, 'is-run'));
+    const summary = toolGroupSummary(items);
+    const group = el('div', {
+      class: `tool-group${open ? ' is-open' : ''}${running ? ' is-run' : ''}${waiting ? ' is-wait' : ''}`,
+      'data-group-id': id
+    });
+    group.appendChild(el('button', {
+      class: 'tool-line tool-group-line', type: 'button', 'data-group-toggle': id,
+      'aria-expanded': open ? 'true' : 'false',
+      title: open
+        ? `${summary} \u2014 click to fold into one line`
+        : `${summary} \u2014 click to show every call`
+    },
+      el('span', { class: 'tool-chevron', 'aria-hidden': 'true' }, iconEl('chevron-right')),
+      el('span', { class: 'tool-group-glyph', 'aria-hidden': 'true' }, iconEl('layers')),
+      el('span', { class: 'tool-name', text: summary }),
+      waiting
+        ? el('span', { class: 'tool-meta is-wait', text: 'waiting' })
+        : running
+          ? el('span', { class: 'tool-spinner', 'aria-hidden': 'true' })
+          : el('span', { class: 'tool-meta', text: plural(items.length, 'call') })
+    ));
+    if (!open) return group;
+    const body = el('div', { class: 'tool-group-body' });
+    items.forEach((item) => { if (item.node) body.appendChild(item.node); });
+    group.appendChild(body);
+    return group;
+  }
+
   /* The answer and the work it did, in the order they happened: text, then the
      call it made, then the text that followed. Nothing is hoisted to the top and
      nothing is pushed to the bottom: rows, thoughts and words keep their places. */
@@ -1022,15 +1126,29 @@
     const node = (item) => (item.kind === 'thinking'
       ? renderThoughtRow(lane, item.block)
       : renderActivityNode(item.activity, lane, waitingId));
+    // Consecutive calls collect here and are handed to renderToolGroup, which
+    // draws them as one countable line. A thought or a paragraph of the answer
+    // ends the run: a group never spans a boundary it cannot see.
+    let run = [];
+    const flushRun = () => {
+      if (!run.length) return;
+      if (run.length > 1) nodes.push(renderToolGroup(run));
+      else nodes.push(run[0].node);
+      run = [];
+    };
+    const place = (item) => {
+      const rendered = node(item);
+      if (!rendered) return;
+      if (item.kind === 'activity') run.push({ activity: item.activity, node: rendered });
+      else { flushRun(); nodes.push(rendered); }
+    };
     if (showTypewriter) {
       // The words are hidden behind the placeholder for a moment — it stands in
       // for them, so pouring them here as well would print the first sentence
       // twice. The calls and thoughts it already had are not hidden: a command
       // still opens while it runs, in the order they happened.
-      placed.slice().sort(bySource).forEach((item) => {
-        const rendered = node(item);
-        if (rendered) nodes.push(rendered);
-      });
+      placed.slice().sort(bySource).forEach(place);
+      flushRun();
       return nodes;
     }
     placed.sort((a, b) => {
@@ -1045,12 +1163,15 @@
     placed.forEach((item) => {
       if (item.pos !== null && item.pos > cursor) {
         const piece = visibleText.slice(cursor, item.pos);
-        if (piece.trim()) nodes.push(markdownNode(piece));
+        if (piece.trim()) {
+          flushRun();
+          nodes.push(markdownNode(piece));
+        }
         cursor = Math.max(cursor, item.pos);
       }
-      const rendered = node(item);
-      if (rendered) nodes.push(rendered);
+      place(item);
     });
+    flushRun();
     const rest = visibleText.slice(cursor);
     if (rest.trim()) nodes.push(markdownNode(rest));
     return nodes;
