@@ -47,6 +47,13 @@
     let job = null;
     let pollTimer = null;
     let busy = false;
+    // What the bar has already shown. A percentage that drops is read as a
+    // restart, and the only honest reason to restart is a new download — so the
+    // bar is clamped here and reset only where a download actually begins.
+    let shownPct = 0;
+    // Polls are 450 ms apart and each one is an HTTP round trip: without this,
+    // an older answer can land after a newer one and walk the bar backwards.
+    let polling = false;
 
     const backdrop = el('div', { class: 'modal-backdrop' });
     const modal = el('section', {
@@ -115,9 +122,15 @@
     function setProgress(visible, label, pct) {
       progress.hidden = !visible;
       if (!visible) return;
+      const value = Math.max(shownPct, Math.min(100, Number(pct) || 0));
+      shownPct = value;
       progress.querySelector('.update-progress-label').textContent = label;
-      progress.querySelector('.update-progress-pct').textContent = `${Math.round(pct)}%`;
-      progress.querySelector('.update-progress-fill').style.width = `${Math.max(2, Math.min(100, pct))}%`;
+      progress.querySelector('.update-progress-pct').textContent = `${Math.round(value)}%`;
+      progress.querySelector('.update-progress-fill').style.width = `${Math.max(2, value)}%`;
+    }
+
+    function resetProgress() {
+      shownPct = 0;
     }
 
     function showError(message) {
@@ -172,6 +185,8 @@
     }
 
     function pollOnce() {
+      if (polling) return;
+      polling = true;
       API.updateProgress().then((result) => {
         job = result?.job || null;
         if (!job) return;
@@ -191,7 +206,8 @@
           stopPolling();
           fail(job.error || 'The download failed.');
         }
-      }).catch(() => { /* keep the last known state */ });
+      }).catch(() => { /* keep the last known state */ })
+        .finally(() => { polling = false; });
     }
 
     async function startDownload() {
@@ -200,9 +216,12 @@
       primary.disabled = true;
       later.disabled = true;
       note.textContent = 'Downloading the new build from the official release page.';
+      resetProgress();
       setProgress(true, 'Starting the download', 1);
       try {
-        const result = await API.updateDownload(false);
+        // force: the six-hour check cache decided this dialog was worth opening,
+        // but the download must be decided by the feed as it is right now.
+        const result = await API.updateDownload(true);
         if (!result?.ok) throw new Error(result?.error || 'The download could not start.');
         busy = false;
         later.disabled = false;
@@ -214,12 +233,30 @@
         pollOnce();
         pollTimer = window.setInterval(pollOnce, 450);
       } catch (err) {
-        fail(errorMessage(err));
+        const message = errorMessage(err);
+        // The feed can only answer this when the build really is current. That
+        // is not a failure to retry, it is the answer: say so, and take the
+        // stale "an update is available" down with it.
+        if (/already on the newest|newest version|no update/i.test(message)) {
+          busy = false;
+          setProgress(false);
+          resetProgress();
+          note.textContent = 'This build is the newest release on the feed. Nothing to install.';
+          showError('');
+          API.updateCheck(true)
+            .then((fresh) => { if (fresh) state.updateInfo = fresh; })
+            .catch(() => { /* the note above stands on its own */ });
+          setPrimary('Close', () => close());
+          later.disabled = true;
+          return;
+        }
+        fail(message);
       }
     }
 
     function resetIdle() {
       busy = false;
+      resetProgress();
       setProgress(false);
       note.textContent = canInstall
         ? 'The update downloads here, then Arena Desktop closes, replaces itself and starts again. Nothing else is touched.'
@@ -237,7 +274,11 @@
       startDownload();
     }
 
-    primary.addEventListener('click', () => startOrOpen());
+    // One handler for the primary button, and only one: setPrimary() owns it and
+    // is called on every state change. A second listener here meant every click
+    // ran twice — "Restart and update" started the update *and* began the
+    // download again, which is what walked the bar back to 1% and left the app
+    // quitting while a second job was rewriting the same file.
     later.addEventListener('click', markDismissed);
     closeButton.addEventListener('click', () => { if (!busy) markDismissed(); });
     backdrop.addEventListener('pointerdown', (event) => { if (event.target === backdrop && !busy) markDismissed(); });

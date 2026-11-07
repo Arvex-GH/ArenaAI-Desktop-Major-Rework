@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.17-brightgreen?style=flat-square" alt="v1.5.17" />
+  <img src="https://img.shields.io/badge/version-1.5.18-brightgreen?style=flat-square" alt="v1.5.18" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.17](#whats-new-in-v1517)
+- [What's new in v1.5.18](#whats-new-in-v1518)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,7 +44,47 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.17
+## What's new in v1.5.18
+
+### The update button was doing two things at once
+
+Reported from the installed app: the updater *"always gives up an error"* about an
+update that is already there, and *"the progress bar also progresses and then
+regresses and then progresses until she reaches the end"*.
+
+Both came from one line. The update dialog's primary button is owned by
+`setPrimary()`, which assigns `primary.onclick` on every state change — and it
+also had a second `addEventListener('click', …)` from the dialog being built. One
+click ran **both** handlers:
+
+- **Download and install** started two downloads of the same file into the same
+  `.part` file, and the second job reset the first — the bar fell back to 1% and
+  the phase flipped under the dialog.
+- **Restart and update** started the install *and* began downloading again. The
+  install request could then arrive after the job had been reset to
+  `downloading`, and was answered `409 The update has not finished downloading
+  yet.` — a red error, with "Try again", about an update the user had just
+  finished. Then the bar restarted and ran to the end again.
+
+The second handler is gone; the button has exactly one. The install endpoint also
+claims the job (`phase: installing`) before it launches anything, so a stale
+second click can no longer start a download underneath the setup that is copying
+the file.
+
+**The bar can only move forward now.** The percentage is clamped in all three
+places that drive it — the download job, the dialog and the setup window — and a
+reordered poll answer can no longer walk it backwards (polls are also serialised,
+since 450 ms apart is not the same as 450 ms of latency). A new download is the
+only thing that resets it.
+
+**"You are already on the newest version" is no longer an error.** If the feed
+really does answer that — the check cache can be six hours old — the dialog says
+*"This build is the newest release on the feed. Nothing to install."* with a
+single Close button, and re-checks the feed so the stale "an update is available"
+goes away too. Starting a download now also re-reads the feed instead of trusting
+that cache.
+
+### Previous: v1.5.17 — the folder in Chat options is a folder again
 
 ### The folder in Chat options is a folder again
 

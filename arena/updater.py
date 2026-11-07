@@ -294,7 +294,12 @@ class Job:
         with self.lock:
             self.state.update(kwargs)
             if "received" in kwargs and self.state.get("total"):
-                self.state["pct"] = int(min(100, 100 * kwargs["received"] / max(self.state["total"], 1)))
+                pct = int(min(100, 100 * kwargs["received"] / max(self.state["total"], 1)))
+                # Bytes only ever arrive, so within one download the percentage
+                # can only grow. Clamping here means a late or reordered
+                # `received` can never walk the bar backwards; a new download
+                # clears it in reset().
+                self.state["pct"] = max(int(self.state.get("pct") or 0), pct)
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -302,6 +307,11 @@ class Job:
 
     def start_download(self, release: dict) -> dict:
         asset = (release or {}).get("installer")
+        # An update that is already being installed owns the file: a second
+        # download would rewrite it underneath the setup that is copying it.
+        with self.lock:
+            if self.state.get("phase") == "installing":
+                return dict(self.state)
         if not asset:
             return self.reset(phase="error", error="This release has no download for Windows.")
         self.reset(phase="downloading", version=release.get("version"), total=int(asset.get("size") or 0),
@@ -309,7 +319,11 @@ class Job:
         cancel = self.cancel
 
         def on_progress(received: int, total: int) -> None:
-            self.update(received=received, total=total or received)
+            # The first answer decides the total: a later one (a redirect that
+            # reports nothing, a chunked response) must not shrink it, because
+            # that is what makes a full bar jump back to the middle.
+            settled = int(self.state.get("total") or 0)
+            self.update(received=received, total=max(settled, total or 0) or received)
 
         def work() -> None:
             try:

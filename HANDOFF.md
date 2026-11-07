@@ -1,7 +1,7 @@
 # Arena Desktop — Session Handoff
 
 **Date:** 2026-11-07
-**Version:** 1.5.17
+**Version:** 1.5.18
 **Status:** Desktop app working — Flask + pywebview/WebView2, full web UI, 306/307 tests pass
 
 ---
@@ -521,6 +521,39 @@ suite.
   never started, or instantly done when all are off); `startup_screen.js` → 28;
   `startup_screen_dom.js` → 20 (presets named, Off row, tool counts).
 - Version 1.5.13.
+
+## Session 29 (2026-11-07) — merged, NOT released: the update button fired twice
+
+- **Reported:** *"fix the update installer … it always gives up an error saying
+  that there already is an update installed. And the progress bar also progresses
+  and then regresses and then progresses until she reaches the end."*
+- **One cause for both:** `openUpdateDialog()` (`15-update.js`) owned the primary
+  button twice — `setPrimary()` assigns `primary.onclick` on every state change,
+  and a `primary.addEventListener('click', () => startOrOpen())` from dialog
+  construction ran as well. One click ran both, in the same dispatch (disabled
+  buttons do not stop a listener that is already in flight):
+  "Download and install" started two downloads into one `.part`; "Restart and
+  update" started the install **and** reset the job to `downloading`, so
+  `/api/update/install` could answer 409 *The update has not finished downloading
+  yet.* — the red error — while the bar fell back to 1% and ran again.
+- **Fix:** the extra listener is deleted (`setPrimary` is the only owner). The
+  install endpoint writes `phase: "installing"` before launching, and
+  `Job.start_download()` + the download endpoint refuse while it is set, so a
+  stale click cannot rewrite the file being copied.
+- **Bar forward-only:** `Job.update()` clamps `pct` to `max(previous, computed)`
+  and `total` to `max(settled, reported)`; `pollOnce()` is serialised (early
+  return + `finally`); the dialog keeps `shownPct` (`resetProgress()` only on a
+  new download) and the setup window got `shownPct` + `resetBar()`.
+- **409 "already on the newest version"** is no longer an error: the download is
+  requested with `force` (fresh feed read), and if the answer is still current
+  the dialog says *"This build is the newest release on the feed. Nothing to
+  install."*, offers Close, and refreshes `/api/update-check?force=1`.
+- **Tests:** `tests/js/update_dialog.js` + `tests/test_update_flow.py` — 19
+  checks, scripted job `5, 40, 20, 75, 100%` → bar reads `5 → 38 → 75 → 100`;
+  one click = one download; install issues one POST and no second download.
+  Against 1.5.17 the harness reports `2 POST(s)` and `5 → 38 → 20 → 75 → 100`.
+- **Version 1.5.18.** Also carries 1.5.17 (the 200 px folder icon in Chat
+  options). Release gated on the owner.
 
 ## Session 28 (2026-11-07) — merged, NOT released: the Chat options folder was 200 px
 

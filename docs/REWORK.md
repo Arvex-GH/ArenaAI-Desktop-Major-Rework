@@ -1304,6 +1304,94 @@ const oversized = svgs.filter(([w, h]) => Math.max(w, h) > 16 || Math.max(w, h) 
 21 icons, none larger than 14 px. Run against the 1.5.16 stylesheet the same check
 reports `100%` — the bug, reproduced in a unit test.
 
+## 1.5.18
+
+Reported from the installed build: *"the update installer … always gives up an
+error saying that there already is an update installed. And the progress bar also
+progresses and then regresses and then progresses until she reaches the end."*
+
+### One button, two handlers
+
+`openUpdateDialog()` (`15-update.js`) built its footer button like this:
+
+```js
+function setPrimary(label, onClick) {
+  primary.replaceChildren(el('span', { text: label }));
+  primary.onclick = onClick;          // the intended owner
+  primary.disabled = false;
+}
+…
+primary.addEventListener('click', () => startOrOpen());   // and a second one
+```
+
+Every state change reassigns `onclick`, and the extra listener survived all of
+them. A single click dispatched **both**, in order, in the same event:
+
+| state | `onclick` did | the listener also did |
+|---|---|---|
+| Download and install | `startDownload()` | `startDownload()` again |
+| Restart and update | `applyUpdate()` | `startDownload()` |
+
+Two downloads of the same asset open the same `.part` file; the second
+`JOB.start_download()` resets the first, so the bar drops to 1% and the phase
+flips from `ready` back to `downloading` while the dialog is still deciding what
+to show. On "Restart and update" the install request could arrive *after* that
+reset, and `api_update_install()` answers 409 `The update has not finished
+downloading yet.` — the red error the owner described, about an update he had
+just finished, with a "Try again" button that started the whole cycle again.
+
+The listener is gone; `setPrimary()` is the only owner. Belt and braces on the
+server: `api_update_install()` now writes `phase: "installing"` **before** it
+launches anything, and `Job.start_download()` returns early (and the endpoint
+answers 409 *The update is already being installed.*) while that phase is set, so
+a stale second click cannot rewrite the file a setup is copying.
+
+### A bar that cannot go backwards
+
+Three independent things could move it back:
+
+1. `Job.update()` took `pct` from `received / total` on every callback, and
+   `download_asset()` set `total` from each response's `Content-Length` — a
+   smaller total shrank the percentage. Both are clamped now: the total only
+   ever settles upward (`max(settled, total)`), and `pct` is
+   `max(previous, computed)` inside one download. `reset()` is the only thing
+   that clears it.
+2. `pollOnce()` ran on `setInterval(…, 450)` without a guard, so two polls could
+   be in flight and an older answer could land after a newer one. It now returns
+   early while a poll is outstanding, and clears the flag in `finally`.
+3. The dialog's `setProgress()` wrote whatever it was given. It now keeps
+   `shownPct` and writes `Math.max(shownPct, pct)`; `resetProgress()` is called
+   only where a download genuinely starts. The setup window got the same
+   treatment (`shownPct` + `resetBar()`), because a mid-run `setProgress(0)` there
+   had the same effect.
+
+### "Already on the newest version" is an answer, not a failure
+
+`/api/update/download` answers 409 `You are already on the newest version.` when
+the feed says the running build is current — which it can, because the check
+result is cached for six hours. The dialog printed that as a red error with
+"Try again". Now:
+
+- the download request is sent with `force`, so the feed is re-read instead of a
+  six-hour-old cache deciding whether an update exists;
+- if the answer is still "already current", the dialog says *"This build is the
+  newest release on the feed. Nothing to install."*, shows no error, offers a
+  single **Close**, and refreshes `/api/update-check?force=1` so the stale
+  "an update is available" island disappears with it.
+
+### Tests
+
+`tests/js/update_dialog.js` (+ `tests/test_update_flow.py`) — 19 checks. It boots
+the real dialog in jsdom with a scripted job whose fourth answer is *older* than
+the third (`5%, 40%, 20%, 75%, 100%`) and asserts the bar reads
+`5 → 38 → 75 → 100` — never backwards, ending at 100 — that **one click starts
+exactly one download**, that "Restart and update" issues one install and no
+second download (and leaves the bar at 100), and that the 409 case shows the calm
+note, no error, and re-checks the feed. `tests/test_update_flow.py` also pins the
+job's monotonicity, the "installing" guard, the single `onclick` owner and the
+clamp in the setup window. Run against the 1.5.17 dialog the harness reports
+`2 POST(s)` and `5 → 38 → 20 → 75 → 100`.
+
 ## Still to come
 
 - **Session list presentation.** Grouping (today / this week / older), the way a
