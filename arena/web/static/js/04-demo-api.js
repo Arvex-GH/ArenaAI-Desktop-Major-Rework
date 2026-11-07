@@ -24,7 +24,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '1.5.15',
+        app_version: '1.5.16',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };

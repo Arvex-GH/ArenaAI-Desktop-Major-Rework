@@ -1,7 +1,7 @@
 # Arena Desktop — Session Handoff
 
 **Date:** 2026-11-07
-**Version:** 1.5.15
+**Version:** 1.5.16
 **Status:** Desktop app working — Flask + pywebview/WebView2, full web UI, 306/307 tests pass
 
 ---
@@ -521,6 +521,57 @@ suite.
   never started, or instantly done when all are off); `startup_screen.js` → 28;
   `startup_screen_dom.js` → 20 (presets named, Off row, tool counts).
 - Version 1.5.13.
+
+## Session 26 (2026-11-07) — merged, NOT released: a run of tool calls is one line
+
+- **Asked:** *"if the agent calls a certain tool more than once in a row … the
+  user should be able to collapse every tool call into one line. And then there
+  should stand two reads, one write and one command."* Answers to the three
+  questions: **stay open** by default, **thoughts and answer text both** end a
+  run, and count **reads, writes, commands** only.
+- **Where:** `arena/web/static/js/07-render.js`. The grouping happens in
+  `renderLaneFlow` while the node array is built (`run` + `flushRun()` +
+  `place(item)`), not on the DOM afterwards, so the offset bookkeeping that
+  places rows is untouched. A run of 2+ becomes `renderToolGroup(run)`; one call
+  stays a plain row (`1 read` over *Read app.js* would say it twice).
+- **Boundaries:** `flushRun()` fires before any non-activity node — a thought, a
+  markdown piece, the end of the lane. A group never spans a boundary it cannot
+  see, and the typewriter branch (`showTypewriter`) groups identically.
+- **Counts:** `toolKindOf()` → read / write / command / tool via `toolKey()`;
+  sandbox edits (`activity.kind === 'sandbox'`) are writes. Summary prints reads,
+  writes, commands, then tools, with `plural()` and no zero counts:
+  `2 reads, 1 write, 1 command`. Search/fetch/MCP/sub-agents are **tools**, never
+  passed off as reads.
+- **State:** `closedGroups` / `openGroups` `Set`s keyed `group-<first call id>`.
+  Open unless closed; ids come from the stream so a per-token re-render cannot
+  lose the choice. A group folded by hand stays folded while it runs — forcing it
+  open would fight the click — and the summary line shows the spinner instead of
+  the call count, so a folded live group still looks alive.
+- **Never hide an approval:** a row with `is-wait` forces its group open
+  (`const open = waiting || openGroups.has(id) || !closedGroups.has(id);`), the
+  meta reads *waiting* in amber, and clicking the line cannot close it. Grouping
+  is the first feature that could have hidden a pending question, so it is the
+  one place the view overrules the click.
+- **DOM:** `div.tool-group[data-group-id]` > `button.tool-line.tool-group-line
+  [data-group-toggle]` (chevron, `layers` glyph, `.tool-name` = summary,
+  `.tool-meta` = "4 calls" or a spinner) + `div.tool-group-body` holding the
+  **same** row nodes. `onToolToggle` handles `[data-group-toggle]` before
+  `[data-tool-toggle]`, so a group click never touches a row's own
+  `expandedActivities`/`collapsedActivities`.
+- **CSS:** `.tool-group`, `.tool-group-line`, `.tool-group-glyph`,
+  `.tool-group.is-open > .tool-group-line .tool-chevron { rotate(90deg) }`,
+  `.tool-group-body` (one hairline left rule, 9px in).
+- **Tests:** `tests/js/tool_groups.js` + `tests/test_tool_groups.py`
+  → **55 checks** (incl. the waiting-approval rule). Executes the real `renderLaneFlow` over a synthetic reply with
+  whitespace gaps where calls happened and asserts
+  `text, group, thought, text, group, thought, text`, each line's counts, prose
+  splitting a run, a lone call staying a row, the typewriter branch; then renders
+  a group, folds it (no body, `aria-expanded="false"`), reopens it, and proves a
+  fold does not touch the per-row state. All other harnesses unchanged and green:
+  answer_surface 15, startup_screen 28, startup_screen_dom 20, thinking_blocks
+  47, permission_rows 14, composer_menu_dom 31.
+- **Version 1.5.16. No tag, no release** — the owner is releasing after this
+  round, on his word.
 
 ## Session 25 (2026-11-07) — merged, NOT released: thought rows, real bypass, agent in the composer
 

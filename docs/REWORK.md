@@ -1149,6 +1149,107 @@ announce itself.
   `python -c`, and paths outside the folder, and still **denies**
   `rm -rf / && echo`.
 
+## 1.5.16
+
+One report after 1.5.15, about the shape of a busy turn: *"if the agent calls a
+certain tool more than once in a row … the user should be able to collapse every
+tool call into one line. And then there should stand two reads, one write and one
+command, so this way the user can decide how he wants to see it."*
+
+### The run, not the row
+
+A turn that reads four files and writes one is five rows of equal weight; the
+reader has to reconstruct the paragraph they form. `renderLaneFlow` in
+`arena/web/static/js/07-render.js` already poured text, calls and thoughts in
+offset order, so the grouping is done there — as the array is built, not
+afterwards on the DOM:
+
+```js
+let run = [];
+const flushRun = () => {
+  if (!run.length) return;
+  if (run.length > 1) nodes.push(renderToolGroup(run));
+  else nodes.push(run[0].node);
+  run = [];
+};
+```
+
+`place(item)` pushes an activity's rendered row into `run` and flushes before
+anything that is not a call — a thought, a paragraph of answer text, or the end
+of the lane. That is the whole boundary rule: **a group never spans something it
+cannot see.** The offset bookkeeping that placed the rows is untouched, which is
+why opening a group shows the rows exactly where they were.
+
+`renderToolGroup(items)` draws one line and, when open, a `.tool-group-body`
+holding the *same* nodes — not copies, so a row's own chevron, output and
+approval card keep working inside a group.
+
+### Counts, not names
+
+`toolKindOf(activity)` maps a call to `read`, `write`, `command` or `tool` from
+`toolKey()`:
+
+| kind | tools |
+|---|---|
+| read | `read_file`, `read`, `view`, `cat`, `ls`, `list_dir`, `list_directory` |
+| write | `write_file`, `write`, `create_file`, `edit_file`, `edit`, `str_replace`, `multi_edit`, `mkdir`, `delete`, `move_file`, `rename` |
+| command | `run_cmd`, `bash`, `shell`, `execute_command`, `terminal`, `run_command`, `stop_cmd` |
+| tool | everything else — searches, fetches, MCP tools, sub-agents, image tools |
+
+A sandbox edit (`activity.kind === 'sandbox'`) is a write whatever its tool was
+called. The summary prints the three named kinds in a fixed order — reads,
+writes, commands, then tools — with `plural()` for the singular/plural and no
+zero counts: `2 reads, 1 write, 1 command`. Search and fetch are deliberately
+**not** folded into "reads": counting a web search as a file read would make the
+one number a reader trusts into a lie.
+
+### Open, and remembered
+
+The locked decision was the owner's: *"stay open"* — the rows are the work, and
+hiding them by default would trade one problem for another. So a group is open
+unless `closedGroups` has it, and `openGroups` overrides that when it is opened
+again; both are `Set`s keyed by `group-<first call's id>`. Ids come from the
+stream, not from the render, so a re-render mid-stream — every token — cannot
+lose the reader's choice.
+
+Consequence worth recording: a group folded by hand stays folded *while it runs*.
+Forcing it open would fight the click that closed it. The summary line carries
+the spinner in that state, so a folded live group is visibly working rather than
+silently stuck.
+
+A run of **one** call is left alone: `1 read` above a row that already says *Read
+app.js* says the same thing twice.
+
+### The one thing a group may not hide
+
+Folding is a view, and a view is allowed to be wrong about layout but not about
+whether the app is waiting for the reader. A row that is `is-wait` — a command
+whose approval is pending — forces its group open:
+
+```js
+const waiting = items.some((item) => rowHasClass(item.node, 'is-wait'));
+const open = waiting || openGroups.has(id) || !closedGroups.has(id);
+```
+
+so clicking the summary of such a group does nothing, its rows stay on screen,
+and its meta reads *waiting* in amber instead of a call count. Before grouping,
+a pending approval was always visible by construction; grouping is the first
+feature that could have taken that away, so it is the one case where the view
+overrules the click.
+
+### Tests
+
+`tests/js/tool_groups.js` (+ `tests/test_tool_groups.py`) — 55 checks. It runs the
+real `renderLaneFlow` (rows and markdown stubbed) over a synthetic reply with
+whitespace gaps where the calls happened, and asserts the sequence
+`text, group, thought, text, group, thought, text`, the counts on each line, that
+prose splits a run, that a lone call stays a plain row, and that the typewriter
+branch groups too. Then it renders a group, clicks it shut (no `.tool-group-body`
+in the DOM, `aria-expanded="false"`), clicks it open again, checks that
+folding never touches `collapsedActivities` / `expandedActivities` — a group is a
+view, not a record — and that a group holding a pending approval cannot be
+folded at all.
+
 ## Still to come
 
 - **Session list presentation.** Grouping (today / this week / older), the way a
