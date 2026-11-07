@@ -462,3 +462,37 @@ suite.
   file body, stray marker, cut-on-a-word); `permission_rows.js` 14; suite
   **416 passed, 1 skipped**.
 - Version 1.5.11.
+
+## Session 20 (2026-11-07) — 1.5.12: connectors open with the app, accounts return to Settings
+
+- **Reported:** opening the app pops a terminal per local MCP ("3 for the three
+  MCPs I locally have"), and none of them connect by themselves — the right bar
+  is hidden, so connecting meant prompting the AI. Asked for: hidden terminals,
+  automatic connect, a start-up progress screen ("opening the app", then
+  "connecting to MCPs"), and the old multi-account switcher (which lived in the
+  removed left-rail pop-up) moved into Settings.
+- **Terminals:** `McpStdioClient.start()` spawned with no `creationflags`; on
+  Windows every `cmd.exe /c npx …` shim got a console. Added
+  `windowless_spawn_kwargs()` (CREATE_NO_WINDOW + STARTUPINFO/SW_HIDE).
+- **Auto-connect:** `ConnectorManager.start_startup_connect()` (idempotent daemon
+  run with per-server `queued/connecting/connected/error`), `startup_snapshot()`,
+  `GET /api/connectors/startup`, `POST /api/connectors/startup/retry`,
+  `start_connector_warmup()` called from `run_server` and `desktop.start_flask`.
+- **Locking:** `connect()` used to hold the manager lock across the whole spawn
+  (90 s of npx); it now holds only a per-server lock, so the panel and other
+  servers stay responsive while the launch run works.
+- **Start-up screen:** `startStartupScreen()` in 14-boot.js + `.startup-*` CSS:
+  App row → Connectors stage with a row per MCP, progress bar, tool counts,
+  errors, Retry, "Continue in the background"/Esc, auto-close 900 ms after the
+  last connector, 18 s give-up if the server never answers. The one-time setup
+  takes the window instead (`dismissStartupScreen()`).
+- **Accounts in Settings:** `renderConnectionPanel()` lists `state.accounts`
+  (avatar, name, address, Current chip, Switch, Forget, Add another account,
+  Sign in again for expired) using the existing `switchToAccount()` /
+  `removeSavedAccount()` / `startLogin({addAccount:true})`; hydrated from
+  `API.getAccounts()`.
+- **Tests:** `tests/test_startup_connect.py` (12, incl. a real STDIO server),
+  `tests/js/startup_screen.js` (25), `tests/js/startup_screen_dom.js` (17, jsdom,
+  skipped without jsdom) + `tests/test_startup_screen.py` wrappers. Suite
+  **430 passed, 1 skipped**.
+- Version 1.5.12.

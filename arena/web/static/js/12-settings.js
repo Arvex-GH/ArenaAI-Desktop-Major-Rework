@@ -108,6 +108,57 @@
       const task = state.accountTask;
       if (task && task.kind !== 'cookie') wrap.appendChild(accountTaskLine(task));
 
+      // Saved accounts, where they can actually be reached: the left rail used
+      // to carry this list, and hiding the rail took the only way to switch
+      // without signing out. Same store, same routes, now in Settings.
+      const saved = (Array.isArray(state.accounts) ? state.accounts : []).filter((item) => item && item.id);
+      if (saved.length) {
+        const busy = Boolean(state.accountBusy || state.loginPending || accountTaskRunning());
+        wrap.appendChild(el('h3', { class: 'modal-section-title', text: saved.length > 1 ? `Saved accounts (${saved.length})` : 'Saved account' }));
+        wrap.appendChild(el('p', { class: 'modal-copy', text: 'Each account keeps its own session and chats. Switching takes a second and needs no sign-out.' }));
+        const list = el('div', { class: 'settings-account-list' });
+        saved.forEach((item) => {
+          const label = item.email || item.name || 'arena.ai account';
+          const named = Boolean(item.name && item.name !== item.email);
+          const switching = task?.kind === 'switch' && task.accountId === item.id && accountTaskRunning();
+          const row = el('div', {
+            class: `settings-account-row${item.current ? ' is-current' : ''}${item.expired ? ' is-expired' : ''}${switching ? ' is-busy' : ''}`,
+            'data-account-id': item.id
+          },
+            accountAvatarEl(item),
+            el('span', { class: 'settings-account-copy' },
+              el('span', { class: 'settings-account-name', text: named ? item.name : label }),
+              el('span', { class: 'settings-account-sub', text: switching ? 'Switching…'
+                : item.current ? 'Current account'
+                  : item.expired ? 'Session expired — sign in again'
+                    : (named ? label : 'Saved on this computer') })),
+            item.current
+              ? el('span', { class: 'settings-account-tag', text: 'Current' })
+              : el('button', {
+                  class: 'button button-small button-quiet settings-account-switch', type: 'button', disabled: busy,
+                  'aria-label': item.expired ? `Sign in again to ${label}` : `Switch to ${label}`,
+                  onclick: async () => {
+                    if (item.expired) { await startLogin({ addAccount: true }); refreshPanel(); return; }
+                    const ok = await switchToAccount(item);
+                    if (ok) refreshPanel();
+                  }
+                }, el('span', { text: item.expired ? 'Sign in again' : 'Switch' })),
+            item.current ? null : el('button', {
+              class: 'settings-account-remove', type: 'button', disabled: busy,
+              title: 'Forget this account on this computer', 'aria-label': `Forget ${label} on this computer`,
+              onclick: async (event) => {
+                event.stopPropagation();
+                await removeSavedAccount(item);
+                refreshPanel();
+              }
+            }, iconEl('x'))
+          );
+          list.appendChild(row);
+        });
+        wrap.appendChild(list);
+        wrap.appendChild(el('p', { class: 'field-help', text: 'Removing an account only forgets its saved session here; it does not touch the account itself.' }));
+      }
+
       const actions = el('div', { class: 'setting-actions' });
       if (!state.authenticated) {
         actions.appendChild(settingsActionButton(
@@ -117,6 +168,9 @@
           { variant: 'primary', disabled: state.loginPending || Boolean(state.serverError) || state.networkOffline }
         ));
       } else {
+        actions.appendChild(settingsActionButton('Add another account', 'plus',
+          async () => { await startLogin({ addAccount: true }); refreshPanel(); },
+          { disabled: Boolean(state.accountBusy || state.loginPending) }));
         actions.appendChild(settingsActionButton(accountTaskRunning('signout') ? 'Signing out…' : 'Log out', 'logout',
           async () => { await logoutAccount(); refreshPanel(); }, { disabled: Boolean(state.accountBusy) }));
       }
@@ -994,6 +1048,14 @@
           .then(() => { if (state.settingsTab === 'permissions') refreshPanel(); });
       } else if (tab === 'workspace') {
         loadWorkspaceFromServer({ quiet: true }).then(() => { if (state.settingsTab === 'workspace') refreshPanel(); });
+      } else if (tab === 'connection') {
+        API.getAccounts().then((result) => {
+          if (Array.isArray(result?.accounts)) {
+            state.accounts = result.accounts;
+            state.currentAccountId = result.current_id || state.currentAccountId;
+          }
+          if (state.settingsTab === 'connection') refreshPanel();
+        }).catch(() => {});
       } else if (tab === 'memory') {
         API.getMemory().then((data) => { state.memoryData = data; if (state.settingsTab === 'memory') refreshPanel(); }).catch(() => {});
       } else if (tab === 'about') {

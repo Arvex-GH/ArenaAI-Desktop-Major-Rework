@@ -23,7 +23,10 @@ def find_free_port() -> int:
 
 
 def start_flask(port: int):
-    from arena.web.app import app
+    from arena.web.app import app, start_connector_warmup
+    # Local MCP servers come up with the app, in the background, without a
+    # console window each: the start-up screen reports them as they connect.
+    start_connector_warmup()
     app.run(host="127.0.0.1", port=port, debug=False, threaded=True, use_reloader=False)
 
 

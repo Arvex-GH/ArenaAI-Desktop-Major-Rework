@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.11-brightgreen?style=flat-square" alt="v1.5.11" />
+  <img src="https://img.shields.io/badge/version-1.5.12-brightgreen?style=flat-square" alt="v1.5.12" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.11](#whats-new-in-v1511)
+- [What's new in v1.5.12](#whats-new-in-v1512)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,12 +44,38 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.11
+## What's new in v1.5.12
 
-> 1.5.8 was tagged but never published (its build failed in the test step on
-> Windows); 1.5.9 carried the fix and 1.5.10 stopped the answer printing twice
-> while the placeholder was up. 1.5.11 is the first release with the marker
-> parser below.
+### The app opens its own connectors
+
+Launching the app used to open a console window per local MCP server and connect
+none of them: the servers only started when a turn happened to need one, so the
+right bar (or the AI, if you asked it something) was the only way to wake them.
+Three connectors meant three black windows and a panel full of *stopped*.
+
+They are background processes now — no window, no taskbar entry — and every
+enabled connector connects by itself as the app opens.
+
+### A start-up screen that says what is happening
+
+The window no longer sits there pretending nothing is going on:
+
+1. **Opening Arena Desktop** — the local server;
+2. **Connectors** — one row per local MCP, *Waiting… → Connecting… → 12 tools*,
+   with the progress bar filling as each one arrives;
+3. a connector that fails is named **on the screen**, with its error, and a
+   **Retry** button; *Continue in the background* and Esc get you in regardless.
+
+It closes itself a second after the last connector is up.
+
+### Saved accounts back, in Settings
+
+The account switcher lived in the left rail's pop-up, and hiding the rail took it
+with it: switching accounts meant logging out and back in with cookies. Settings →
+**Account** now lists every saved account — avatar, name, address, which one is
+current — with **Switch**, **Forget**, and **Add another account**. Each account
+keeps its own session, chats and models; switching takes a second and needs no
+sign-out. An expired session says so and offers *Sign in again* instead.
 
 ### The answer that vanished, and the `~~~` that printed itself
 

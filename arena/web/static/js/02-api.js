@@ -192,6 +192,9 @@
     },
     getConnectors() { return this.request('/api/connectors'); },
     reloadConnectors() { return this.request('/api/connectors/reload', { method: 'POST', body: {} }); },
+    // Launch-time connect: polling reports progress and starts the run.
+    getConnectorStartup() { return this.request('/api/connectors/startup'); },
+    retryConnectorStartup() { return this.request('/api/connectors/startup/retry', { method: 'POST', body: {} }); },
     openConnectorConfig() { return this.request('/api/connectors/config/open', { method: 'POST', body: {} }); },
     installConnectorPreset(presetId, values, connect = true) { return this.request('/api/connectors/preset', { method: 'POST', body: { preset_id: presetId, values, connect } }); },
     addConnectorCli(body) { return this.request('/api/connectors/cli', { method: 'POST', body }); },

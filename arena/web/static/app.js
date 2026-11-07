@@ -725,6 +725,9 @@
     },
     getConnectors() { return this.request('/api/connectors'); },
     reloadConnectors() { return this.request('/api/connectors/reload', { method: 'POST', body: {} }); },
+    // Launch-time connect: polling reports progress and starts the run.
+    getConnectorStartup() { return this.request('/api/connectors/startup'); },
+    retryConnectorStartup() { return this.request('/api/connectors/startup/retry', { method: 'POST', body: {} }); },
     openConnectorConfig() { return this.request('/api/connectors/config/open', { method: 'POST', body: {} }); },
     installConnectorPreset(presetId, values, connect = true) { return this.request('/api/connectors/preset', { method: 'POST', body: { preset_id: presetId, values, connect } }); },
     addConnectorCli(body) { return this.request('/api/connectors/cli', { method: 'POST', body }); },
@@ -1174,7 +1177,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '1.5.11',
+        app_version: '1.5.12',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -1379,12 +1382,12 @@
       const wanted = new URLSearchParams(window.location.search).get('update') === '1';
       if (wanted) {
         return {
-          enabled: true, current: '1.5.10', latest: '1.5.11', update: true, demo: true,
+          enabled: true, current: '1.5.11', latest: '1.5.12', update: true, demo: true,
           url: 'https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases',
           published_at: new Date(Date.now() - 86400000 * 2).toISOString(),
           notes: 'What changed in this build:\n\n· The sidebar is quieter: one New chat row, no oversized button.\n· Update flow rebuilt: the app downloads the new build, replaces itself and restarts.\n· Fixed lane answers being clipped when two models answered at once.\n· Chat titles are written by Arena and no longer overwritten locally.',
           installer: { name: 'Arena-Desktop-Setup-1.6.1.exe', size: 84 * 1024 * 1024, kind: 'installer' },
-          can_install: true, install_mode: 'helper', installed_version: '1.5.11'
+          can_install: true, install_mode: 'helper', installed_version: '1.5.12'
         };
       }
       return { enabled: true, current: 'demo', latest: null, update: false, url: null, demo: true };
@@ -10006,6 +10009,57 @@ You can start with a more structured option: one script, short captions, and a c
       const task = state.accountTask;
       if (task && task.kind !== 'cookie') wrap.appendChild(accountTaskLine(task));
 
+      // Saved accounts, where they can actually be reached: the left rail used
+      // to carry this list, and hiding the rail took the only way to switch
+      // without signing out. Same store, same routes, now in Settings.
+      const saved = (Array.isArray(state.accounts) ? state.accounts : []).filter((item) => item && item.id);
+      if (saved.length) {
+        const busy = Boolean(state.accountBusy || state.loginPending || accountTaskRunning());
+        wrap.appendChild(el('h3', { class: 'modal-section-title', text: saved.length > 1 ? `Saved accounts (${saved.length})` : 'Saved account' }));
+        wrap.appendChild(el('p', { class: 'modal-copy', text: 'Each account keeps its own session and chats. Switching takes a second and needs no sign-out.' }));
+        const list = el('div', { class: 'settings-account-list' });
+        saved.forEach((item) => {
+          const label = item.email || item.name || 'arena.ai account';
+          const named = Boolean(item.name && item.name !== item.email);
+          const switching = task?.kind === 'switch' && task.accountId === item.id && accountTaskRunning();
+          const row = el('div', {
+            class: `settings-account-row${item.current ? ' is-current' : ''}${item.expired ? ' is-expired' : ''}${switching ? ' is-busy' : ''}`,
+            'data-account-id': item.id
+          },
+            accountAvatarEl(item),
+            el('span', { class: 'settings-account-copy' },
+              el('span', { class: 'settings-account-name', text: named ? item.name : label }),
+              el('span', { class: 'settings-account-sub', text: switching ? 'Switching…'
+                : item.current ? 'Current account'
+                  : item.expired ? 'Session expired — sign in again'
+                    : (named ? label : 'Saved on this computer') })),
+            item.current
+              ? el('span', { class: 'settings-account-tag', text: 'Current' })
+              : el('button', {
+                  class: 'button button-small button-quiet settings-account-switch', type: 'button', disabled: busy,
+                  'aria-label': item.expired ? `Sign in again to ${label}` : `Switch to ${label}`,
+                  onclick: async () => {
+                    if (item.expired) { await startLogin({ addAccount: true }); refreshPanel(); return; }
+                    const ok = await switchToAccount(item);
+                    if (ok) refreshPanel();
+                  }
+                }, el('span', { text: item.expired ? 'Sign in again' : 'Switch' })),
+            item.current ? null : el('button', {
+              class: 'settings-account-remove', type: 'button', disabled: busy,
+              title: 'Forget this account on this computer', 'aria-label': `Forget ${label} on this computer`,
+              onclick: async (event) => {
+                event.stopPropagation();
+                await removeSavedAccount(item);
+                refreshPanel();
+              }
+            }, iconEl('x'))
+          );
+          list.appendChild(row);
+        });
+        wrap.appendChild(list);
+        wrap.appendChild(el('p', { class: 'field-help', text: 'Removing an account only forgets its saved session here; it does not touch the account itself.' }));
+      }
+
       const actions = el('div', { class: 'setting-actions' });
       if (!state.authenticated) {
         actions.appendChild(settingsActionButton(
@@ -10015,6 +10069,9 @@ You can start with a more structured option: one script, short captions, and a c
           { variant: 'primary', disabled: state.loginPending || Boolean(state.serverError) || state.networkOffline }
         ));
       } else {
+        actions.appendChild(settingsActionButton('Add another account', 'plus',
+          async () => { await startLogin({ addAccount: true }); refreshPanel(); },
+          { disabled: Boolean(state.accountBusy || state.loginPending) }));
         actions.appendChild(settingsActionButton(accountTaskRunning('signout') ? 'Signing out…' : 'Log out', 'logout',
           async () => { await logoutAccount(); refreshPanel(); }, { disabled: Boolean(state.accountBusy) }));
       }
@@ -10892,6 +10949,14 @@ You can start with a more structured option: one script, short captions, and a c
           .then(() => { if (state.settingsTab === 'permissions') refreshPanel(); });
       } else if (tab === 'workspace') {
         loadWorkspaceFromServer({ quiet: true }).then(() => { if (state.settingsTab === 'workspace') refreshPanel(); });
+      } else if (tab === 'connection') {
+        API.getAccounts().then((result) => {
+          if (Array.isArray(result?.accounts)) {
+            state.accounts = result.accounts;
+            state.currentAccountId = result.current_id || state.currentAccountId;
+          }
+          if (state.settingsTab === 'connection') refreshPanel();
+        }).catch(() => {});
       } else if (tab === 'memory') {
         API.getMemory().then((data) => { state.memoryData = data; if (state.settingsTab === 'memory') refreshPanel(); }).catch(() => {});
       } else if (tab === 'about') {
@@ -12788,6 +12853,189 @@ You can start with a more structured option: one script, short captions, and a c
   /* Boot                                                                  */
   /* ---------------------------------------------------------------------- */
   /* ---------------------------------------------------------------------- */
+  /* Start-up screen                                                         */
+  /* ---------------------------------------------------------------------- */
+  /* Two things used to happen off-screen at launch: the local server came
+     up with no sign of it, and every MCP connector stayed asleep until the
+     user found Connect in a panel (or a turn happened to need one). This
+     screen says what is happening — opening the app, then each local
+     connector as it connects — and gets out of the way on its own. */
+  let startupScreen = null;
+
+  function dismissStartupScreen() {
+    if (!startupScreen) return;
+    const overlay = startupScreen.overlay;
+    startupScreen = null;
+    if (!overlay || !overlay.isConnected) return;
+    overlay.classList.add('is-leaving');
+    window.setTimeout(() => overlay.remove(), 200);
+  }
+
+  function startStartupScreen() {
+    if (state.demo || startupScreen) return startupScreen;
+    const steps = el('ol', { class: 'startup-steps' });
+    const fill = el('span', { class: 'startup-progress-fill' });
+    const bar = el('div', { class: 'startup-progress', role: 'progressbar', 'aria-label': 'Opening Arena Desktop',
+      'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '5' }, fill);
+    const title = el('h2', { class: 'startup-title', id: 'startupTitle', text: 'Opening Arena Desktop' });
+    const detail = el('p', { class: 'startup-detail', text: 'Starting the local server and your connectors.' });
+    const skip = el('button', { class: 'button button-quiet startup-skip', type: 'button' }, el('span', { text: 'Continue in the background' }));
+    const actions = el('div', { class: 'startup-actions' }, skip);
+    const overlay = el('div', { class: 'startup-overlay', role: 'dialog', 'aria-labelledby': 'startupTitle' },
+      el('div', { class: 'startup-panel' }, title, detail, bar, steps, actions));
+    document.body.appendChild(overlay);
+
+    const row = (label) => {
+      const icon = el('span', { class: 'startup-step-icon is-run' }, el('span', { class: 'tool-spinner', 'aria-hidden': 'true' }));
+      const copy = el('span', { class: 'startup-step-copy', text: label });
+      const note = el('span', { class: 'startup-step-note', text: '' });
+      const li = el('li', { class: 'startup-step is-run' }, icon, copy, note);
+      steps.appendChild(li);
+      return {
+        li,
+        label: copy,
+        set(state, text = '') {
+          li.className = `startup-step is-${state}`;
+          icon.className = `startup-step-icon is-${state}`;
+          icon.replaceChildren(...(state === 'run'
+            ? [el('span', { class: 'tool-spinner', 'aria-hidden': 'true' })]
+            : [iconEl(state === 'ok' ? 'check' : state === 'warn' ? 'alert' : 'x')]));
+          if (text) note.textContent = text;
+        }
+      };
+    };
+
+    const appStep = row('App');
+    appStep.set('run', 'Starting…');
+    const connectorStage = el('li', { class: 'startup-stage', text: 'Connectors' });
+    const progress = (value) => {
+      const pct = Math.max(0, Math.min(100, Math.round(value * 100)));
+      fill.style.width = `${pct}%`;
+      bar.setAttribute('aria-valuenow', String(pct));
+    };
+    progress(0.08);
+
+    let closed = false;
+    let finished = false;
+    const onKey = (event) => { if (event.key === 'Escape') close(); };
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener('keydown', onKey);
+      dismissStartupScreen();
+    };
+    skip.addEventListener('click', () => { close(); void loadConnectors({ reload: true, silent: true }); });
+    document.addEventListener('keydown', onKey);
+
+    const rows = new Map();
+    let stageAdded = false;
+    let mcpTotal = 0;
+    let mcpDone = 0;
+    let mcpFailed = 0;
+    let retrying = false;
+
+    const tracker = {
+      overlay,
+      get closed() { return closed; },
+      finish() {
+        document.removeEventListener('keydown', onKey);
+        if (closed) return;
+        finished = true;
+        progress(1);
+        if (mcpFailed) {
+          // Something did not come up: stay put, say which one, offer a retry.
+          title.textContent = 'A connector could not start';
+          detail.textContent = `${mcpTotal - mcpFailed} of ${mcpTotal} connectors connected. The rest still works.`;
+          const retry = el('button', { class: 'button button-quiet', type: 'button' }, iconEl('refresh'), el('span', { text: 'Retry' }));
+          retry.addEventListener('click', async () => {
+            if (retrying) return;
+            retrying = true;
+            retry.disabled = true;
+            rows.forEach((item) => item.set('run', 'Retrying…'));
+            try { await API.retryConnectorStartup(); } catch { /* poll reports it */ }
+            retrying = false;
+            finished = false;
+            retry.remove();
+            void tick();
+          });
+          skip.querySelector('span').textContent = 'Continue';
+          actions.prepend(retry);
+          return;
+        }
+        title.textContent = 'Ready';
+        detail.textContent = mcpTotal
+          ? `${mcpTotal} connector${mcpTotal === 1 ? '' : 's'} connected.`
+          : 'The app is ready.';
+        window.setTimeout(() => { if (!closed) close(); }, 900);
+      }
+    };
+    startupScreen = tracker;
+
+    const applySnapshot = (snap) => {
+      if (!snap || typeof snap !== 'object') return;
+      appStep.set('ok', 'Local server ready');
+      const items = Array.isArray(snap.items) ? snap.items : [];
+      if (items.length && !stageAdded) {
+        stageAdded = true;
+        steps.appendChild(connectorStage);
+      }
+      items.forEach((item) => {
+        const id = String(item.id || '');
+        let entry = rows.get(id);
+        if (!entry) {
+          entry = row(String(item.name || id));
+          if (item.detail) entry.li.querySelector('.startup-step-copy').title = String(item.detail);
+          rows.set(id, entry);
+        }
+        const status = String(item.status || '');
+        if (status === 'queued') entry.set('run', 'Waiting…');
+        else if (status === 'connecting') entry.set('run', 'Connecting…');
+        else if (status === 'connected') entry.set('ok', item.tools ? `${item.tools} tool${item.tools === 1 ? '' : 's'}` : 'Connected');
+        else if (status === 'unsupported') entry.set('warn', 'Not supported');
+        else if (status === 'error') entry.set('error', String(item.error || 'Could not connect').slice(0, 160));
+        else entry.set('warn', status || '');
+      });
+      mcpTotal = Number(snap.total) || items.length;
+      mcpDone = Number(snap.done) || 0;
+      mcpFailed = Number(snap.failed) || 0;
+      const share = mcpTotal ? mcpDone / mcpTotal : 0;
+      progress(0.25 + 0.7 * share);
+      if (mcpTotal) detail.textContent = snap.phase === 'done'
+        ? `Connectors: ${snap.connected} of ${mcpTotal} connected.`
+        : `Connecting to your connectors — ${mcpDone} of ${mcpTotal}.`;
+      if (snap.phase === 'done' && !finished) tracker.finish();
+    };
+
+    let attempts = 0;
+    const tick = async () => {
+      if (closed) return;
+      attempts += 1;
+      try {
+        const snap = await API.getConnectorStartup();
+        if (closed) return;
+        applySnapshot(snap);
+        if (snap && String(snap.phase) === 'done') {
+          void loadConnectors({ silent: true });
+          return;
+        }
+      } catch (error) {
+        appStep.set('warn', 'The local server is not answering yet');
+        detail.textContent = 'Still trying. You can keep working — the app reconnects by itself.';
+        if (attempts > 40) {
+          // Never sit in front of the app for this: the connectors retry when a
+          // turn needs them, and Settings → Connectors can be asked by hand.
+          close();
+          toast('The local server did not answer. Connectors connect again when a turn needs them.', 'warning', 'Start-up');
+          return;
+        }
+      }
+      window.setTimeout(() => { void tick(); }, 450);
+    };
+    void tick();
+    return tracker;
+  }
+
+  /* ---------------------------------------------------------------------- */
   /* One-time first-run setup: checks what the app needs, offers installs.  */
   /* ---------------------------------------------------------------------- */
   async function runFirstRunSetup() {
@@ -12804,6 +13052,7 @@ You can start with a more structured option: one script, short captions, and a c
       list,
       el('div', { class: 'setup-actions' }, finish)));
     document.body.appendChild(overlay);
+    dismissStartupScreen();
 
     const addStep = (label) => {
       const status = el('span', { class: 'setup-status is-run' }, el('span', { class: 'tool-spinner', 'aria-hidden': 'true' }));
@@ -12919,6 +13168,7 @@ You can start with a more structured option: one script, short captions, and a c
     setupNativeBridge();
     restoreSidebarPreference();
     restoreWorkspacePanelPreference();
+    startStartupScreen();
     setupLayoutResize();
     bindEvents();
     state.view = 'welcome';
