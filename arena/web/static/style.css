@@ -3322,8 +3322,7 @@ body.is-resizing-y, body.is-resizing-y * { cursor: ns-resize !important; }
 }
 @keyframes tool-blink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 .tool-name { flex: 0 0 auto; color: var(--text); font-weight: 500; }
-.tool-arg { display: flex; min-width: 0; color: var(--muted); }
-.tool-paren { flex: 0 0 auto; color: var(--muted); }
+.tool-arg { display: flex; min-width: 0; margin-left: 7px; color: var(--muted); }
 .tool-arg-text {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--text-soft); opacity: .82;

@@ -192,7 +192,7 @@ and dialogs follow in the next step.
 The four modes used to sit in one flat list, as if Battle and Agent were the same
 kind of choice. They are not. The mode picker now has two sections:
 
-![The mode picker, grouped](screenshots/sidebar/modes.png)
+![The mode picker, grouped](screenshots/chat/modes.png)
 
 - **Chat** — Direct, Battle Mode, Side by Side. Talking to models, with a work
   type (text, image, video, search, code) on top.
@@ -221,7 +221,7 @@ is broken" for a setting one click away. It is now a red dot beside the send
 button, and the confirmation selector lives there too instead of being lost
 between the folder and work-type chips.
 
-![Bypass: a red dot, not a red screen](screenshots/sidebar/bypass.png)
+![Bypass: a red dot, not a red screen](screenshots/chat/bypass.png)
 
 - `Ask` · `Accept edits` · `Auto` · `Plan only` · `Bypass` — unchanged
   behaviour, new home.
@@ -231,26 +231,28 @@ between the folder and work-type chips.
 ## The conversation: one line per call
 
 A tool call is part of the model's reply, not a card dropped into the
-conversation. It is one silver line — `Bash(npm run build)` — in mono, sitting
-at the exact place in the answer where the model made it, with the outcome at
-the end of the line (`done`, `exit 0`, `exit 1`, `running`). No box, no fill,
-no shadow, no radius: just a dot, a hairline, and type.
+conversation. It is one silver line — `Bash npm run build` — in mono, sitting at
+the exact place in the answer where the model made it, with the outcome at the
+end of the line (`done`, `exit 0`, `exit 1`, `running`). No box, no fill, no
+shadow, no radius, and no parentheses: the tool name and what it acted on are
+two weights of the same line, not a function call.
 
 The rows are no longer collected above the answer. Each one records where in the
 reply it happened, and the renderer splits the text at those points, so a
 sentence, its command, and the sentence after it read in order:
 
-![Calls folded to one line, in the order they happened](screenshots/sidebar/tool-done.png)
+![Calls folded to one line, in the order they happened](screenshots/chat/tool-done.png)
 
 **Nothing is open by default.** A finished call is one line. While a command
 runs, that one row opens by itself and streams its newest output under a
 hairline; the moment it ends the detail folds away again — a 420 ms collapse,
 not a snap — leaving the single line and its exit code:
 
-![The same rows while a build runs](screenshots/sidebar/tool-running.png)
+![The same rows while a build runs](screenshots/chat/tool-running.png)
 
-Clicking a finished row opens it again for inspection. Clicking it again closes
-it. That is the only way a row grows outside of running.
+Clicking a finished row opens it again for inspection. Clicking any row closes
+it — including one that is still running, which stays closed until it ends.
+A row is a label you can open, never a panel you cannot.
 
 ### Approval is a pop-up
 
@@ -260,10 +262,10 @@ it will do, and *Allow once* / *Allow for this session* / *Deny*. `Escape`
 denies. The sheet is anchored above the composer, so the eye does not have to
 travel to the middle of a long conversation to answer it:
 
-![Approval, asked over the conversation instead of inside it](screenshots/sidebar/approval.png)
+![Approval, asked over the conversation instead of inside it](screenshots/chat/approval.png)
 
-The thread keeps only the receipt — the same silver line, `Allowed(python -m
-pytest -q) allowed` — because that is a fact about the conversation, while the
+The thread keeps only the receipt — the same silver line, `Allowed python -m
+pytest -q  allowed` — because that is a fact about the conversation, while the
 question was a moment. The two toasts that used to fire around approvals (one
 when it arrived, one when it was answered) are gone: the pop-up is the
 notification, the receipt is the record.

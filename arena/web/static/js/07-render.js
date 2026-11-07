@@ -552,6 +552,8 @@
     'question', 'task', 'description', 'id', 'name'];
   const COLLAPSED_LINES = 4;
   const expandedActivities = new Set();
+  // Rows the user closed by hand, including ones that are still running.
+  const collapsedActivities = new Set();
 
   function toolKey(activity) {
     const raw = activity.raw || {};
@@ -729,15 +731,17 @@
     const stateCls = status.cls === 'is-ok' ? 'is-ok' : status.cls === 'is-err' ? 'is-err'
       : (status.cls === 'is-wait' || (running && awaitingApproval)) ? 'is-wait' : (running ? 'is-run' : 'is-idle');
     const expanded = expandedActivities.has(activity.id);
+    const closedByHand = collapsedActivities.has(activity.id);
     // It was open a moment ago and the command has just ended: fold it here,
     // once, so the row closes by itself instead of snapping shut unannounced.
-    const folding = !running && !expanded && _runningActivities.has(activity.id);
+    const wasRunning = _runningActivities.has(activity.id);
+    const folding = !running && !expanded && !closedByHand && wasRunning;
     if (running) _runningActivities.add(activity.id);
-    else if (folding) _runningActivities.delete(activity.id);
+    else if (wasRunning) _runningActivities.delete(activity.id);
 
     const described = describeOutput(activity, out);
     const diff = raw.diff && ['Write', 'Update'].includes(label) ? raw.diff : '';
-    const open = running || expanded || folding || stateCls === 'is-wait';
+    const open = !closedByHand && (running || expanded || folding || stateCls === 'is-wait');
 
     const row = el('div', {
       class: `tool-row ${stateCls}${open ? ' is-open' : ''}${folding ? ' is-folding' : ''}`,
@@ -752,9 +756,8 @@
     },
       el('span', { class: 'tool-mark', 'aria-hidden': 'true' }),
       el('span', { class: 'tool-name', text: label }),
-      argText ? el('span', { class: 'tool-arg' }, el('span', { class: 'tool-paren', text: '(' }),
-        el('span', { class: 'tool-arg-text', text: argText.replace(/\s*\n\s*/g, ' \u21b5 ') }),
-        el('span', { class: 'tool-paren', text: ')' })) : null,
+      argText ? el('span', { class: 'tool-arg' },
+        el('span', { class: 'tool-arg-text', text: argText.replace(/\s*\n\s*/g, ' \u21b5 ') })) : null,
       raw.background ? el('span', { class: 'tool-tag', text: 'background' }) : null,
       el('span', { class: 'tool-meta', text: toolMetaText(activity, running, described) })
     );
@@ -840,8 +843,16 @@
     const button = event.target.closest?.('[data-tool-toggle]');
     if (!button) return;
     const id = button.getAttribute('data-tool-toggle');
-    if (expandedActivities.has(id)) expandedActivities.delete(id);
-    else expandedActivities.add(id);
+    // Whatever the row shows now decides the next state, so a running row can
+    // be closed and an open one can be shut, whichever way it opened.
+    const isOpen = button.closest('.tool-row')?.classList.contains('is-open');
+    if (isOpen) {
+      collapsedActivities.add(id);
+      expandedActivities.delete(id);
+    } else {
+      expandedActivities.add(id);
+      collapsedActivities.delete(id);
+    }
     scheduleChatRender();
   }
   document.addEventListener('click', onToolToggle);
@@ -984,9 +995,8 @@
       el('div', { class: 'tool-line' },
         el('span', { class: 'tool-mark', 'aria-hidden': 'true' }),
         el('span', { class: 'tool-name', text: allowed ? 'Allowed' : 'Declined' }),
-        el('span', { class: 'tool-arg' }, el('span', { class: 'tool-paren', text: '(' }),
-          el('span', { class: 'tool-arg-text', text: String(what).replace(/\s*\n\s*/g, ' \u21b5 ') }),
-          el('span', { class: 'tool-paren', text: ')' })),
+        el('span', { class: 'tool-arg' },
+          el('span', { class: 'tool-arg-text', text: String(what).replace(/\s*\n\s*/g, ' \u21b5 ') })),
         el('span', { class: 'tool-meta', text: verdict })
       ));
     return row;
