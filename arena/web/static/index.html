@@ -61,10 +61,6 @@
             <span class="rail-icon" data-icon="spark"></span>
             <span class="rail-label">Artifacts</span>
           </button>
-          <button class="rail-row" type="button" data-action="settings" aria-label="Customize — open settings">
-            <span class="rail-icon" data-icon="sliders"></span>
-            <span class="rail-label">Customize</span>
-          </button>
         </nav>
       </div>
 
@@ -93,32 +89,10 @@
       </section>
 
       <footer class="sidebar-foot">
-        <div class="sidebar-tools" aria-label="Quick actions">
-          <button class="icon-button" type="button" data-action="engine-show" aria-label="Open the separate arena.ai window" title="Open the arena.ai window">
-            <span data-icon="globe"></span>
-          </button>
-          <button class="icon-button" type="button" data-action="settings" aria-label="Settings" title="Settings">
-            <span data-icon="settings"></span>
-          </button>
-          <button class="icon-button" type="button" data-action="help" aria-label="Help and keyboard shortcuts" title="Help (F1)">
-            <span data-icon="help"></span>
-          </button>
-        </div>
-
-        <!-- The account block is out while sessions are reworked. The hidden
-             holder keeps the existing wiring alive (see docs/REWORK.md). -->
-        <div class="account-slot" hidden>
-          <span id="accountAvatar"></span>
-          <span id="accountName"></span>
-          <span id="accountState"></span>
-          <span id="accountDot"></span>
-        </div>
-
-        <nav class="sidebar-legal" aria-label="Arena documents">
-          <a href="https://help.arena.ai/articles/5629909088-terms-of-use" target="_blank" rel="noopener noreferrer">Terms of Use</a>
-          <a href="https://help.arena.ai/articles/3765052346-privacy-policy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
-          <a href="https://help.arena.ai/articles/1820405001-lmarena-cookie-policy" target="_blank" rel="noopener noreferrer">Cookies</a>
-        </nav>
+        <button class="rail-row rail-row-settings" type="button" data-action="settings" aria-label="Settings" title="Settings">
+          <span class="rail-icon" data-icon="settings"></span>
+          <span class="rail-label">Settings</span>
+        </button>
       </footer>
       <div class="resize-handle resize-handle-sidebar" id="sidebarResize" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" title="Drag to resize. Double-click to reset." tabindex="0"></div>
     </aside>
