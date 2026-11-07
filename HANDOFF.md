@@ -240,3 +240,11 @@ Two bugs reported against 1.5.2.
 - **The reported Agent failure was not reproduced here** (no arena.ai session in this sandbox). If it recurs, the row now names the exception and the log has the stack — that is the next step for it, not another guess.
 - Version 1.5.3, released after the merge; `docs/REWORK.md` has both write-ups with the error-row screenshot.
 - 398 tests pass.
+
+## Session 8 (2026-11-07) — v1.5.3 published
+
+- **Tag:** `v1.5.3` on `752fdec` (merge of #12). Workflow green end to end; release published `Arena-Desktop-Setup-1.5.3.exe` + `Arena-Desktop-1.5.3.exe`, 28,617,973 bytes each, `sha256:ddd58f13…32b3` for both.
+- **Feed check** (`updater.fetch_latest`): 1.5.3, Setup asset picked, `is_allowed_url` true, 1.5.2 sees the update, 1.5.3 does not see one to itself.
+- **Why 1.5.2 users are not stranded:** its updater runs the download with `--setup --update --silent`, so the name-based detection was only ever needed for the double-click path.
+- Notes were replaced after publish with `gh release edit v1.5.3 --notes-file …` — `--generate-notes` alone only lists PR titles.
+- 398 tests pass; docs/REWORK.md carries the 1.5.3 table beside the 1.5.2 one.
