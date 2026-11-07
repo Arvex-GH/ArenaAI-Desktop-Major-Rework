@@ -220,3 +220,13 @@ PYTHONPATH=. python -m pytest tests/ --tb=short -q
   - account-switcher redesign;
   - progress UI for cookie import and sign-out;
   - backfill tool input/output for old Arena Agent chats from `/api/chat/{id}`.
+
+## Session 6 (2026-11-07) — first release: v1.5.2
+
+- **Version 1.5.2, not 1.6.0.** The tree had carried 1.6.0 for work that never shipped; nothing was downgraded because no `v*` tag had ever been pushed. Bumped in `arena/version.py`, the `?v=` query on `style.css`/`app.js`, `arena/setup/web/index.html`, the demo payload (`app_version` 1.5.2, demo feed 1.5.3), README badge/heading, `INSTALLER.md` and `docs/REWORK.md`.
+- **Tag → release is automatic.** `git tag -a v1.5.2 -m "Arena Desktop 1.5.2" <merge-sha> && git push origin v1.5.2`. `build.yml` fails the build if the tag does not match `arena/version.py`, runs the suite, builds, smoke-tests `--version`, then `gh release create --generate-notes`. The generated notes were replaced afterwards with `gh release edit v1.5.2 --notes-file …`.
+- **Published:** `Arena-Desktop-Setup-1.5.2.exe` and `Arena-Desktop-1.5.2.exe`, 28,614,141 bytes each, `sha256:e4fbb460c15b4d75d693f36d4849e97bb9308d2a66d699f0739158b3a6ceccad` for both (one binary, two names). Release is not a draft and not a pre-release, so `/releases/latest` returns it.
+- **Feed verified from the app's own code** (`updater.fetch_latest()`): version 1.5.2, picks the Setup asset, `is_allowed_url` true, 1.5.1 sees the update and 1.5.2 does not see one to itself.
+- **Sandbox limits, not app bugs:** this machine cannot reach `release-assets.githubusercontent.com` (asset downloads) and has no system CA bundle for python `requests` — the feed check needs `REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt`. GitHub's UI also cannot be screenshotted (githubassets is blocked), so the release is documented with the app's own Settings window instead.
+- **README/docs corrected for the release:** hero screenshot recaptured from this build, the gallery cell that sold the removed Workspace panel replaced by the Settings window, `preview-1.6.0/` renamed to `preview/` and retitled as the pre-rework record, What's new rewritten to lead with the rail, the one-line tool rows and the marker protocol.
+- 391 tests pass.

@@ -93,7 +93,7 @@ What that meant here:
 
 ## 5. How this is checked
 
-- `tests/` — 385 tests, including installer, updater and route coverage.
+- `tests/` — 391 tests, including installer, updater and route coverage.
 - `.github/workflows/build.yml` — runs the suite **before** PyInstaller, builds
   the exe, runs `Arena-Desktop.exe --version` as a smoke test, and only
   publishes a release on a `v*` tag that matches `arena/version.py`.
@@ -337,6 +337,57 @@ Two rules keep it safe:
 If a reply stops mid-call, the pending line stays and reads `stopped` instead of
 `working`, so the interruption is visible rather than silent.
 
+## The 1.5.2 release
+
+The rework is not finished, so the first published build is **1.5.2** rather
+than the 1.6.0 the tree had been carrying for work that never shipped. Nothing
+was downgraded: no `v*` tag had ever been pushed, so 1.5.2 is the first release
+the in-app updater can see, and every install that follows is an update.
+
+A tag is the whole release. `git push origin v1.5.2` starts `build.yml`, and the
+workflow refuses to publish unless the tag matches `arena/version.py`:
+
+| step | result for 1.5.2 |
+|---|---|
+| tag | `v1.5.2` on `62918cc`, the merge commit of the release PR |
+| tag vs `arena/version.py` | `1.5.2` = `1.5.2` |
+| test suite (before PyInstaller) | passed — the same 391 tests as on the branch |
+| build | 27.3 MB single exe; `Arena-Desktop.exe --version` answered `Arena Desktop 1.5.2` |
+| assets | `Arena-Desktop-Setup-1.5.2.exe` and `Arena-Desktop-1.5.2.exe`, 28,614,141 bytes each |
+| digests | both `sha256:e4fbb460c15b4d75d693f36d4849e97bb9308d2a66d699f0739158b3a6ceccad` — one binary under two names, as designed |
+| release | <https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/tag/v1.5.2>, published, not a draft, not a pre-release |
+
+The feed was then read the way the app reads it — `updater.fetch_latest()` over
+the public API, no token — from a build that calls itself 1.5.2:
+
+```
+this build: 1.5.2
+feed version: 1.5.2 | title: Arena Desktop 1.5.2 | prerelease: False
+picked asset: Arena-Desktop-Setup-1.5.2.exe 28614141 installer
+digest: sha256:e4fbb460c15b4d75d693f36d4849e97bb9308d2a66d699f0739158b3a6ceccad
+url allowed: True
+1.5.1 sees update: True | 1.5.2 sees update: False
+```
+
+Two things worth keeping: the feed hands back the **Setup** asset rather than the
+portable one (both are `.exe`, the installer wins), and a 1.5.2 build does *not*
+see an update to itself, so nobody is offered the version they are running.
+`/releases/latest` never returns a pre-release, which is why the tag was
+published as a normal release even though the app is unfinished — the "not done"
+part lives in this document and in the release notes, not in a flag that would
+hide the update from everyone.
+
+![Settings → About in 1.5.2, with the version and the documents](screenshots/release/about-version.png)
+
+![The update check answering in-app](screenshots/release/update-check.png)
+
+One limit of the machine that cut the release: its egress blocks
+`release-assets.githubusercontent.com`, so the built exe could not be downloaded
+back and re-hashed there. Integrity rests on GitHub's own digest, computed
+server-side on upload — and on the two assets carrying the same digest, which
+proves the installer and the portable build are the same bytes. The download and
+verify path itself is covered by `tests/test_installer.py`.
+
 ## Still to come
 
 - **Session list presentation.** Grouping (today / this week / older), the way a
@@ -348,10 +399,9 @@ If a reply stops mid-call, the pending line stays and reads `stopped` instead of
   it the real *Artifacts* view.
 - **The light theme across the app**, not just the rail, with the Settings
   switch.
-- **Republishing the release.** The feed and the installer are in place; no
-  `v*` tag has been pushed yet, so the updater correctly reports "up to date".
-  Pushing `v1.5.2` publishes `Arena-Desktop-Setup-1.5.2.exe` and switches the
-  loop on for everyone.
+- **The next release.** `v1.5.2` is published and the update loop is live; the
+  next tag carries whatever lands here first, and the version has to be bumped
+  in `arena/version.py` before the tag or the workflow refuses to build.
 
 The rest is coming. This document will grow with each step rather than being
 rewritten.
