@@ -220,6 +220,195 @@
     });
   }
 
+  /* ------------------------------------------------------------------------ */
+  /* Chat options: everything the composer used to spell out, as icons.        */
+  /* ------------------------------------------------------------------------ */
+  /* The toolbar shows two buttons — this menu and Attach — and nothing else.
+     Mode, work type, permissions and folder are not decorations of the message
+     box: each one changes what pressing Send means, so they sit in one panel a
+     click away instead of competing with the text for attention. Every pill
+     carries its own tooltip; the panel stays open while you change more than
+     one thing. */
+  const AGENT_BACKENDS = [
+    { id: 'local', label: 'Local agent', icon: 'terminal',
+      title: 'Local agent — works in the folder on this computer with your tools, under the permissions below.' },
+    { id: 'native', label: 'Cloud agent', icon: 'cloud',
+      title: 'Cloud agent — arena.ai\u2019s own agent: cloud workspace, web search and Arena connectors.' }
+  ];
+
+  function composerMenuPill(label, { icon = '', title = '', selected = false, danger = false, disabled = false, onClick = null } = {}) {
+    const button = el('button', {
+      class: `cm-pill${selected ? ' is-selected' : ''}${danger ? ' is-danger' : ''}`,
+      type: 'button',
+      title: title || label,
+      'aria-pressed': String(Boolean(selected)),
+      disabled: Boolean(disabled)
+    },
+      icon ? el('span', { class: 'cm-pill-icon' }, iconEl(icon)) : null,
+      el('span', { class: 'cm-pill-label', text: label }),
+      selected ? el('span', { class: 'cm-pill-check' }, iconEl('check')) : null
+    );
+    if (onClick && !disabled) button.addEventListener('click', onClick);
+    return button;
+  }
+
+  function composerMenuLine(label, { icon = '', detail = '', title = '', disabled = false, danger = false, onClick = null } = {}) {
+    const button = el('button', {
+      class: `cm-line${danger ? ' is-danger' : ''}`, type: 'button',
+      title: title || (detail ? `${label} — ${detail}` : label), disabled: Boolean(disabled)
+    },
+      icon ? el('span', { class: 'cm-line-icon' }, iconEl(icon)) : null,
+      el('span', { class: 'cm-line-copy' },
+        el('span', { class: 'cm-line-label', text: label }),
+        detail ? el('span', { class: 'cm-line-detail', text: detail }) : null),
+      iconEl('chevron-right')
+    );
+    if (onClick && !disabled) button.addEventListener('click', onClick);
+    return button;
+  }
+
+  function openComposerMenu(trigger = els.composerMenuButton) {
+    if (!trigger) return;
+    const body = el('div', { class: 'composer-menu', role: 'group', 'aria-label': 'Chat options' });
+    const popover = openPopover(trigger, {
+      title: 'Chat options',
+      subtitle: 'Mode, work type, permissions and folder for the next message.',
+      content: body,
+      wide: true
+    });
+    if (!popover) return;
+
+    const refresh = () => {
+      body.replaceChildren(...composerMenuSections(refresh));
+      positionPopover(popover, trigger);
+    };
+    refresh();
+    return popover;
+  }
+
+  function composerMenuSections(refresh) {
+    const locked = chatLocked();
+    const busy = state.generating;
+    const blocked = locked || busy;
+    const sections = [];
+
+    const section = (title, children, note = '') => {
+      const wrap = el('section', { class: 'cm-section' }, el('p', { class: 'cm-title', text: title }));
+      const holder = el('div', { class: 'cm-body' });
+      children.forEach((child) => child && holder.appendChild(child));
+      wrap.appendChild(holder);
+      if (note) wrap.appendChild(el('p', { class: 'cm-note', text: note }));
+      sections.push(wrap);
+      return wrap;
+    };
+    const pills = (items) => {
+      const row = el('div', { class: 'cm-pills' });
+      items.forEach((item) => item && row.appendChild(item));
+      return row;
+    };
+
+    // Mode: the shape of the answer. Agent is a row of its own below, because
+    // it is not a fourth equal choice — it has a backend to pick as well.
+    section('Chat', [pills(MODES.filter((mode) => mode.id !== 'agent').map((mode) => composerMenuPill(mode.label, {
+      icon: mode.icon,
+      title: mode.desc,
+      selected: state.mode === mode.id,
+      disabled: blocked,
+      // Await: the panel is rebuilt from the new state, not from the old one.
+      onClick: async () => { await changeMode(mode.id); refresh(); }
+    })))]);
+
+    section('Agent', [pills(AGENT_BACKENDS.map((backend) => composerMenuPill(backend.label, {
+      icon: backend.icon,
+      title: backend.title,
+      selected: state.mode === 'agent' && state.agentKind === backend.id,
+      disabled: blocked,
+      onClick: async () => {
+        if (state.mode !== 'agent') await changeMode('agent');
+        setAgentKind(backend.id);
+        refresh();
+      }
+    })))], state.mode === 'agent'
+      ? (state.agentKind === 'local'
+        ? `Answering with the local agent${state.workspace ? ` in ${workspaceName()}` : ' — pick a folder first'}.`
+        : 'Answering with arena.ai\u2019s cloud agent.')
+      : 'Choosing one of these switches this chat to Agent Mode.');
+
+    if (state.mode !== 'agent') {
+      const options = modalityOptionsForMode(state.mode);
+      if (options.length) {
+        section('Work type', [pills(options.map((modality) => composerMenuPill(modality.label, {
+          icon: modality.icon,
+          title: modality.desc,
+          selected: state.modality === modality.id,
+          disabled: blocked,
+          onClick: async () => { await changeModality(modality.id); refresh(); }
+        })))]);
+      }
+    }
+
+    section('Permissions', [pills(PERMISSION_MODES.map((mode) => composerMenuPill(mode.short || mode.label, {
+      icon: mode.icon,
+      title: `${mode.label} — ${mode.desc}`,
+      selected: state.permissionMode === mode.id,
+      danger: Boolean(mode.danger),
+      disabled: busy || state.pendingChanges > 0,
+      onClick: async () => { await changePermissionMode(mode.id); refresh(); }
+    })))], state.permissionMode === 'bypassPermissions'
+      ? 'Bypass is on: the agent runs commands and changes files without asking.'
+      : 'What the agent may do without asking you first.');
+
+    section('Folder', [
+      composerMenuLine(state.workspace ? workspaceName() : 'No folder selected', {
+        icon: 'folder',
+        detail: state.workspace || 'The local agent and saved code work here',
+        title: state.workspace || 'No folder selected yet',
+        disabled: busy,
+        onClick: async () => { closePopover(); if (state.nativeReady) await chooseNativeFolder(); else openSettings('workspace'); }
+      }),
+      state.workspace ? composerMenuLine('Open in Explorer', {
+        icon: 'external', detail: '', disabled: busy,
+        onClick: async () => { closePopover(false); await openWorkspaceFolder(); }
+      }) : null
+    ]);
+
+    const syncOn = state.mode === 'agent'
+      ? Boolean(state.directTools)
+      : Boolean(state.directTools && state.workspaceChosen);
+    const optionRows = [
+      el('label', { class: 'cm-switch', title: 'Workspace Sync: let chats work in the folder selected on this computer' },
+        el('span', { class: 'cm-switch-copy' },
+          el('span', { class: 'cm-line-label', text: 'Workspace Sync' }),
+          el('span', { class: 'cm-line-detail', text: syncOn ? 'On — chats may use the folder' : 'Off — chats stay on arena.ai' })),
+        el('span', { class: 'switch' },
+          el('input', {
+            type: 'checkbox', class: 'switch-input', checked: syncOn, disabled: busy,
+            'aria-label': 'Workspace Sync',
+            onchange: (event) => { setWorkspaceSync(event.target.checked); refresh(); }
+          }),
+          el('span', { class: 'switch-track', 'aria-hidden': 'true' })))
+    ];
+    if (!els.compactButton?.hidden) {
+      optionRows.push(composerMenuLine('Compact chat', {
+        icon: 'compress', detail: 'Continue in a fresh session with a summary',
+        disabled: busy || locked,
+        onClick: () => { closePopover(); confirmCompact(); }
+      }));
+    }
+    if (state.gateway && !els.gatewayChip?.hidden) {
+      optionRows.push(composerMenuLine('Agent Gateway is on', {
+        icon: 'globe', detail: 'Manage the tunnel', disabled: false,
+        onClick: () => { closePopover(); openSettings('gateway'); }
+      }));
+    }
+    section('Options', optionRows);
+
+    if (locked) {
+      sections.push(el('p', { class: 'cm-note cm-note-locked', text: 'This chat keeps the mode it started with. Start a new chat to change it.' }));
+    }
+    return sections;
+  }
+
   function openWorkspacePopover(trigger = els.workspaceButton) {
     if (!trigger) return;
     const path = state.workspace;

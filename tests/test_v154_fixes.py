@@ -40,7 +40,10 @@ def test_mode_note_falls_back_instead_of_raising():
 
 def test_bypass_note_describes_what_still_asks():
     note = agent.mode_note("bypassPermissions").lower()
-    assert "bypass" in note and "shell syntax" in note
+    assert "bypass" in note
+    # 1.5.15: shell syntax no longer asks, so the note must not claim it does.
+    assert "without asking" in note
+    assert "catastrophic" in note
 
 
 # ---------- setup window ----------

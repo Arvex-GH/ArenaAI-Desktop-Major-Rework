@@ -52,6 +52,7 @@
     'thumbs-down': '<path d="M17.2 13.8V4.5h2.5a.8.8 0 0 1 .8.8v7.7a.8.8 0 0 1-.8.8h-2.5ZM17.2 11.6l-3.9 7.3c-1.3.2-2.4-.8-2.3-2l.6-3.1H5.7c-1 0-1.7-1-1.4-1.9l1.4-5.4a2 2 0 0 1 2-1.5h7.8c.9 0 1.7.7 1.7 1.7v4.9Z"/>',
     scale: '<path d="M12 4v16M7.5 20h9M12 4 6 6.4M12 4l6 2.4M6 6.4 3.4 12a3.4 3.4 0 0 0 5.2 0L6 6.4ZM18 6.4 15.4 12a3.4 3.4 0 0 0 5.2 0L18 6.4Z"/>',
     menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    ellipsis: '<circle cx="5.6" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="18.4" cy="12" r="1.5" fill="currentColor" stroke="none"/>',
     trash: '<path d="M4.8 7h14.4M9.2 7V4.6h5.6V7M7.2 7l.9 13h7.8l.9-13M10 10.5v6M14 10.5v6"/>',
     layout: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9h17M9 9v10.5"/>',
     chart: '<path d="M4 20V4M4 20h16"/><path d="M8 16v-4M12.5 16V7.5M17 16v-6"/>',
@@ -1178,7 +1179,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '1.5.14',
+        app_version: '1.5.15',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -4461,16 +4462,96 @@ You can start with a more structured option: one script, short captions, and a c
     return renderToolRow(activity, lane.streaming, activity.id === waitingId);
   }
 
-  /* A thought the model said out loud: one collapsed line, opened while it is
-     still being written. It sits where it happened, between the words above it
-     and the words below it. */
-  function renderThinkingNode(block) {
-    const details = el('details', { class: `reasoning thinking-block${block.open ? ' is-live' : ''}` },
-      el('summary', { text: block.open ? 'Thinking' : 'Thought' }),
-      el('div', { class: 'reasoning-content', text: block.body.trim() })
-    );
-    if (block.open) details.setAttribute('open', '');
-    return details;
+  /* A thought is a call, in the interface: one quiet line, a chevron, opened
+     while it is still being written and folded when it ends — "Thought for 3
+     seconds", exactly like "Ran commands" on arena.ai. It keeps its place
+     between the words above it and the words below it, and the body never
+     becomes part of the answer.
+
+     The duration is measured, not invented: a block's first sighting during a
+     stream stamps its start, its closing tag stamps the end, and a thought
+     loaded from a saved chat has no stamps at all — so it reads "Thought",
+     never "Thought for 0 seconds". */
+  const _thoughtClocks = new WeakMap();
+
+  function thoughtSeconds(lane, block) {
+    const key = String(Number.isFinite(block.at) ? block.at : 0);
+    let clocks = _thoughtClocks.get(lane);
+    if (!clocks) { clocks = {}; _thoughtClocks.set(lane, clocks); }
+    const now = Date.now();
+    const entry = clocks[key];
+    if (!entry) {
+      // A block seen for the first time after the stream ended (a saved chat)
+      // has no honest duration: return null and the row stays undated.
+      if (!block.open && !lane.streaming) return null;
+      clocks[key] = { start: now, end: block.open ? 0 : now };
+      return 0;
+    }
+    if (!block.open && !entry.end) entry.end = now;
+    if (!entry.start) return 0;
+    const end = entry.end || now;
+    return Math.max(0, end - entry.start);
+  }
+
+  function thoughtLabel(ms) {
+    if (ms === null || ms === undefined) return 'Thought';
+    const total = Math.max(1, Math.round(ms / 1000));
+    if (total < 60) return `Thought for ${total} second${total === 1 ? '' : 's'}`;
+    const minutes = Math.floor(total / 60);
+    const seconds = total % 60;
+    const head = `${minutes} minute${minutes === 1 ? '' : 's'}`;
+    return seconds ? `Thought for ${head} ${seconds}s` : `Thought for ${head}`;
+  }
+
+  function renderThoughtRow(lane, block) {
+    const id = `thought-${Number.isFinite(block.at) ? block.at : 0}`;
+    const body = String(block.body || '').trim();
+    // A thought with nothing in it is not worth a line of its own.
+    if (!body && !block.open) return null;
+    const running = Boolean(block.open);
+    const expanded = expandedActivities.has(id);
+    const closedByHand = collapsedActivities.has(id);
+    const wasRunning = _runningActivities.has(id);
+    const folding = !running && !expanded && !closedByHand && wasRunning;
+    if (running) _runningActivities.add(id);
+    else if (wasRunning) _runningActivities.delete(id);
+    const open = !closedByHand && (running || expanded || folding);
+    // Always asked, even while the row says "Thinking…": the first sighting is
+    // what starts the clock, and a clock that starts when the block closes
+    // would time every thought at one second.
+    const seconds = thoughtSeconds(lane, block);
+    const label = running ? 'Thinking\u2026' : thoughtLabel(seconds);
+
+    const row = el('div', {
+      class: `tool-row is-thought ${running ? 'is-run' : 'is-idle'}${open ? ' is-open' : ''}${folding ? ' is-folding' : ''}`,
+      'data-thought-id': id
+    });
+    row.appendChild(el('button', {
+      class: 'tool-line thought-line', type: 'button', 'data-tool-toggle': id,
+      'aria-expanded': open ? 'true' : 'false',
+      title: running ? 'What the model is thinking right now' : label
+    },
+      el('span', { class: 'tool-chevron', 'aria-hidden': 'true' }, iconEl('chevron-right')),
+      el('span', { class: 'thought-glyph', 'aria-hidden': 'true' }, iconEl('spark')),
+      el('span', { class: 'tool-name', text: label }),
+      running ? el('span', { class: 'tool-spinner', 'aria-hidden': 'true' }) : null
+    ));
+    if (!open) return row;
+
+    const detail = el('div', { class: 'tool-detail' },
+      el('div', { class: 'tool-detail-content' },
+        el('div', { class: 'thought-text', text: body })));
+    if (folding) {
+      detail.classList.add('is-folding');
+      const settle = () => {
+        detail.remove();
+        row.classList.remove('is-open', 'is-folding');
+      };
+      detail.addEventListener('animationend', settle, { once: true });
+      setTimeout(settle, 900);
+    }
+    row.appendChild(detail);
+    return row;
   }
 
   /* The answer and the work it did, in the order they happened: text, then the
@@ -4499,14 +4580,17 @@ You can start with a more structured option: one script, short captions, and a c
       return a.at - b.at || a.index - b.index;
     };
     const node = (item) => (item.kind === 'thinking'
-      ? renderThinkingNode(item.block)
+      ? renderThoughtRow(lane, item.block)
       : renderActivityNode(item.activity, lane, waitingId));
     if (showTypewriter) {
       // The words are hidden behind the placeholder for a moment — it stands in
       // for them, so pouring them here as well would print the first sentence
       // twice. The calls and thoughts it already had are not hidden: a command
       // still opens while it runs, in the order they happened.
-      placed.slice().sort(bySource).forEach((item) => nodes.push(node(item)));
+      placed.slice().sort(bySource).forEach((item) => {
+        const rendered = node(item);
+        if (rendered) nodes.push(rendered);
+      });
       return nodes;
     }
     placed.sort((a, b) => {
@@ -4524,7 +4608,8 @@ You can start with a more structured option: one script, short captions, and a c
         if (piece.trim()) nodes.push(markdownNode(piece));
         cursor = Math.max(cursor, item.pos);
       }
-      nodes.push(node(item));
+      const rendered = node(item);
+      if (rendered) nodes.push(rendered);
     });
     const rest = visibleText.slice(cursor);
     if (rest.trim()) nodes.push(markdownNode(rest));
@@ -5127,11 +5212,10 @@ You can start with a more structured option: one script, short captions, and a c
     card.appendChild(head);
 
     if (lane.reasoning) {
-      const details = el('details', { class: 'reasoning' },
-        el('summary', { text: lane.demo ? "Thinking · demo" : "Thinking" }),
-        el('div', { class: 'reasoning-content', text: lane.reasoning })
-      );
-      card.appendChild(details);
+      // A cloud reply's reasoning arrives as one finished block: the same row
+      // a thought gets, with no duration to promise (nothing was timed here).
+      const row = renderThoughtRow(lane, { at: null, open: false, body: lane.reasoning });
+      if (row) card.appendChild(row);
     }
 
     const view = laneView(lane);
@@ -6425,6 +6509,21 @@ You can start with a more structured option: one script, short captions, and a c
       const bypass = state.permissionMode === 'bypassPermissions';
       els.bypassIndicator.hidden = !bypass;
       els.bypassIndicator.title = bypass ? 'Permission bypass is on: nothing asks before it runs.' : '';
+    }
+    // The menu swallowed the chips that used to say what was active. Two things
+    // still need to be visible without opening it: a bypass that runs everything
+    // unattended (its dot stays next to Send) and a request waiting for you.
+    if (els.composerMenuDot) {
+      const waiting = Array.isArray(state.pendingPermissions) && state.pendingPermissions.length > 0;
+      els.composerMenuDot.hidden = !(waiting || state.permissionMode === 'bypassPermissions');
+      els.composerMenuDot.classList.toggle('is-waiting', waiting);
+      els.composerMenuButton?.classList.toggle('is-danger', state.permissionMode === 'bypassPermissions');
+      els.composerMenuButton?.classList.toggle('has-waiting', waiting);
+    }
+    if (els.composerMenuButton) {
+      els.composerMenuButton.title = state.permissionMode === 'bypassPermissions'
+        ? 'Chat options — mode, work type, permissions, folder · bypass is on'
+        : 'Chat options — mode, work type, permissions, folder';
     }
     if (els.workspaceLabel) {
       els.workspaceLabel.textContent = state.workspace ? workspaceName() : "Choose folder";
@@ -8816,6 +8915,195 @@ You can start with a more structured option: one script, short captions, and a c
     });
   }
 
+  /* ------------------------------------------------------------------------ */
+  /* Chat options: everything the composer used to spell out, as icons.        */
+  /* ------------------------------------------------------------------------ */
+  /* The toolbar shows two buttons — this menu and Attach — and nothing else.
+     Mode, work type, permissions and folder are not decorations of the message
+     box: each one changes what pressing Send means, so they sit in one panel a
+     click away instead of competing with the text for attention. Every pill
+     carries its own tooltip; the panel stays open while you change more than
+     one thing. */
+  const AGENT_BACKENDS = [
+    { id: 'local', label: 'Local agent', icon: 'terminal',
+      title: 'Local agent — works in the folder on this computer with your tools, under the permissions below.' },
+    { id: 'native', label: 'Cloud agent', icon: 'cloud',
+      title: 'Cloud agent — arena.ai\u2019s own agent: cloud workspace, web search and Arena connectors.' }
+  ];
+
+  function composerMenuPill(label, { icon = '', title = '', selected = false, danger = false, disabled = false, onClick = null } = {}) {
+    const button = el('button', {
+      class: `cm-pill${selected ? ' is-selected' : ''}${danger ? ' is-danger' : ''}`,
+      type: 'button',
+      title: title || label,
+      'aria-pressed': String(Boolean(selected)),
+      disabled: Boolean(disabled)
+    },
+      icon ? el('span', { class: 'cm-pill-icon' }, iconEl(icon)) : null,
+      el('span', { class: 'cm-pill-label', text: label }),
+      selected ? el('span', { class: 'cm-pill-check' }, iconEl('check')) : null
+    );
+    if (onClick && !disabled) button.addEventListener('click', onClick);
+    return button;
+  }
+
+  function composerMenuLine(label, { icon = '', detail = '', title = '', disabled = false, danger = false, onClick = null } = {}) {
+    const button = el('button', {
+      class: `cm-line${danger ? ' is-danger' : ''}`, type: 'button',
+      title: title || (detail ? `${label} — ${detail}` : label), disabled: Boolean(disabled)
+    },
+      icon ? el('span', { class: 'cm-line-icon' }, iconEl(icon)) : null,
+      el('span', { class: 'cm-line-copy' },
+        el('span', { class: 'cm-line-label', text: label }),
+        detail ? el('span', { class: 'cm-line-detail', text: detail }) : null),
+      iconEl('chevron-right')
+    );
+    if (onClick && !disabled) button.addEventListener('click', onClick);
+    return button;
+  }
+
+  function openComposerMenu(trigger = els.composerMenuButton) {
+    if (!trigger) return;
+    const body = el('div', { class: 'composer-menu', role: 'group', 'aria-label': 'Chat options' });
+    const popover = openPopover(trigger, {
+      title: 'Chat options',
+      subtitle: 'Mode, work type, permissions and folder for the next message.',
+      content: body,
+      wide: true
+    });
+    if (!popover) return;
+
+    const refresh = () => {
+      body.replaceChildren(...composerMenuSections(refresh));
+      positionPopover(popover, trigger);
+    };
+    refresh();
+    return popover;
+  }
+
+  function composerMenuSections(refresh) {
+    const locked = chatLocked();
+    const busy = state.generating;
+    const blocked = locked || busy;
+    const sections = [];
+
+    const section = (title, children, note = '') => {
+      const wrap = el('section', { class: 'cm-section' }, el('p', { class: 'cm-title', text: title }));
+      const holder = el('div', { class: 'cm-body' });
+      children.forEach((child) => child && holder.appendChild(child));
+      wrap.appendChild(holder);
+      if (note) wrap.appendChild(el('p', { class: 'cm-note', text: note }));
+      sections.push(wrap);
+      return wrap;
+    };
+    const pills = (items) => {
+      const row = el('div', { class: 'cm-pills' });
+      items.forEach((item) => item && row.appendChild(item));
+      return row;
+    };
+
+    // Mode: the shape of the answer. Agent is a row of its own below, because
+    // it is not a fourth equal choice — it has a backend to pick as well.
+    section('Chat', [pills(MODES.filter((mode) => mode.id !== 'agent').map((mode) => composerMenuPill(mode.label, {
+      icon: mode.icon,
+      title: mode.desc,
+      selected: state.mode === mode.id,
+      disabled: blocked,
+      // Await: the panel is rebuilt from the new state, not from the old one.
+      onClick: async () => { await changeMode(mode.id); refresh(); }
+    })))]);
+
+    section('Agent', [pills(AGENT_BACKENDS.map((backend) => composerMenuPill(backend.label, {
+      icon: backend.icon,
+      title: backend.title,
+      selected: state.mode === 'agent' && state.agentKind === backend.id,
+      disabled: blocked,
+      onClick: async () => {
+        if (state.mode !== 'agent') await changeMode('agent');
+        setAgentKind(backend.id);
+        refresh();
+      }
+    })))], state.mode === 'agent'
+      ? (state.agentKind === 'local'
+        ? `Answering with the local agent${state.workspace ? ` in ${workspaceName()}` : ' — pick a folder first'}.`
+        : 'Answering with arena.ai\u2019s cloud agent.')
+      : 'Choosing one of these switches this chat to Agent Mode.');
+
+    if (state.mode !== 'agent') {
+      const options = modalityOptionsForMode(state.mode);
+      if (options.length) {
+        section('Work type', [pills(options.map((modality) => composerMenuPill(modality.label, {
+          icon: modality.icon,
+          title: modality.desc,
+          selected: state.modality === modality.id,
+          disabled: blocked,
+          onClick: async () => { await changeModality(modality.id); refresh(); }
+        })))]);
+      }
+    }
+
+    section('Permissions', [pills(PERMISSION_MODES.map((mode) => composerMenuPill(mode.short || mode.label, {
+      icon: mode.icon,
+      title: `${mode.label} — ${mode.desc}`,
+      selected: state.permissionMode === mode.id,
+      danger: Boolean(mode.danger),
+      disabled: busy || state.pendingChanges > 0,
+      onClick: async () => { await changePermissionMode(mode.id); refresh(); }
+    })))], state.permissionMode === 'bypassPermissions'
+      ? 'Bypass is on: the agent runs commands and changes files without asking.'
+      : 'What the agent may do without asking you first.');
+
+    section('Folder', [
+      composerMenuLine(state.workspace ? workspaceName() : 'No folder selected', {
+        icon: 'folder',
+        detail: state.workspace || 'The local agent and saved code work here',
+        title: state.workspace || 'No folder selected yet',
+        disabled: busy,
+        onClick: async () => { closePopover(); if (state.nativeReady) await chooseNativeFolder(); else openSettings('workspace'); }
+      }),
+      state.workspace ? composerMenuLine('Open in Explorer', {
+        icon: 'external', detail: '', disabled: busy,
+        onClick: async () => { closePopover(false); await openWorkspaceFolder(); }
+      }) : null
+    ]);
+
+    const syncOn = state.mode === 'agent'
+      ? Boolean(state.directTools)
+      : Boolean(state.directTools && state.workspaceChosen);
+    const optionRows = [
+      el('label', { class: 'cm-switch', title: 'Workspace Sync: let chats work in the folder selected on this computer' },
+        el('span', { class: 'cm-switch-copy' },
+          el('span', { class: 'cm-line-label', text: 'Workspace Sync' }),
+          el('span', { class: 'cm-line-detail', text: syncOn ? 'On — chats may use the folder' : 'Off — chats stay on arena.ai' })),
+        el('span', { class: 'switch' },
+          el('input', {
+            type: 'checkbox', class: 'switch-input', checked: syncOn, disabled: busy,
+            'aria-label': 'Workspace Sync',
+            onchange: (event) => { setWorkspaceSync(event.target.checked); refresh(); }
+          }),
+          el('span', { class: 'switch-track', 'aria-hidden': 'true' })))
+    ];
+    if (!els.compactButton?.hidden) {
+      optionRows.push(composerMenuLine('Compact chat', {
+        icon: 'compress', detail: 'Continue in a fresh session with a summary',
+        disabled: busy || locked,
+        onClick: () => { closePopover(); confirmCompact(); }
+      }));
+    }
+    if (state.gateway && !els.gatewayChip?.hidden) {
+      optionRows.push(composerMenuLine('Agent Gateway is on', {
+        icon: 'globe', detail: 'Manage the tunnel', disabled: false,
+        onClick: () => { closePopover(); openSettings('gateway'); }
+      }));
+    }
+    section('Options', optionRows);
+
+    if (locked) {
+      sections.push(el('p', { class: 'cm-note cm-note-locked', text: 'This chat keeps the mode it started with. Start a new chat to change it.' }));
+    }
+    return sections;
+  }
+
   function openWorkspacePopover(trigger = els.workspaceButton) {
     if (!trigger) return;
     const path = state.workspace;
@@ -9945,7 +10233,6 @@ You can start with a more structured option: one script, short captions, and a c
   function openSettings(initialTab = 'connection') {
     const tabDefs = [
       { id: 'connection', label: 'Account', icon: 'user' },
-      { id: 'permissions', label: 'Permissions', icon: 'shield' },
       { id: 'workspace', label: 'Folder', icon: 'folder' },
       { id: 'memory', label: 'Memory', icon: 'layers' },
       { id: 'automations', label: 'Automations', icon: 'clock' },
@@ -10092,84 +10379,6 @@ You can start with a more structured option: one script, short captions, and a c
         wrap.appendChild(el('div', { class: 'note-box is-danger', style: { marginTop: '10px' } }, iconEl('wifi-off'), el('span', { text: state.serverError })));
       } else if (state.status?.session_error) {
         wrap.appendChild(el('div', { class: 'note-box is-danger', style: { marginTop: '10px' } }, iconEl('alert'), el('span', { text: `Session error: ${textValue(state.status.session_error)}` })));
-      }
-      return wrap;
-    }
-
-    function renderPermissionsPanel() {
-      const wrap = el('div');
-      wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Local Agent permissions' }));
-      wrap.appendChild(el('p', { class: 'modal-copy', text: 'What the Local Agent may do in your folder without asking. The same switch sits under the message box.' }));
-      const controlsDisabled = anyGenerationRunning() || state.remoteBusy || state.pendingChanges > 0;
-      const cards = el('div', { class: 'radio-cards' });
-      PERMISSION_MODES.forEach((mode) => {
-        const selected = state.permissionMode === mode.id;
-        const label = el('label', { class: `radio-card${selected ? ' is-selected' : ''}${mode.danger ? ' is-danger-card' : ''}` });
-        const input = el('input', {
-          type: 'radio', name: 'permission-mode', value: mode.id,
-          checked: selected, disabled: controlsDisabled,
-          'aria-label': mode.label
-        });
-        input.addEventListener('change', async () => {
-          if (!input.checked) return;
-          input.disabled = true;
-          await changePermissionMode(mode.id);
-          refreshPanel();
-        });
-        label.append(input,
-          el('span', { class: 'radio-indicator', 'aria-hidden': 'true' }),
-          el('span', { class: 'radio-copy' },
-            el('span', { class: 'radio-title' }, el('span', { text: mode.label }), mode.danger ? el('span', { class: 'radio-tag', text: 'Dangerous' }) : null),
-            el('span', { class: 'radio-desc', text: mode.desc })
-          )
-        );
-        cards.appendChild(label);
-      });
-      wrap.appendChild(cards);
-      if (state.permissionMode === 'bypassPermissions') {
-        wrap.appendChild(el('div', { class: 'note-box is-danger', style: { marginTop: '8px' } }, iconEl('shield-alert'),
-          el('span', { text: 'Bypass is on: the Local Agent can change files and run commands in your folder without asking.' })));
-      }
-
-      wrap.appendChild(el('h3', { class: 'modal-section-title', text: 'Agent for new chats' }));
-      wrap.appendChild(el('p', { class: 'modal-copy', text: 'Which agent new Agent Mode chats use. A started chat keeps its own agent.' }));
-      const agentCards = el('div', { class: 'radio-cards' });
-      [
-        { id: 'native', label: 'Arena Agent', desc: "Arena's own agent: cloud workspace, search, files and Arena connectors. Recommended." },
-        { id: 'local', label: 'Local Agent', desc: 'Works in the folder you pick, on this computer, under the permissions above.' }
-      ].forEach((kind) => {
-        const selected = state.agentKind === kind.id;
-        const label = el('label', { class: `radio-card${selected ? ' is-selected' : ''}` });
-        const input = el('input', {
-          type: 'radio', name: 'agent-kind', value: kind.id,
-          checked: selected, disabled: controlsDisabled, 'aria-label': kind.label
-        });
-        input.addEventListener('change', () => { if (input.checked) setAgentKind(kind.id); });
-        label.append(input,
-          el('span', { class: 'radio-indicator', 'aria-hidden': 'true' }),
-          el('span', { class: 'radio-copy' },
-            el('span', { class: 'radio-title' }, el('span', { text: kind.label })),
-            el('span', { class: 'radio-desc', text: kind.desc })));
-        agentCards.appendChild(label);
-      });
-      wrap.appendChild(agentCards);
-
-      if (state.pendingPermissions.length) {
-        wrap.appendChild(el('h3', { class: 'modal-section-title', text: `Waiting for your answer (${state.pendingPermissions.length})` }));
-        const pendingWrap = el('div', { class: 'permissions-list' });
-        state.pendingPermissions.forEach((permission) => {
-          const item = el('div', { class: 'permission-mini' },
-            el('div', { class: 'permission-mini-head' }, iconEl('shield-alert'), el('span', { text: permission.title || 'Permission request' })),
-            el('div', { class: 'permission-mini-detail', text: permissionDetail(permission) }),
-            el('div', { class: 'permission-mini-actions' },
-              el('button', { class: 'button button-small button-allow', type: 'button', disabled: state.decidingPermissions.has(String(permission.id) || ''), onclick: () => decidePermission(permission.id, 'allow') }, el('span', { text: 'Allow once' })),
-              el('button', { class: 'button button-small button-always', type: 'button', disabled: state.decidingPermissions.has(String(permission.id) || ''), onclick: () => decidePermission(permission.id, 'always') }, el('span', { text: 'Allow in this chat' })),
-              el('button', { class: 'button button-small button-deny', type: 'button', disabled: state.decidingPermissions.has(String(permission.id) || ''), onclick: () => decidePermission(permission.id, 'deny') }, el('span', { text: 'Deny' }))
-            )
-          );
-          pendingWrap.appendChild(item);
-        });
-        wrap.appendChild(pendingWrap);
       }
       return wrap;
     }
@@ -10919,7 +11128,6 @@ You can start with a more structured option: one script, short captions, and a c
     }
 
     function contentFor(tab) {
-      if (tab === 'permissions') return renderPermissionsPanel();
       if (tab === 'workspace') return renderWorkspacePanel();
       if (tab === 'memory') return renderMemoryPanel();
       if (tab === 'automations') return renderAutomationsPanel();
@@ -10934,10 +11142,7 @@ You can start with a more structured option: one script, short captions, and a c
       if (hydrated[tab]) return;
       hydrated[tab] = true;
       if (state.serverError || state.networkOffline) return;
-      if (tab === 'permissions') {
-        Promise.allSettled([loadPermissionModeFromServer({ quiet: true }), loadPermissions({ quiet: true })])
-          .then(() => { if (state.settingsTab === 'permissions') refreshPanel(); });
-      } else if (tab === 'workspace') {
+      if (tab === 'workspace') {
         loadWorkspaceFromServer({ quiet: true }).then(() => { if (state.settingsTab === 'workspace') refreshPanel(); });
       } else if (tab === 'connection') {
         API.getAccounts().then((result) => {
@@ -12332,6 +12537,8 @@ You can start with a more structured option: one script, short captions, and a c
     els.sidebarResize = $('#sidebarResize');
     els.workspaceResize = $('#workspaceResize');
     els.workspaceSplitResize = $('#workspaceSplitResize');
+    els.composerMenuButton = $('#composerMenuButton');
+    els.composerMenuDot = $('#composerMenuDot');
     els.permissionButton = $('#permissionButton');
     els.bypassIndicator = $('#bypassIndicator');
     els.workspaceSyncChip = $('#workspaceSyncChip');
@@ -12536,6 +12743,11 @@ You can start with a more structured option: one script, short captions, and a c
         els.reloadConnectorsButton.classList.remove('is-spinning');
       }
     });
+    // One button instead of six chips: the toolbar is two icons and Send now.
+    els.composerMenuButton?.addEventListener('click', () => {
+      if (els.composerMenuButton.getAttribute('aria-expanded') === 'true') { closePopover(); return; }
+      openComposerMenu();
+    });
     els.modeButton?.addEventListener('click', () => {
       if (!els.modeButton.disabled) openModePopover();
     });
@@ -12550,7 +12762,7 @@ You can start with a more structured option: one script, short captions, and a c
     els.gatewayChip?.addEventListener('click', () => openSettings('gateway'));
     els.sendButton?.setAttribute('type', 'submit');
     els.stopButton?.addEventListener('click', () => { void stopGeneration(); });
-    els.chatSettingsButton?.addEventListener('click', () => openSettings('permissions'));
+    els.chatSettingsButton?.addEventListener('click', () => openSettings('workspace'));
 
     /* Attachments: +, file picker, paste, drag & drop */
     els.attachButton?.addEventListener('click', () => {

@@ -1022,6 +1022,133 @@ present.
 **Unchanged:** the server-side `reasoning` events keep their own folded details.
 Those are the provider's own reasoning stream; `<thinking>` is the model's text.
 
+## 1.5.15
+
+Four corrections from the installed app, all in the row under the message box —
+what a thought looks like, what *Bypass* has to mean, where the agent is chosen,
+and how much text the composer is allowed to display.
+
+### A thought is a tool row
+
+`renderThinkingNode()` drew `<details class="reasoning thinking-block">`: its own
+border, its own italic grey body, a summary reading *Thinking* / *Thought*. It
+sat next to the tool rows and never quite belonged to them, which is what the
+report said — the reference being arena.ai's own transcript, where a thought and
+a command are the same collapsed line: `>_ Ran commands 1`, `Thought for 3
+seconds`, chevron on the left.
+
+So the drawer was replaced, not decorated. `renderThoughtRow(lane, block)` emits
+the same `div.tool-row` a tool call uses, with `is-thought` on it:
+
+```html
+<div class="tool-row is-thought is-open">
+  <button class="tool-line" data-tool-toggle>
+    <span class="icon tool-chevron">chevron-right</span>
+    <span class="icon thought-glyph">spark</span>
+    <span class="tool-name">Thinking…</span>            <!-- live -->
+    <span class="tool-spinner"></span>
+    <!-- finished: no spinner, name is "Thought for 3 seconds" -->
+  </button>
+  <div class="tool-detail"><div class="thought-text">…</div></div>
+</div>
+```
+
+The folding, the spinner, the chevron rotation, the `animationend` + 900 ms
+fallback that clears `is-folding` — all of it is `renderToolRow`'s existing
+machinery, reused by using the same classes. The old `.reasoning` /
+`.thinking-block` rules are gone from `style.css` so nothing can drift back.
+
+**The clock.** The label needs a duration, and a stream of tokens does not carry
+one. `_thoughtClocks` is a `WeakMap` keyed by the lane object holding a `Map`
+keyed by `block.at` — the offset where the thought starts, which is stable across
+re-renders. A block seen for the first time while the reply is live starts its
+clock; a block that arrives already closed (a reopened chat, or the cloud agent's
+`lane.reasoning`) never gets one and is labelled plainly *Thought*. `thoughtLabel`
+formats seconds, never *0*: `1 second`, `3 seconds`, `1 minute 15s`, `2 minutes`.
+Because nothing else re-renders the row while the model is quiet, the label is
+recomputed through the existing render pass and does not need a timer of its own.
+
+An empty finished thought returns `null` and both call sites skip it — a row that
+opens onto nothing is worse than no row.
+
+### Bypass is answered before it is asked
+
+`permissions.decide()` walks its rules in order, and the *always ask* rules —
+shell operators (`&&`, `|`, `>`, `%VAR%`), inline code (`-c`, `-e`, `--eval`),
+paths outside the folder — sat above the bypass branch. So bypass was consulted
+only after the app had already decided the command was suspicious, which is
+exactly what the report described: *"even in bypass it asks"*.
+
+The bypass branch now comes first and returns `allow` unconditionally. Its only
+floor is the catastrophic list above it, which keeps returning `deny` — a denial
+is not a question, so *zero prompts* and *still not a fork bomb* hold at once.
+`PermissionBroker._always` (the remembered shell/inline repeats) therefore can
+never fire in bypass mode, and the mode note in `arena/agent.py` no longer claims
+that shell syntax still asks.
+
+What bypass still cannot do: `_prepare()` refuses `-c` / `-e` / `--eval` argv, so
+bypass does not silently become a way to run a REPL — that is a separate,
+unrelated gate, and the note keeps saying it.
+
+### The agent backend belongs in the composer
+
+Settings → Permissions held two things: the permission radios (already in the
+composer, next to Send) and a second set of radios choosing the agent for new
+chats (*Local* / *Native*). The reported cost: *"I have to click three levels to
+set it to local on every launch."*
+
+The tab is removed — `renderPermissionsPanel()` deleted, the `permissions` entry
+gone from the tab list, the `openSettings('permissions')` callers repointed. The
+choice lives where it is used: the composer's Chat options panel has an **Agent**
+row with *Local agent* and *Cloud agent*; picking one calls `changeMode('agent')`
+if needed and `setAgentKind(...)`, which persists `ap-agent-kind` exactly as the
+Settings radios did.
+
+### Two icons instead of six chips
+
+The toolbar used to spell everything out: mode, work type, folder, Workspace
+Sync, compact, gateway — six text chips plus a permission chip by Send. Under the
+message box that is a wall.
+
+Now: three dots (Chat options) and `+` (Attach). Both are `.tool-icon-button`s —
+30 px, transparent until hovered, each with a `title` and an `aria-label`. The
+old chips are still in the DOM inside `div.toolbar-stash` (`display: none`), and
+that is deliberate: `#modeLabel`, `#permissionLabel`, `#workspaceLabel`,
+`#workspaceSyncToggle` and friends are what `renderModeBars`,
+`renderComposerContext` and `updateComposerState` write to, and eleven other
+modules read. Keeping them as hidden state instead of rewriting those writers was
+the smaller, safer change; the panel renders from that state.
+
+`openComposerMenu()` (`11-ui.js`) builds a scrollable panel from
+`composerMenuSections()`: **Chat** (Direct / Battle / Side by side), **Agent**
+(Local / Cloud), **Work type** (hidden in Agent Mode, as the chip was),
+**Permissions** (five pills, bypass red), **Folder** (with *Open in Explorer*),
+and **Options** (Workspace Sync, Compact, Gateway). Every pill carries a tooltip
+with the same description the popover used to show. The panel re-renders in place
+after a change and stays open, because changing one thing usually means changing
+two. Mode and permission clicks `await` their API call before re-rendering —
+without that the pills redraw from the old state, which the jsdom harness caught
+as a stale `aria-pressed`.
+
+The two things that must stay visible stay: the bypass dot next to Send, and a
+small dot on the menu button when a permission request is waiting (amber) or
+bypass is on (red) — a hidden setting that runs everything unattended should
+announce itself.
+
+### Tests
+
+- `tests/js/composer_menu_dom.js` (+ `tests/test_composer_menu.py`) boots the real
+  page in jsdom and clicks through it: the toolbar is two icons with tooltips, the
+  old chips are stashed and not drawn, the panel holds all six sections, Local and
+  Cloud agent both stick (`localStorage`), Bypass shows its dot and its tooltip,
+  Battle restores the work-type section, Escape closes the panel, and Settings has
+  no *Permissions* tab. 31 checks.
+- `tests/js/thinking_blocks.js` grows to 47, including a functional section that
+  runs `thoughtSeconds` / `thoughtLabel` against a fake clock.
+- `tests/test_shell_v15.py` now asserts bypass **allows** `npm i && curl x`,
+  `python -c`, and paths outside the folder, and still **denies**
+  `rm -rf / && echo`.
+
 ## Still to come
 
 - **Session list presentation.** Grouping (today / this week / older), the way a

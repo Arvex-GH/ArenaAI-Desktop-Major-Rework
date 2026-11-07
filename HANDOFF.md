@@ -1,7 +1,7 @@
 # Arena Desktop — Session Handoff
 
-**Date:** 2026-11-06
-**Version:** 1.5.0
+**Date:** 2026-11-07
+**Version:** 1.5.15
 **Status:** Desktop app working — Flask + pywebview/WebView2, full web UI, 306/307 tests pass
 
 ---
@@ -521,6 +521,68 @@ suite.
   never started, or instantly done when all are off); `startup_screen.js` → 28;
   `startup_screen_dom.js` → 20 (presets named, Off row, tool counts).
 - Version 1.5.13.
+
+## Session 25 (2026-11-07) — merged, NOT released: thought rows, real bypass, agent in the composer
+
+- **Asked:** four things and an explicit order — *"implement everything, merge is
+  allowed, do NOT release"*. (1) thinking blocks must look like tool calls
+  (`>_ Ran commands 1` / `Thought for 3 seconds`, arena.ai's own style);
+  (2) bypass must never ask, *"fully autonomous"*; (3) the Permissions panel must
+  leave Settings and the agent backend (Local / Cloud) must be switchable from the
+  composer — *"I have to click three levels to set it to local on every launch"*;
+  (4) the composer's big text chips must become small icon buttons with tooltips,
+  inside a three-dots menu to the left of `+`.
+- **Thinking = a tool row.** `renderThinkingNode` (its own `<details
+  class="reasoning thinking-block">`) replaced by `renderThoughtRow`, which emits
+  the *same* `div.tool-row` a command row uses (`is-thought` on it): chevron,
+  glyph, one name line, `.tool-detail` holding the prose. Folding, spinner,
+  chevron rotation, the `animationend` + 900 ms fallback are `renderToolRow`'s,
+  reused by using its classes. Duration comes from `_thoughtClocks` (a `WeakMap`
+  of lane → `Map(block.at → start)`); `thoughtLabel()` renders `1 second` /
+  `3 seconds` / `1 minute 15s`, and a block that arrives already closed (reopened
+  chat, cloud `lane.reasoning`) is labelled plainly `Thought`. Empty finished
+  thoughts return `null`; both call sites skip it. Old `.reasoning` /
+  `.thinking-block` CSS deleted.
+- **Bypass first, allow always.** `permissions.decide()` used to reach the
+  *always ask* rules (shell operators, inline code, paths outside the folder)
+  before the bypass branch, so bypass still asked — reported as *"even in bypass
+  it asks"*. The bypass branch now sits directly under the catastrophic check and
+  returns `allow` unconditionally; the only floor is `deny` (so bypass answers
+  zero prompts and still refuses `rm -rf /`). `PermissionBroker._always` can no
+  longer fire in bypass. `MODE_NOTES['bypassPermissions']` rewritten to say
+  exactly that. `_prepare()` still refuses `-c`/`-e`/`--eval` argv — that is a
+  separate gate, not a prompt.
+- **Agent backend in the composer, Permissions tab removed.**
+  `renderPermissionsPanel()` deleted; `permissions` gone from the Settings tab
+  list, `contentFor`/`hydrateTab` branches removed, `chatSettingsButton` now
+  opens `workspace`. `openComposerMenu()`'s **Agent** row offers *Local agent* /
+  *Cloud agent* → `changeMode('agent')` when needed + `setAgentKind()` (persists
+  `ap-agent-kind`, same key the Settings radios wrote).
+- **Two icons and Send.** `#composerMenuButton` (new `ellipsis` icon in
+  `01-core.js`) + `#attachButton`, both `.tool-icon-button` (30 px, transparent,
+  `title` + `aria-label`). The six old chips moved into `div.toolbar-stash`
+  (`display: none !important`) on purpose: `#modeLabel`, `#permissionLabel`,
+  `#workspaceLabel`, `#workspaceSyncToggle` are what `renderModeBars`,
+  `renderComposerContext` and `updateComposerState` write and what other modules
+  read, so the panel renders from that state instead of rewriting eleven writers.
+  `openComposerMenu` sections: Chat / Agent / Work type (hidden in Agent Mode) /
+  Permissions / Folder / Options (Workspace Sync, Compact, Gateway); it
+  re-renders in place and stays open; mode and permission clicks `await` the API
+  call before redrawing (a stale `aria-pressed` was caught by the harness).
+  `#composerMenuDot` shows amber for a waiting request, red for bypass.
+- **Tests:** new `tests/js/composer_menu_dom.js` + `tests/test_composer_menu.py`
+  → **31 checks** (toolbar shape, tooltips, icons drawn, stash hidden, all six
+  sections, Local/Cloud persisted, bypass dot + tooltip, Battle restores work
+  type, Escape, Settings has no Permissions tab, no uncaught errors).
+  `thinking_blocks.js` → 47. `test_shell_v15.py` now expects `allow` for
+  `npm i && curl x` / `python -c` / outside paths, `deny` for `rm -rf / && echo`;
+  `test_v154_fixes.py` asserts the new bypass note. Full suite: **447 passed, 22
+  skipped, 2 deselected**; every JS harness also green on a CRLF copy in
+  `/tmp/crlf`.
+- **Version 1.5.15. No tag, no release** — the owner asked to see the summary
+  first and to approve the release separately.
+- **No screenshots:** there is no browser in this sandbox, so the visual claims
+  are backed by jsdom DOM assertions and CSS source checks, not by pictures.
 
 ## Session 24 (2026-11-07) — 1.5.14 released
 

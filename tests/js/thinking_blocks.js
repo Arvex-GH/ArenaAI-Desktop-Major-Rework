@@ -165,7 +165,14 @@ check("a live thought suppresses the placeholder", /const thinkingLive = view\.t
   && /const showTypewriter = lane\.streaming && \(!visibleText \|\| inTypewriterWindow\) && !thinkingLive;/.test(render));
 check("rows and thoughts are sorted together", /const bySource = /.test(render)
   && /placed\.slice\(\)\.sort\(bySource\)/.test(render));
-check("a thought renders as a collapsed block", /class: `reasoning thinking-block/.test(render));
+// A thought is a call in the interface (1.5.15): one quiet line with a chevron,
+// opened while it is written, folded to "Thought for 3 seconds" when it ends —
+// exactly like "Ran commands" on arena.ai.
+check("a thought renders as a tool row", /class: `tool-row is-thought/.test(render));
+check("a thought row opens like a call", /data-tool-toggle/.test(grab("renderThoughtRow")));
+check("a live thought says Thinking…", /running \? 'Thinking\\u2026' : thoughtLabel\(seconds\)/.test(render));
+check("a thought is timed, not guessed", /Thought for \$\{total\} second/.test(render)
+  && /if \(!block\.open && !lane\.streaming\) return null;/.test(render));
 check("no thought is hoisted above the text", !/thinking\.forEach\(\(block\) => nodes\.unshift/.test(render));
 check("rows are placed with the same hiding as the text", /offsetMapper\(readToolStream\(raw, Boolean\(lane\.streaming\)\)\.hidden\)/.test(render));
 
@@ -177,13 +184,45 @@ check("the placeholder hides the prose it stands for", /return nodes;/.test(type
   && !/markdownNode/.test(typewriterBranch));
 
 const css = src("arena/web/static/style.css");
-check("thought blocks are styled", /\.thinking-block \{/.test(css) && /\.thinking-block\.is-live/.test(css));
+check("thought rows are styled like calls", /\.tool-row\.is-thought \{/.test(css)
+  && /\.thought-text \{/.test(css) && /\.tool-chevron \{/.test(css) && /\.tool-row\.is-open > \.tool-line \.tool-chevron/.test(css));
 
 // The instructions the model is given must ask for the blocks, or none of this
 // ever happens.
 const guide = src("arena/agent.py");
 check("the prompt asks for <thinking>", /Think in a `<thinking>` block/.test(guide));
 check("the prompt asks for the closing marker", /close the call with `~~~`|closing `~~~`/.test(guide) || /`~~~` after it/.test(guide));
+
+/* ---- the clock --------------------------------------------------------- */
+
+// The same block, twice: while it is open it stamps a start, when it closes it
+// stamps an end, and a thought that was never seen live keeps no duration.
+const clockApi = {};
+let fakeNow = 1_700_000_000_000;
+const FakeDate = { now: () => fakeNow };
+new Function("exports", "Date", [
+  "const _thoughtClocks = new WeakMap();",
+  grab("thoughtSeconds"),
+  grab("thoughtLabel"),
+  "exports.thoughtSeconds = thoughtSeconds;",
+  "exports.thoughtLabel = thoughtLabel;",
+].join("\n"))(clockApi, FakeDate);
+
+const lane = { streaming: true };
+const liveThought = { at: 10, open: true, body: "Scanning the disks" };
+check("an open thought has no duration yet", clockApi.thoughtSeconds(lane, liveThought) === 0);
+fakeNow += 3000;
+const closedThought = { at: 10, open: false, body: "Scanning the disks" };
+const threeSeconds = clockApi.thoughtSeconds(lane, closedThought);
+check("a closed thought is timed from its first sighting", threeSeconds === 3000);
+check("…and reads like a call", clockApi.thoughtLabel(threeSeconds) === "Thought for 3 seconds");
+check("one second is singular", clockApi.thoughtLabel(1000) === "Thought for 1 second");
+check("never zero seconds", clockApi.thoughtLabel(120) === "Thought for 1 second");
+check("minutes read naturally", clockApi.thoughtLabel(75_000) === "Thought for 1 minute 15s");
+check("whole minutes drop the seconds", clockApi.thoughtLabel(120_000) === "Thought for 2 minutes");
+check("a saved thought is not given a made-up duration",
+  clockApi.thoughtSeconds({ streaming: false }, { at: 99, open: false, body: "old" }) === null
+  && clockApi.thoughtLabel(null) === "Thought");
 
 let failed = 0;
 for (const [name, ok] of checks) {

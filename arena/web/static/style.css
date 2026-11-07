@@ -955,37 +955,30 @@ svg { display: block; }
 .code-block pre { margin: 0; padding: 14px 14px; overflow: auto; color: #cfdad2; font: 12px/1.65 var(--font-mono); tab-size: 2; }
 .code-block code { font-family: inherit; }
 
-.reasoning { margin: 0 0 11px; border: 1px solid #343b38; border-radius: 7px; background: #232726; }
-.reasoning summary {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 9px;
-  color: #939e97;
-  font-size: 10.5px;
-  cursor: pointer;
-  list-style: none;
-  user-select: none;
+/* A thought is a call: one quiet line with a chevron, opened while the model
+   writes it and folded to "Thought for 3 seconds" when it ends. Its body is the
+   same hairline detail a command gets, and it never reads as answer text. */
+.tool-row.is-thought { font-family: var(--font-ui); font-size: 11.5px; }
+.tool-chevron {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 13px; height: 13px; margin: 0 1px 0 0;
+  color: var(--muted-dim); transition: transform .15s ease, color .15s ease;
+  transform: translateY(1px);
 }
-.reasoning summary::-webkit-details-marker { display: none; }
-.reasoning summary::before { content: "›"; font-size: 14px; line-height: 1; transition: transform .15s ease; }
-.reasoning[open] summary::before { transform: rotate(90deg); }
-.reasoning summary:hover { color: #c0cbc3; }
-.reasoning-content { padding: 0 12px 10px 22px; color: #959f99; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
-
-/* A thought the model said out loud: quiet, in place, opened while it writes. */
-.thinking-block { margin: 0 0 8px; border-color: #303634; background: #212423; }
-.thinking-block > summary { padding: 5px 9px; font-style: italic; }
-.thinking-block > summary::before { content: "\2026"; }
-.thinking-block[open] > summary::before { content: "\203A"; }
-.thinking-block.is-live > summary { color: #8b958f; }
-.thinking-block.is-live > summary::after {
-  content: "";
-  width: 5px; height: 5px; margin-left: 2px;
-  border-radius: 50%; background: var(--accent);
-  animation: caret 1s steps(2, start) infinite;
+.tool-chevron .icon { width: 11px; height: 11px; }
+.tool-row.is-open > .tool-line .tool-chevron { transform: rotate(90deg); }
+.tool-row.is-thought .tool-line:hover .tool-chevron { color: var(--text-soft); }
+.thought-glyph { flex: 0 0 auto; display: inline-flex; margin: 0 7px 0 3px; color: var(--muted); }
+.thought-glyph .icon { width: 11px; height: 11px; }
+.tool-row.is-thought .tool-name { color: var(--text-soft); font-weight: 400; }
+.tool-row.is-thought.is-run .tool-name { color: var(--text); }
+.tool-row.is-thought .tool-spinner { margin-left: 8px; }
+.tool-row.is-thought .tool-detail { margin-top: 3px; }
+.thought-text {
+  max-height: 380px; overflow: auto;
+  color: #8b958f; font-style: italic; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: 11.5px; line-height: 1.65;
 }
-.thinking-block .reasoning-content { color: #8b958f; font-style: italic; }
 
 .stream-cursor { display: inline-block; width: 5px; height: 14px; margin-left: 2px; vertical-align: -2px; background: var(--accent); border-radius: 1px; animation: caret 1s steps(2, start) infinite; }
 @keyframes caret { 0%, 50% { opacity: 1; } 50.1%, 100% { opacity: 0; } }
@@ -1474,7 +1467,122 @@ mark.find-hit-current { background: #d9a441; color: #1b1a17; }
 .model-pill-error { color: var(--red); background: transparent; border-color: #5e403b; max-width: 100%; }
 .model-strip-note { color: #77817b; font-size: 9px; line-height: 1.5; }
 
-.composer-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; min-height: 42px; padding: 4px 8px 7px 9px; }
+.composer-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-height: 42px; padding: 4px 8px 7px 9px; }
+/* v1.5.15: the toolbar is two icon buttons and Send. The chips that spelled
+   out mode, work type, permissions and folder live in the Chat options menu,
+   so nothing in this row competes with the text for attention. */
+.toolbar-stash { display: none !important; }
+.tool-icon-button {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.tool-icon-button:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, .07); }
+.tool-icon-button:active:not(:disabled) { background: rgba(255, 255, 255, .1); }
+.tool-icon-button:disabled { opacity: .38; cursor: not-allowed; }
+.tool-icon-button[aria-expanded="true"] { color: var(--text); background: rgba(255, 255, 255, .09); }
+.tool-icon-button.is-danger { color: var(--red); }
+.tool-icon-button svg { width: 16px; height: 16px; }
+.composer-menu-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--red);
+  box-shadow: 0 0 0 2px #222627;
+}
+.composer-menu-dot.is-waiting { background: var(--amber); }
+.composer-menu-dot[hidden] { display: none !important; }
+
+/* ---- Chat options: one panel, everything that changes what Send means ---- */
+.composer-menu {
+  display: flex;
+  flex-direction: column;
+  max-height: min(556px, calc(100vh - 96px));
+  overflow: auto;
+  padding: 2px 4px 6px;
+}
+.cm-section { padding: 7px 4px 9px; }
+.cm-section + .cm-section,
+.cm-note-locked { border-top: 1px solid rgba(255, 255, 255, .055); }
+.cm-title {
+  margin: 0 0 7px;
+  color: var(--muted-dim);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+.cm-body { display: flex; flex-direction: column; gap: 3px; }
+.cm-pills { display: flex; flex-wrap: wrap; gap: 5px; }
+.cm-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  max-width: 100%;
+  padding: 0 9px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, .035);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 110ms ease, color 110ms ease, border-color 110ms ease;
+}
+.cm-pill:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, .08); }
+.cm-pill.is-selected { color: var(--text); background: rgba(52, 211, 153, .12); border-color: rgba(52, 211, 153, .36); }
+.cm-pill.is-danger { color: var(--red); }
+.cm-pill.is-danger.is-selected { background: rgba(240, 161, 155, .12); border-color: rgba(240, 161, 155, .38); }
+.cm-pill:disabled { opacity: .42; cursor: not-allowed; }
+.cm-pill-icon { display: inline-flex; opacity: .8; }
+.cm-pill-icon svg { width: 12px; height: 12px; }
+.cm-pill-check { display: inline-flex; color: #6fdca8; }
+.cm-pill-check svg { width: 11px; height: 11px; }
+.cm-note { margin: 6px 2px 0; color: var(--muted-dim); font-size: 10.5px; line-height: 1.5; }
+.cm-note-locked { margin: 4px 2px 0; padding: 9px 4px 2px; }
+.cm-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 7px;
+  color: var(--text-soft);
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cm-line:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, .06); }
+.cm-line:disabled { opacity: .45; cursor: not-allowed; }
+.cm-line > .icon { width: 14px; height: 14px; flex: 0 0 auto; color: var(--muted-dim); }
+.cm-line-copy, .cm-switch-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.cm-line-label { font-size: 12px; }
+.cm-line-detail {
+  color: var(--muted-dim);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cm-switch { display: flex; align-items: center; gap: 10px; padding: 6px 7px; border-radius: 7px; cursor: pointer; }
+.cm-switch:hover { background: rgba(255, 255, 255, .05); }
 .composer-chip {
   display: inline-flex;
   align-items: center;
@@ -3012,16 +3120,7 @@ body.is-resizing-y, body.is-resizing-y * { cursor: ns-resize !important; }
 
 /* Composer attachments (v4.8) */
 .composer-card { position: relative; }
-.attach-button {
-  display: inline-grid; place-items: center;
-  width: 30px; height: 30px; flex: 0 0 auto;
-  border: 1px solid var(--line-strong); border-radius: 9px;
-  background: rgba(255,255,255,.045); color: var(--text);
-  cursor: pointer;
-}
-.attach-button:hover:not(:disabled) { background: rgba(255,255,255,.09); border-color: var(--line-strong); }
-.attach-button:disabled { opacity: .4; cursor: not-allowed; }
-.attach-button svg { width: 15px; height: 15px; }
+/* Attach is a .tool-icon-button now: same quiet look as Chat options. */
 .attachment-strip {
   display: flex; flex-wrap: wrap; gap: 6px;
   margin-top: 8px;
