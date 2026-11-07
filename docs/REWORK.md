@@ -564,6 +564,85 @@ it, and the call site reads `permissions.MODES.get(mode, mode)` as the matching
 guard. `tests/test_v154_fixes.py` asserts that every key of
 `permissions.MODES` has a note and that the guide builds for each of them.
 
+## The 1.5.5 release
+
+### What 1.5.4 got wrong about the setup window
+
+1.5.4 shipped a fix for the frozen installer that was half right, and the notes
+for it claimed more than the evidence supported. Here is the correction, because
+the difference matters to anyone reading this later.
+
+**What was true.** `SetupApi` kept its window in a public attribute, and
+pywebview walks every public attribute of `js_api`. Removing that walk is right
+and stays.
+
+**What was not the cause.** The deadlock did not explain a window that rendered
+its first frame and then never updated again. Proof from the user's PC, after
+1.5.4 was installed and the Setup file run by hand:
+
+```
+11:50:58 INFO  setup window created: mode=install version=1.5.4
+11:50:59 DEBUG Using WinForms / Chromium
+11:50:59 DEBUG before_load event fired. injecting pywebview object
+11:50:59 DEBUG Loading JS files from ..._MEI00000f242\webview\js
+11:50:59 DEBUG _pywebviewready event fired
+11:50:59 DEBUG loaded event fired
+11:51:10 WARNING setup window never reached the bridge; installing without it
+```
+
+pywebview injected the bridge a second and a half after the page appeared and
+fired its ready event. The page never noticed, so the watchdog installed at
+twelve seconds while the window stayed on "Starting…". The installer worked —
+through the net, not through the window.
+
+**The actual cause.** pywebview fires `pywebviewready` on **`window`**
+(`webview/js/finish.js`: `window.dispatchEvent(new CustomEvent('pywebviewready'))`),
+and the injection lands well after `load`. The setup page listened on `document`
+only and ran a single fallback check at 900 ms:
+
+```js
+document.addEventListener("pywebviewready", init, { once: true });
+setTimeout(() => { if (!window.pywebview) { …; start(); } }, 900);
+```
+
+Both miss by design: the event target is wrong and the timing is too early. The
+app's own UI had already learned this — `arena/web/static/js/14-boot.js` listens
+on `window` *and* `document` and waits for the bridge — which is why only the
+installer ever sat on a dead screen.
+
+### The fix
+
+`whenBridge(done, timeoutMs)` in `arena/setup/web/index.html`:
+
+- resolves immediately if `window.pywebview.api` is already there;
+- otherwise listens for `pywebviewready` on **both** `window` and `document` and
+  polls every 120 ms, so an early or a late injection is picked up either way;
+- after six seconds without a bridge it stops pretending: in a WebView2 window it
+  shows *"Finishing the install in the background"* (the Python watchdog is
+  already installing), and in a plain browser it keeps the animated preview used
+  for reviewing the screen.
+
+The twelve-second `_bridge_watchdog` from 1.5.4 stays as the last resort, and
+`setup.log` now records which of the two paths ran.
+
+### How it was verified without Windows
+
+`tests/js/setup_page_bridge.js` (jsdom, `node tests/js/setup_page_bridge.js
+arena/setup/web/index.html`) loads the real page in a DOM and plays the failure
+modes back:
+
+```
+bridge at load:           {"calls":["info","start","state",…],"status":"Copying the application — 5 of 28 MB"}
+late, event on window:    {"calls":["info","start","state",…],…}
+late, event on document:  {"calls":["info","start","state",…],…}
+never arrives:            {"calls":[],"status":"Finishing the install in the background"}
+PASS
+```
+
+`tests/test_setup_page_bridge.py` runs it when node and jsdom are available and
+skips otherwise, so CI stays light and a machine with the toolchain still catches
+a regression.
+
 ## Still to come
 
 - **Session list presentation.** Grouping (today / this week / older), the way a

@@ -294,3 +294,28 @@ suite.
   error. Update mode handles it (`--pid` waits for the app to exit); instal mode
   should detect the running app, offer to close it, or switch to update mode.
 - 411 tests pass.
+
+## Session 11 (2026-11-07) — 1.5.5: the setup window actually drives the install
+
+1.5.4 shipped a fix whose notes over-claimed. Corrected here and in
+`docs/REWORK.md` ("The 1.5.5 release").
+
+- **What 1.5.4 proved, on the user's PC:** the Setup file installed (`install.json`
+  → 1.5.4, previous 1.5.3) but `setup.log` recorded
+  `setup window never reached the bridge; installing without it`, i.e. the
+  watchdog did the work and the window stayed on "Starting…".
+- **pywebview's own DEBUG trace** (run with `PYWEBVIEW_LOG=DEBUG`; the setup log
+  file handler captures the `pywebview` logger because it propagates to root)
+  showed the injection happening at +1.7 s: `before_load … injecting pywebview
+  object`, `Loading JS files from …_MEI…\webview\js`, `_pywebviewready event
+  fired`, `loaded event fired`.
+- **Real cause:** pywebview fires `pywebviewready` on **`window`**
+  (`webview/js/finish.js`), and the page listened on `document` only, with a
+  single 900 ms fallback check. `14-boot.js` in the app already listens on both.
+- **Fix:** `whenBridge()` in `arena/setup/web/index.html` — listen on window +
+  document, poll every 120 ms, honest "finishing in the background" state in a
+  WebView2 window when the bridge never arrives (the watchdog is the backstop).
+- **Verification without Windows:** `tests/js/setup_page_bridge.js` (jsdom) plays
+  back four arrivals — at load, late on window, late on document, never — and
+  `tests/test_setup_page_bridge.py` runs it when node + jsdom exist, else skips.
+- Bumped to 1.5.5 everywhere; released after the merge.

@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.4-brightgreen?style=flat-square" alt="v1.5.4" />
+  <img src="https://img.shields.io/badge/version-1.5.5-brightgreen?style=flat-square" alt="v1.5.5" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.4](#whats-new-in-v154)
+- [What's new in v1.5.5](#whats-new-in-v155)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,7 +44,32 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.4
+## What's new in v1.5.5
+
+### The Setup window shows the install again
+
+1.5.4 stopped the installer from hanging — but by giving up on its own window:
+after twelve seconds a watchdog took over and installed in the background while
+the window sat on "Starting…". The window itself never received the bridge that
+drives it.
+
+pywebview injects `window.pywebview.api` about a second and a half after the
+page loads, and announces it with a `pywebviewready` event on **window**. The
+page listened on `document`, and its single fallback check ran at 900 ms — both
+missed, every time. Now the page listens on both targets *and* polls until the
+bridge appears, then asks it to start: real progress, phase by phase, from the
+first second. The watchdog is still underneath as the last resort, and if the
+bridge genuinely never arrives the page says *"finishing the install in the
+background"* instead of animating a fake install.
+
+A headless regression harness (`tests/js/setup_page_bridge.js`, jsdom) covers the
+three arrivals: at load, late with the event on `window`, late with the event on
+`document` — plus the no-bridge case.
+
+### Previous: v1.5.4 — bypass permissions and the frozen Setup window
+
+<details>
+<summary>1.5.4: the KeyError in bypass mode, the setup window that stopped hanging, and setup.log</summary>
 
 ### Bypass permissions stops killing the reply
 
@@ -68,6 +93,8 @@ The reference is private now, and two safety nets came with it: a watchdog that
 starts the install from Python if the page has not called the bridge within
 twelve seconds, and `%USERPROFILE%\.arena-personal\setup.log`, so a setup
 window that ever misbehaves leaves a trace.
+
+</details>
 
 ### Previous: v1.5.3 — the Setup file installs
 
