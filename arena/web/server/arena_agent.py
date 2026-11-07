@@ -66,6 +66,35 @@ def _native_append(client, trigger_address, pat, payload):
     return (seq if isinstance(seq, int) else None), 200
 
 
+def _engine_ready(timeout: float = 30) -> bool:
+    """Ask the arena.ai window whether it can take a request.
+
+    The window is a WebView2 surface driven over pywebview, which is the least
+    dependable part of the app: a closed window, a crashed renderer or a busy
+    drive lock raises instead of answering. That must read as "not ready yet",
+    never as an internal error with no explanation.
+    """
+    try:
+        return bool(ENGINE.wait_ready(timeout))
+    except Exception:
+        LOG.exception("engine: wait_ready failed")
+        return False
+
+
+def _engine_cx(action: str) -> dict:
+    """The page's own client-interaction blob, when it can produce one.
+
+    ``cx`` is a nicety the website attaches to a submit. When the bridge is
+    unhappy the request goes out without it, exactly as before the preflight
+    existed — it must not end the turn.
+    """
+    try:
+        return ENGINE.native_preflight(action) or {}
+    except Exception:
+        LOG.exception("engine: preflight failed")
+        return {}
+
+
 def _native_create_session(message, timezone, connectors, files=None):
     """Create the Arena agentic session with a direct API call (like Direct sends).
 
@@ -79,9 +108,9 @@ def _native_create_session(message, timezone, connectors, files=None):
     variants first when a blob is available, then cx-less ones, advancing
     only on HTTP 400; every attempt is logged with the response head.
     """
-    if not ENGINE.wait_ready(30):
+    if not _engine_ready(30):
         return None, "arena.ai window is still loading"
-    pre = ENGINE.native_preflight(native_agent.RECAPTCHA_V3_ACTION)
+    pre = _engine_cx(native_agent.RECAPTCHA_V3_ACTION)
     cx = pre.get("cx")
     LOG.info("native create preflight: token_len=%s cx=%s",
              pre.get("token_len"), "genuine" if cx else "unavailable")
@@ -100,7 +129,7 @@ def _native_create_session(message, timezone, connectors, files=None):
                 message, timezone, connectors if with_connectors else None,
                 v2_token=v2_token, cx=cx_value, files=files)
             v2_token = None
-            if not ENGINE.wait_ready(30):
+            if not _engine_ready(30):
                 return None, "arena.ai window is still loading"
             r = ENGINE.request(contracts.PATHS["create_chat"], body=body, method="POST",
                                timeout=120, v3_action=native_agent.RECAPTCHA_V3_ACTION,
@@ -567,7 +596,7 @@ def _native_agent_run(client, message: str, existing: dict, timezone, result=Non
             return result
         # Direct append, like the website's transport: a fresh genuine cx in
         # the turn metadata when the page can mint one, plain otherwise.
-        pre = ENGINE.native_preflight(native_agent.RECAPTCHA_V3_ACTION)
+        pre = _engine_cx(native_agent.RECAPTCHA_V3_ACTION)
         pat, perr = _native_pat(session_id, timezone, start=True)
         if not pat:
             yield fail(perr or "Could not get an agent session token.")

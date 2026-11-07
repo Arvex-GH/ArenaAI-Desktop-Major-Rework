@@ -282,6 +282,9 @@ def _sse_wrap(gen, chat_id=None, workspace_dir=None):
     try:
         yield from gen
     except Exception as e:
+        # A crash used to leave no trace anywhere: the stream got the generic
+        # message and the log said nothing, so nobody could say what broke.
+        LOG.exception("generation crashed (chat %s)", chat_id)
         yield _sse({"type": "error", "code": "internal", "message": "The app hit an internal error.",
                     "detail": f"{type(e).__name__}: {e}", "retry": True})
         yield _sse({"type": "done", "text_a": "", "text_b": ""})

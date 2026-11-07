@@ -4,8 +4,11 @@ Arena Desktop — an unofficial desktop client for arena.ai.
 
 Modes:
   (no flags)            open the app
+  --app                 open the app even from a file named Setup
   --cli                 the old terminal interface
   --setup [--silent]    install this build for the current user
+                        (a file named ...-Setup-<version>.exe installs on
+                        double-click without this flag)
   --setup --update      install over an existing copy (used by the updater)
   --uninstall [--silent] [--wipe-data]
   --apply-update        internal helper: wait for a pid, swap the file, restart
@@ -65,11 +68,13 @@ def main():
             return
         sys.exit(run_setup("uninstall", APP_VERSION, silent=silent))
 
-    if "--setup" in sys.argv or "--install" in sys.argv:
+    from arena.setup import core as setup_core
+
+    setup_mode = setup_core.setup_mode_from_argv()
+    if setup_mode:
         from arena.setup.ui import run_setup
-        mode = "update" if ("--update" in sys.argv) else "install"
         pid = int(_flag_value("--pid", "0") or 0)
-        sys.exit(run_setup(mode, APP_VERSION, silent="--silent" in sys.argv, wait_pid=pid))
+        sys.exit(run_setup(setup_mode, APP_VERSION, silent="--silent" in sys.argv, wait_pid=pid))
 
     if "--cli" in sys.argv:
         from arena.cli import main as cli_main

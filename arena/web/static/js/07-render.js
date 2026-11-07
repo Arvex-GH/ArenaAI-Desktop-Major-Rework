@@ -1296,6 +1296,27 @@
       ));
   }
 
+  /* An error row: the sentence a person can act on, and under it the exact
+     failure (exception name included) with a way to copy it. Diagnostics are
+     quiet text, not a form. */
+  function renderMessageError(turn) {
+    const detail = textValue(turn.errorDetail || '');
+    const body = el('div', { class: 'message-error-body' },
+      el('span', { class: 'message-error-text', text: turn.error }));
+    if (detail) {
+      body.appendChild(el('span', { class: 'message-error-detail', text: detail }));
+      body.appendChild(el('button', {
+        class: 'message-error-copy',
+        type: 'button',
+        onclick: async () => {
+          const ok = await copyText(`${turn.error}\n${detail}`);
+          toast(ok ? 'Error details copied' : 'Could not copy the details', ok ? 'success' : 'error');
+        },
+      }, 'Copy details'));
+    }
+    return el('div', { class: 'message-error', role: 'alert' }, iconEl('alert'), body);
+  }
+
   function answerFootNote(lane) {
     if (lane.streaming) return null;
     if (!lane.done && !lane.error) return null;
@@ -1565,7 +1586,7 @@
     }
     const laneHasError = order.some((key) => lanes[key]?.errors?.length);
     if (turn.error && !laneHasError) {
-      wrapper.appendChild(el('div', { class: 'message-error', role: 'alert' }, iconEl('alert'), el('span', { text: turn.error })));
+      wrapper.appendChild(renderMessageError(turn));
     }
     const turnActions = renderTurnActions(turn);
     if (turnActions) wrapper.appendChild(turnActions);

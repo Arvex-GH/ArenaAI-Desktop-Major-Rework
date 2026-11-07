@@ -81,6 +81,42 @@ def install_manifest() -> dict:
         return {}
 
 
+# A release ships one binary under two names. The copy called Setup must
+# install when it is double-clicked: nobody double-clicks a file and then types
+# --setup. Only frozen builds can be an installer, so running from source can
+# never install by accident.
+INSTALLER_NAME_HINTS = ("setup", "installer")
+
+
+def looks_like_installer(exe: Optional[Path] = None, frozen: Optional[bool] = None) -> bool:
+    """True when this process is the download called ``...-Setup-<version>.exe``."""
+    is_frozen = getattr(sys, "frozen", False) if frozen is None else frozen
+    if not is_frozen:
+        return False
+    try:
+        name = (Path(exe) if exe else current_exe()).stem.lower()
+    except OSError:
+        return False
+    return any(hint in name for hint in INSTALLER_NAME_HINTS)
+
+
+def setup_mode_from_argv(argv=None, frozen: Optional[bool] = None,
+                         installed: Optional[bool] = None) -> Optional[str]:
+    """Which setup mode the command line asks for, or None for the app itself.
+
+    ``--setup`` / ``--install`` always win and ``--app`` always loses: a file
+    named Setup can still be started as the app, which is how the updater and
+    the "open it anyway" case work.
+    """
+    args = [str(a) for a in (sys.argv[1:] if argv is None else argv)]
+    if "--app" in args:
+        return None
+    explicit = "--setup" in args or "--install" in args
+    if not explicit and not looks_like_installer(frozen=frozen):
+        return None
+    return "update" if "--update" in args else "install"
+
+
 def installed_version() -> Optional[str]:
     version = install_manifest().get("version")
     if version:

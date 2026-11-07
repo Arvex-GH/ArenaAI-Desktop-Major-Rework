@@ -1174,7 +1174,7 @@
         permission_mode: demoStore.permissionMode,
         workspace: demoStore.workspace,
         workspace_chosen: true,
-        app_version: '1.5.2',
+        app_version: '1.5.3',
         pending_permissions: demoStore.pendingPermissions.length,
         demo: true
       };
@@ -1379,12 +1379,12 @@
       const wanted = new URLSearchParams(window.location.search).get('update') === '1';
       if (wanted) {
         return {
-          enabled: true, current: '1.5.2', latest: '1.5.3', update: true, demo: true,
+          enabled: true, current: '1.5.3', latest: '1.5.4', update: true, demo: true,
           url: 'https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases',
           published_at: new Date(Date.now() - 86400000 * 2).toISOString(),
           notes: 'What changed in this build:\n\n· The sidebar is quieter: one New chat row, no oversized button.\n· Update flow rebuilt: the app downloads the new build, replaces itself and restarts.\n· Fixed lane answers being clipped when two models answered at once.\n· Chat titles are written by Arena and no longer overwritten locally.',
           installer: { name: 'Arena-Desktop-Setup-1.6.1.exe', size: 84 * 1024 * 1024, kind: 'installer' },
-          can_install: true, install_mode: 'helper', installed_version: '1.5.2'
+          can_install: true, install_mode: 'helper', installed_version: '1.5.3'
         };
       }
       return { enabled: true, current: 'demo', latest: null, update: false, url: null, demo: true };
@@ -4851,6 +4851,27 @@ You can start with a more structured option: one script, short captions, and a c
       ));
   }
 
+  /* An error row: the sentence a person can act on, and under it the exact
+     failure (exception name included) with a way to copy it. Diagnostics are
+     quiet text, not a form. */
+  function renderMessageError(turn) {
+    const detail = textValue(turn.errorDetail || '');
+    const body = el('div', { class: 'message-error-body' },
+      el('span', { class: 'message-error-text', text: turn.error }));
+    if (detail) {
+      body.appendChild(el('span', { class: 'message-error-detail', text: detail }));
+      body.appendChild(el('button', {
+        class: 'message-error-copy',
+        type: 'button',
+        onclick: async () => {
+          const ok = await copyText(`${turn.error}\n${detail}`);
+          toast(ok ? 'Error details copied' : 'Could not copy the details', ok ? 'success' : 'error');
+        },
+      }, 'Copy details'));
+    }
+    return el('div', { class: 'message-error', role: 'alert' }, iconEl('alert'), body);
+  }
+
   function answerFootNote(lane) {
     if (lane.streaming) return null;
     if (!lane.done && !lane.error) return null;
@@ -5120,7 +5141,7 @@ You can start with a more structured option: one script, short captions, and a c
     }
     const laneHasError = order.some((key) => lanes[key]?.errors?.length);
     if (turn.error && !laneHasError) {
-      wrapper.appendChild(el('div', { class: 'message-error', role: 'alert' }, iconEl('alert'), el('span', { text: turn.error })));
+      wrapper.appendChild(renderMessageError(turn));
     }
     const turnActions = renderTurnActions(turn);
     if (turnActions) wrapper.appendChild(turnActions);
@@ -7717,6 +7738,10 @@ You can start with a more structured option: one script, short captions, and a c
     }
     if (type === 'error') {
       const message = textValue(event.message ?? event.error ?? event.detail ?? 'The server reported an error.');
+      // The backend sends the exception name beside the friendly message. It
+      // used to be dropped, which left "the app hit an internal error" with
+      // nothing to act on; keep it on the turn so the row can show it.
+      const detail = textValue(event.detail ?? '');
       generation.hadError = true;
       if (event.code === 'rate_limit' && Number(event.wait) > 0) {
         // Informational only (v5.1): drives the switch-account hint.
@@ -7745,6 +7770,7 @@ You can start with a more structured option: one script, short captions, and a c
         // Global backend error: show it once at turn level instead of
         // attributing it to Model A or pretending a card generated it.
         turn.error = message;
+        turn.errorDetail = detail && detail !== message ? detail : '';
       }
       toast(message, 'error', 'Generation error');
       scheduleChatRender();
