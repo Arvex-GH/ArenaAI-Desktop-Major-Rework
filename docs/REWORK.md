@@ -731,7 +731,21 @@ waiting on the row they belong to.
 The lesson recorded here: a receipt that restates a row is worse than noise when
 it hides the row it stands in for.
 
-## The 1.5.8 release
+## The 1.5.9 release
+
+### Why 1.5.8 was never published
+
+The 1.5.8 tag was pushed and the Windows build failed in its *Test before
+building* step: `tests/js/thinking_blocks.js` extracted its functions with
+line-anchored patterns (`const NAME = …;\n`), and the Windows runner checks out
+the repository with CRLF, so the anchors never matched and the harness threw
+`missing constant THINKING_OPEN` before the first check ran.
+
+A local run never reproduces it — this sandbox checks out LF. The harness now
+reads its sources through a `src()` helper that normalises `\r\n` to `\n`, and
+the fix was verified against a deliberately CRLF-converted copy of the tree
+before the tag moved to 1.5.9. Lesson recorded here: any test that reads the
+source of the app has to normalise line endings, or it is a Unix-only test.
 
 ### The placeholder's address
 
