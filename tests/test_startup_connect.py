@@ -89,7 +89,9 @@ def test_every_enabled_server_connects_by_itself(tmp_path, monkeypatch):
     monkeypatch.setattr(mgr, "connect", fake_connect)
     snap = run_to_end(mgr)
 
-    assert called == ["alpha", "beta"], "disabled servers are never started"
+    # Both are started, in whatever order their threads got scheduled: the
+    # launch run spawns every server at once now.
+    assert sorted(called) == ["alpha", "beta"], "disabled servers are never started"
     assert snap["phase"] == "done"
     assert snap["total"] == 2 and snap["done"] == 2
     assert snap["connected"] == 1 and snap["failed"] == 1

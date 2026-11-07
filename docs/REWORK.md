@@ -733,6 +733,50 @@ it hides the row it stands in for.
 
 ## Unreleased (merged, not tagged)
 
+### A reply never waits for a connector
+
+Reported from the installed app: the connectors were already up at launch, yet
+the first prompt of a session took a very long time before the model said
+anything — *"i think that the mcp connects under the hud again"*. It did.
+
+`_agent_run()` in `arena/web/server/local_agent.py` opened with
+`CONNECTORS.ensure_started(timeout=30)`. That function connected **every** enabled
+server, one after another, waiting up to the timeout for each. So:
+
+- a prompt sent while the launch run was still spawning `npx` servers queued
+  behind it — thirty seconds of silence per server still in flight, before the
+  model was even contacted;
+- a connector that had failed at launch was spawned again on *every* turn, and
+  complained about nowhere.
+
+Neither has anything to do with the answer, so neither belongs on its path.
+
+| before | now |
+|---|---|
+| the turn connects connectors | `CONNECTORS.tools_now()` — the tools that are up right now, never starts one |
+| waits for each server in turn, 30 s each | `wait_for_startup(1.5)` — a courtesy second, then it names what is late |
+| a failed server retried inside every reply | `retry_failed_in_background()`, throttled to one attempt a minute, off the request thread |
+| a tool call for a stopped server spawned it | `call()` reports "its connector is not running" to the model and stops |
+| launch run: Filesystem, then Memory, then Sequential Thinking, each its own `npx` | launch run: all of them at once, so it ends in the time of its slowest server |
+
+`arena/connectors.py` carries the contract in `tools_now()`'s docstring, and a
+connector switched on in Settings now connects immediately
+(`connect_in_background()`) instead of waiting for the next prompt.
+
+What the user sees when a connector really is late: one honest line —
+*"Filesystem was still starting when this message went out, so this reply works
+without its tools. They join your next message."* The next reply carries the new
+guide because `mcp_guide_hash` changed, which is the same mechanism that already
+handles enabling tools mid-chat.
+
+`tests/test_turn_connect_latency.py` (10 checks) holds it: `tools_now()` does no
+work and touches no process, a turn does not wait for a launch run in flight,
+`wait_for_startup` returns as soon as the run ends, the launch run is parallel
+(four 0.4 s servers finish in under 1.2 s), a failed connector is retried in the
+background and not more than once a minute, `_agent_run` and
+`_gateway_tool_index` no longer mention `ensure_started`, and switching a
+connector on connects it.
+
 ### The answer is not a box, and it is not a person
 
 Reported with a screenshot of a running turn: the reply sat inside an outlined

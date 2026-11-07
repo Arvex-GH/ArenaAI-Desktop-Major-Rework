@@ -1242,6 +1242,12 @@ class _FakeConnectorManager:
             }
         }
 
+    def tools_now(self):
+        return dict(self.tools)
+
+    def wait_for_startup(self, budget=1.5):
+        return []
+
     def ensure_started(self, timeout=30):
         return dict(self.tools)
 
@@ -2305,6 +2311,12 @@ def test_read_file_ranges_and_large_file_hint(tmp_path):
 
 
 class _StubConnectors:
+    def tools_now(self):
+        return {"srv_tool": {"server": "srv", "input_schema": {}}}
+
+    def wait_for_startup(self, budget=1.5):
+        return []
+
     def ensure_started(self, timeout=30):
         return {"srv_tool": {"server": "srv", "input_schema": {}}}
 
@@ -3851,6 +3863,7 @@ def test_gateway_block_reinjected_when_session_changes(web, monkeypatch):
 def test_gateway_workspace_server_index_and_servers(web, monkeypatch, tmp_path):
     appmod, *_ = web
     monkeypatch.setattr(appmod, "_chosen_ws", lambda: tmp_path)
+    monkeypatch.setattr(appmod.CONNECTORS, "tools_now", lambda: {})
     monkeypatch.setattr(appmod.CONNECTORS, "ensure_started", lambda timeout=10: {})
     index = appmod._gateway_tool_index()
     tools = index["workspace"]["tools"]
