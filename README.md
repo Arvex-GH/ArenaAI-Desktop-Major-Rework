@@ -12,7 +12,7 @@
 <div align="center">
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/stargazers"><img src="https://img.shields.io/github/stars/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square&color=crimson" alt="GitHub stars" /></a>
   <a href="https://github.com/Arvex-GH/ArenaAI-Desktop-Major-Rework/releases/latest"><img src="https://img.shields.io/github/v/release/Arvex-GH/ArenaAI-Desktop-Major-Rework?style=flat-square" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/version-1.5.6-brightgreen?style=flat-square" alt="v1.5.6" />
+  <img src="https://img.shields.io/badge/version-1.5.7-brightgreen?style=flat-square" alt="v1.5.7" />
   <img src="https://img.shields.io/badge/models-400%2B-10B981?style=flat-square" alt="400+ models" />
   <img src="https://img.shields.io/badge/Platform-Windows_(macOS%20%26%20Linux%20planned)-blue?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT license" /></a>
@@ -33,7 +33,7 @@
 ## Contents
 
 - [Download](#download)
-- [What's new in v1.5.6](#whats-new-in-v156)
+- [What's new in v1.5.7](#whats-new-in-v157)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
@@ -44,7 +44,23 @@
 - [Roadmap: macOS and Linux](#roadmap-macos-and-linux)
 - [Translations](#translations)
 
-## What's new in v1.5.6
+## What's new in v1.5.7
+
+### The command you are waiting on is on screen
+
+While a turn had no prose yet — only tool calls — the answer area showed the
+"Thinking…" placeholder and nothing else, so every command the assistant ran was
+invisible until the turn ended (or you pressed Stop) and the rows appeared all at
+once. With 1.5.6 the extra `Allowed …` line stopped covering for it, and the
+commands went quiet.
+
+The work is drawn while the placeholder types now: the rows stream under it, the
+running one open, exactly as they do once prose arrives.
+
+### Previous: v1.5.6 — one verdict per command
+
+<details>
+<summary>1.5.6: granted approvals stopped echoing themselves into the thread; a refusal is red, on the command's row</summary>
 
 ### One verdict per command, and only when it is "no"
 
@@ -63,6 +79,8 @@ the same 10px line, in red, right behind the command:
 
 If the reply was stopped before a command ran, or the approval expired
 unanswered, the row says `not run: …` instead of pretending the user refused.
+
+</details>
 
 ### Previous: v1.5.5 — the Setup window shows the install
 

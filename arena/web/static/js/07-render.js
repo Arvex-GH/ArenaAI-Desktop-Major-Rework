@@ -1455,6 +1455,11 @@
         _laneTypewriters.set(lane, typewriter);
       }
       card.appendChild(typewriter);
+      // The words are behind the placeholder for a moment; the work is not.
+      // While a turn has no prose yet (only calls), the typewriter used to be
+      // the whole card, so a running command was invisible until the turn ended
+      // or the user pressed Stop and the rows appeared all at once.
+      renderLaneFlow(lane, visibleText, true).forEach((node) => card.appendChild(node));
       if (inTypewriterWindow && visibleText) {
         const remaining = lane.typewriterUntil - Date.now();
         setTimeout(() => { lane.typewriterUntil = 0; scheduleChatRender(); }, remaining);

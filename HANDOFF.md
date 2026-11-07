@@ -348,3 +348,17 @@ suite.
 - The user closed the Supabase bridge before this release, so nothing was verified
   on their PC this time — the in-app *Settings → Updates* path is the test.
 - 415 tests pass, 1 skipped (the jsdom setup-page harness).
+
+## Session 14 (2026-11-07) — 1.5.7: tool rows visible while they run
+
+- **Reported on 1.5.6:** commands ran invisibly — the approval pop-up appeared,
+  but the command row only showed up when the turn ended or Stop was pressed.
+- **Cause (pre-existing, exposed by 1.5.6):** the card's typewriter branch drew
+  only the "Thinking…" placeholder and skipped `renderLaneFlow` whenever the lane
+  had no prose yet. Agent turns that only call tools keep `visibleText` empty, so
+  rows stayed hidden until `lane.streaming` went false. The removed `Allowed …`
+  receipts used to render outside the flow, which masked it.
+- **Fix:** `renderLaneFlow(lane, visibleText, true)` also runs in the typewriter
+  branch, so rows stream under the placeholder.
+- `tests/js/permission_rows.js` gained a check for it (13 checks).
+- Version 1.5.7.
