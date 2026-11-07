@@ -401,6 +401,38 @@
     } catch { return ''; }
   }
 
+  /* Titles belong to the person who typed the first message, not to a server
+     that summarises it. The chat id is the key, the prompt is the title, and
+     the choice is remembered so a refresh cannot rename the chat underneath. */
+  const LOCAL_TITLES_KEY = 'arenaPersonal.chatTitles.v1';
+
+  function localChatTitles() {
+    try { return JSON.parse(localStorage.getItem(LOCAL_TITLES_KEY) || '{}') || {}; } catch { return {}; }
+  }
+
+  function rememberChatTitle(chatId, title) {
+    if (!chatId || !title) return;
+    const map = localChatTitles();
+    if (map[String(chatId)] === title) return;
+    map[String(chatId)] = title;
+    try { localStorage.setItem(LOCAL_TITLES_KEY, JSON.stringify(map)); } catch { /* storage unavailable */ }
+  }
+
+  function applyLocalTitles(chats) {
+    const map = localChatTitles();
+    (chats || []).forEach((chat) => {
+      const title = map[String(chat.id)];
+      if (title) chat.title = title;
+    });
+    return chats;
+  }
+
+  function titleFromPrompt(text, limit = 60) {
+    const clean = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!clean) return '';
+    return clean.length > limit ? `${clean.slice(0, limit - 1).trimEnd()}\u2026` : clean;
+  }
+
   function truncate(value, length = 54) {
     const text = textValue(value).replace(/\s+/g, ' ').trim();
     return text.length > length ? `${text.slice(0, Math.max(1, length - 1))}…` : text;

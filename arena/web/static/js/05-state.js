@@ -630,7 +630,7 @@
 
   function legacyToolActivities(text) {
     const out = [];
-    const add = (name, body, paramRe) => {
+    const add = (name, body, paramRe, at) => {
       const input = {};
       for (const param of body.matchAll(paramRe)) {
         const key = param[1].toLowerCase();
@@ -642,11 +642,11 @@
         command: tool === 'run_cmd' ? (input.cmd || input.command || '') : '',
         background: /^(1|true|yes)$/i.test(input.background || '') || undefined
       }, 'tool');
-      if (activity) out.push(activity);
+      if (activity) { activity.at = at; out.push(activity); }
     };
     const source = String(text || '');
-    for (const match of source.matchAll(LEGACY_TOOL_RE)) add(match[1], match[2], LEGACY_PARAM_RE);
-    for (const match of source.matchAll(LEGACY_INVOKE_RE)) add(match[1], match[2], LEGACY_INVOKE_PARAM_RE);
+    for (const match of source.matchAll(LEGACY_TOOL_RE)) add(match[1], match[2], LEGACY_PARAM_RE, match.index);
+    for (const match of source.matchAll(LEGACY_INVOKE_RE)) add(match[1], match[2], LEGACY_INVOKE_PARAM_RE, match.index);
     return out;
   }
 

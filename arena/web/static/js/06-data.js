@@ -242,7 +242,7 @@
     try {
       const raw = await API.getChats();
       const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.chats) ? raw.chats : []);
-      const serverChats = list.map(normalizeChat).filter(Boolean);
+      const serverChats = applyLocalTitles(list.map(normalizeChat).filter(Boolean));
       const serverIds = new Set(serverChats.map((chat) => chat.id));
       const keptLocal = (state.chats || []).filter((chat) =>
         !serverIds.has(chat.id)
@@ -458,6 +458,7 @@
       class: 'chat-row-main chat-row-open',
       type: 'button',
       'data-chat-open': chat.id,
+      'data-chat-id': chat.id,
       'aria-label': `Open chat: ${chat.title}${running ? ' (working)' : unread ? ' (finished, not opened yet)' : ''}`,
       'aria-current': active ? 'page' : false
     },
